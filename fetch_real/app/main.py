@@ -19,8 +19,14 @@ from app.services.synchronizer import HistorySynchronizer
 from app.utils.logger import logger, setup_logger
 
 
-async def run_history(lookback_days: int | None) -> None:
-    sync = HistorySynchronizer(lookback_days=lookback_days)
+async def run_history(
+    lookback_from_days: int | None,
+    lookback_to_days: int = 0,
+) -> None:
+    sync = HistorySynchronizer(
+        lookback_days=lookback_from_days,
+        lookback_to_days=lookback_to_days,
+    )
     try:
         results = await sync.sync_all()
         logger.info("History fetch done: {}", results)
@@ -60,8 +66,20 @@ async def async_main(args: argparse.Namespace) -> None:
         settings.parquet_compression,
     )
 
+    lookback_from: int | None = None
+    lookback_to = 0
+    if args.lookback_days is not None:
+        if len(args.lookback_days) == 0:
+            raise SystemExit("--lookback-days expects 1 or 2 integers: A [B]")
+        if len(args.lookback_days) == 1:
+            lookback_from = args.lookback_days[0]
+            lookback_to = 0
+        else:
+            lookback_from = args.lookback_days[0]
+            lookback_to = args.lookback_days[1]
+
     if args.mode in {"history", "both"}:
-        await run_history(args.lookback_days)
+        await run_history(lookback_from, lookback_to)
 
     if args.mode in {"realtime", "both"}:
         await run_realtime()
@@ -76,9 +94,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--lookback-days",
+        nargs="*",
         type=int,
         default=None,
-        help="History lookback window in days (default from .env)",
+        metavar=("A", "B"),
+        help=(
+            "History window in days ago. "
+            "One value A = last A days. "
+            "Two values A B = from A days ago until B days ago "
+            "(e.g. --lookback-days 7 3). Default from .env."
+        ),
     )
     return parser
 

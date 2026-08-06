@@ -14,6 +14,7 @@ from app.config import settings
 from app.features.depth_bands import ORDERBOOK_COLUMNS
 from app.features.trade_schema import TRADE_COLUMNS
 from app.utils.logger import logger
+from app.utils.markets import market_date_key
 from app.utils.time import utcnow
 
 
@@ -64,9 +65,9 @@ def _json_cell(value: Any) -> str | None:
 
 class MarketSessionStore:
     """
-    Analysis-grade multi-table store, one directory per market:
+    Analysis-grade multi-table store:
 
-      {data_dir}/by_market/{slug}/
+      {data_dir}/{YYYY-MM-DD}/{market_id}/
         meta.json
         btc.parquet
         orderbooks.parquet
@@ -87,17 +88,14 @@ class MarketSessionStore:
         self._market_locks: dict[str, threading.Lock] = {}
         self._load_done()
 
-    @property
-    def root(self) -> Path:
-        path = self.data_dir / "by_market"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
     def market_dir(self, market_id: str, slug: str | None = None) -> Path:
         with self._lock:
             meta = self._meta.get(market_id) or {}
-        name = slug or meta.get("slug") or market_id
-        path = self.root / safe_name(str(name))
+        date_key = market_date_key(
+            start_time=meta.get("start_time"),
+            slug=slug or meta.get("slug"),
+        )
+        path = self.data_dir / date_key / safe_name(str(market_id))
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -136,8 +134,7 @@ class MarketSessionStore:
             if slug:
                 payload["slug"] = slug
             self._meta[market_id] = {**self._meta.get(market_id, {}), **payload, "market_id": market_id}
-            slug_final = payload.get("slug") or self._meta[market_id].get("slug") or market_id
-        path = self.market_dir(market_id, slug=str(slug_final)) / "meta.json"
+        path = self.market_dir(market_id, slug=slug or payload.get("slug")) / "meta.json"
         doc = build_meta_document({**payload, "market_id": market_id})
         path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         return path
@@ -366,8 +363,9 @@ class MarketSessionStore:
             self._done_markets.add(market_id)
             self._save_done()
         logger.info(
-            "History bundle slug={} tables={}",
-            slug,
+            "History bundle date={} market_id={} tables={}",
+            self.market_dir(market_id, slug=slug).parent.name,
+            market_id,
             {k: len(v) for k, v in tables.items() if v},
         )
         return paths

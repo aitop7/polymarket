@@ -18,6 +18,7 @@ from app.utils.markets import (
     filter_updown_rows,
     is_updown_market,
     iter_5m_slugs,
+    normalize_lookback_days,
     parse_updown_window,
     resolve_market_window,
 )
@@ -27,11 +28,21 @@ from app.utils.time import utcnow
 
 class HistorySynchronizer:
     """
-    Backfill analysis-grade multi-table bundles under by_market/{slug}/.
+    Backfill market bundles under {data_dir}/{YYYY-MM-DD}/{market_id}/.
     """
 
-    def __init__(self, lookback_days: int | None = None) -> None:
-        self.lookback_days = lookback_days if lookback_days is not None else settings.history_lookback_days
+    def __init__(
+        self,
+        lookback_days: int | None = None,
+        lookback_to_days: int = 0,
+    ) -> None:
+        default = settings.history_lookback_days
+        from_days = lookback_days if lookback_days is not None else default
+        self.lookback_from_days, self.lookback_to_days = normalize_lookback_days(
+            from_days, lookback_to_days
+        )
+        # back-compat alias used by resolve_market_window callers
+        self.lookback_days = self.lookback_from_days
         self.binance = BinanceClient()
         self.poly = PolymarketClient()
         self.pmxt = PmxtClient()
@@ -43,15 +54,21 @@ class HistorySynchronizer:
         await self.pmxt.close()
 
     async def sync_all(self) -> dict[str, int]:
-        expected = len(iter_5m_slugs(self.lookback_days))
+        slugs = iter_5m_slugs(self.lookback_from_days, self.lookback_to_days)
+        expected = len(slugs)
+        window_msg = (
+            f"{self.lookback_from_days}->{self.lookback_to_days} day(s) ago"
+            if self.lookback_to_days
+            else f"last {self.lookback_from_days} day(s)"
+        )
         logger.info(
-            "Starting history sync lookback_days={} (~{} five-minute slots) concurrency={}",
-            self.lookback_days,
+            "Starting history sync lookback={} (~{} five-minute slots) concurrency={}",
+            window_msg,
             expected,
             settings.market_concurrency,
         )
         print(
-            f"Resolving {expected} five-minute markets over last {self.lookback_days} day(s)...",
+            f"Resolving {expected} five-minute markets ({window_msg})...",
             file=sys.stderr,
             flush=True,
         )
@@ -68,7 +85,7 @@ class HistorySynchronizer:
 
     async def sync_markets(self) -> list[Any]:
         """Enumerate every 5m slug in the lookback window and resolve via Gamma."""
-        slugs = iter_5m_slugs(self.lookback_days)
+        slugs = iter_5m_slugs(self.lookback_from_days, self.lookback_to_days)
         if not slugs:
             return []
 

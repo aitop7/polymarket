@@ -33,6 +33,15 @@ def parse_updown_window(slug: str | None) -> tuple[datetime | None, datetime | N
     return start, end
 
 
+def normalize_lookback_days(from_days: int, to_days: int = 0) -> tuple[int, int]:
+    """Return (older_days, newer_days) with older >= newer >= 0."""
+    older = max(0, int(from_days))
+    newer = max(0, int(to_days))
+    if newer > older:
+        older, newer = newer, older
+    return older, newer
+
+
 def resolve_market_window(
     market: Any,
     *,
@@ -81,17 +90,26 @@ def filter_updown_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def iter_5m_slugs(lookback_days: int, *, end: datetime | None = None) -> list[str]:
+def iter_5m_slugs(
+    lookback_from_days: int,
+    lookback_to_days: int = 0,
+    *,
+    end: datetime | None = None,
+) -> list[str]:
     """
-    Every btc-updown-5m-{unix} slug in the lookback window.
+    Every btc-updown-5m-{unix} slug in [now - from_days, now - to_days).
 
-    3 days => 3 * 24 * 12 = 864 five-minute markets.
+    Examples:
+      iter_5m_slugs(7)       -> last 7 days
+      iter_5m_slugs(7, 3)    -> from 7 days ago until 3 days ago
     """
+    from_days, to_days = normalize_lookback_days(lookback_from_days, lookback_to_days)
     end_dt = end or datetime.now(UTC)
-    start_dt = end_dt - timedelta(days=lookback_days)
-    start_ts = int(start_dt.timestamp())
+    range_end = end_dt - timedelta(days=to_days)
+    range_start = end_dt - timedelta(days=from_days)
+    start_ts = int(range_start.timestamp())
     start_ts -= start_ts % const.MARKET_SLOT_SECONDS
-    end_ts = int(end_dt.timestamp())
+    end_ts = int(range_end.timestamp())
     end_ts -= end_ts % const.MARKET_SLOT_SECONDS
     if end_ts <= start_ts:
         return []
@@ -99,3 +117,28 @@ def iter_5m_slugs(lookback_days: int, *, end: datetime | None = None) -> list[st
         f"btc-updown-5m-{ts}"
         for ts in range(start_ts, end_ts, const.MARKET_SLOT_SECONDS)
     ]
+
+
+def market_date_key(start_time: Any = None, slug: str | None = None) -> str:
+    """UTC calendar date YYYY-MM-DD for folder layout."""
+    if start_time is not None:
+        if isinstance(start_time, datetime):
+            dt = start_time
+        elif isinstance(start_time, (int, float)):
+            ts = int(start_time)
+            if ts < 10_000_000_000:
+                ts *= 1000
+            dt = datetime.fromtimestamp(ts / 1000.0, tz=UTC)
+        else:
+            try:
+                dt = datetime.fromisoformat(str(start_time).replace("Z", "+00:00"))
+            except ValueError:
+                dt = None
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt.astimezone(UTC).strftime("%Y-%m-%d")
+    slug_start, _ = parse_updown_window(slug)
+    if slug_start is not None:
+        return slug_start.strftime("%Y-%m-%d")
+    return datetime.now(UTC).strftime("%Y-%m-%d")
