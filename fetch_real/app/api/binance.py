@@ -71,6 +71,45 @@ class BinanceClient:
         data = await self._get("/api/v3/aggTrades", params)
         return data
 
+    async def iter_agg_trades(
+        self,
+        *,
+        start_time: datetime,
+        end_time: datetime,
+        symbol: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Paginate aggTrades across the full [start, end] window."""
+        out: list[dict[str, Any]] = []
+        cursor = start_time
+        end_ms = datetime_to_ms(end_time)
+        safety = 0
+        while cursor < end_time and safety < 500:
+            safety += 1
+            batch = await self.get_agg_trades(
+                symbol=symbol,
+                start_time=cursor,
+                end_time=end_time,
+                limit=1000,
+            )
+            if not batch:
+                break
+            out.extend(batch)
+            last_ts = int(batch[-1]["T"])
+            if last_ts >= end_ms or len(batch) < 1000:
+                break
+            # advance 1ms past last trade to avoid duplicates
+            cursor = ms_to_datetime(last_ts + 1)
+        # de-dupe by agg trade id
+        seen: set[Any] = set()
+        unique: list[dict[str, Any]] = []
+        for t in out:
+            key = t.get("a")
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(t)
+        return unique
+
     async def get_klines(
         self,
         *,

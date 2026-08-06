@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -9,6 +10,7 @@ from app.api.binance import BinanceClient
 from app.api.pmxt_client import PmxtClient
 from app.api.polymarket import PolymarketClient
 from app.config import settings
+from app.features import FeatureEngine
 from app.storage import store
 from app.storage.market_sessions import sessions
 from app.storage.markets import markets
@@ -21,16 +23,12 @@ from app.utils.markets import (
     resolve_market_window,
 )
 from app.utils.progress import ProgressBar
-from app.utils.time import datetime_to_ms, ms_to_datetime, utcnow
+from app.utils.time import utcnow
 
 
 class HistorySynchronizer:
     """
-    Backfill into one compressed parquet file per UTC day
-    (many 5m markets share the same day file).
-
-    --lookback-days N means: every btc-updown-5m slot in the last N days
-    (N*24*12 markets), not \"N markets\".
+    Backfill analysis-grade multi-table bundles under by_market/{slug}/.
     """
 
     def __init__(self, lookback_days: int | None = None) -> None:
@@ -115,7 +113,6 @@ class HistorySynchronizer:
             )
 
         filtered = filter_updown_rows(rows)
-        # Don't finalize empty session files for closed markets during history resolve
         markets.upsert_many(filtered, finalize_closed=False)
         store.save_checkpoint("markets", last_timestamp=utcnow())
         by_id = {r["market_id"] for r in filtered}
@@ -133,312 +130,332 @@ class HistorySynchronizer:
             return 0
 
         done = 0
-        buffered = 0
+        written = 0
         lock = asyncio.Lock()
         progress = ProgressBar(total, prefix="Download")
-        # show 0% immediately so it never looks "paused"
         progress.update(0, current="starting...", written=0)
 
         async def _one(market: Any) -> bool:
-            nonlocal done, buffered
+            nonlocal done, written
             async with self._market_sem:
                 slug = str(market.slug or market.market_id)
                 async with lock:
-                    progress.update(done, current=f"fetching {slug}", written=buffered)
+                    progress.update(done, current=f"fetching {slug}", written=written)
                 try:
-                    rows = await self._build_market_rows(market)
-                    ok = False
-                    if rows:
-                        n = sessions.buffer_market_rows(market.market_id, market.slug, rows)
-                        ok = n > 0
+                    ok = await self._sync_one_market(market)
                     async with lock:
                         done += 1
                         if ok:
-                            buffered += 1
-                        progress.update(done, current=slug, written=buffered)
+                            written += 1
+                        progress.update(done, current=slug, written=written)
                     return ok
                 except Exception as exc:
                     async with lock:
                         done += 1
-                        progress.update(done, current=slug, written=buffered)
+                        progress.update(done, current=slug, written=written)
                     logger.warning("History sync failed for {}: {}", market.market_id, exc)
                     return False
 
         try:
             await asyncio.gather(*[_one(m) for m in all_markets])
-            if buffered:
-                progress.update(done, current="writing daily parquet...", written=buffered)
-                paths = await asyncio.to_thread(sessions.flush_history_buffer)
-                logger.info("Flushed {} daily parquet file(s)", len(paths))
         finally:
             pct = 100.0 * done / total if total else 100.0
             progress.close(
-                final_msg=f"Download complete: {buffered}/{total} markets buffered, written once per day ({pct:.1f}%)"
+                final_msg=f"Download complete: {written}/{total} market bundles ({pct:.1f}%)"
             )
-        return buffered
+        return written
 
-    async def _build_market_rows(self, market: Any) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = [
-            {
-                "record_type": "meta",
-                "timestamp": market.start_time or utcnow(),
-                "market_id": market.market_id,
-                "slug": market.slug,
-                **market.as_dict(),
-            }
-        ]
-
-        # Critical: only the 5-minute window (never multi-week long markets)
+    async def _sync_one_market(self, market: Any) -> bool:
         start, end = resolve_market_window(market, lookback_days=self.lookback_days)
-        token = market.token_yes
-        if not token:
-            return rows
+        settlement = market.settlement_time or market.end_time or end
+        slug = str(market.slug or market.market_id)
 
-        if settings.pmxt_enabled:
-            btc_task = asyncio.create_task(self._btc_bars(start, end, market))
-            books_task = asyncio.create_task(self._pmxt_orderbooks(token, start, end, market))
-            trades_task = asyncio.create_task(self._pmxt_trades(token, start, end, market))
-            ohlcv_task = asyncio.create_task(self._pmxt_ohlcv(token, start, end, market))
-            btc_rows, book_rows, trade_rows, ohlcv_rows = await asyncio.gather(
-                btc_task, books_task, trades_task, ohlcv_task
-            )
-            rows.extend(btc_rows)
-            rows.extend(book_rows)
-            rows.extend(trade_rows)
-            rows.extend(ohlcv_rows)
-        else:
-            btc_rows, hist_rows = await asyncio.gather(
-                self._btc_bars(start, end, market),
-                self._clob_price_history(token, start, end, market),
-            )
-            rows.extend(btc_rows)
-            rows.extend(hist_rows)
+        btc_ticks, trades_raw, open_px, close_px = await asyncio.gather(
+            self._btc_ticks(start, end),
+            self._fetch_trades(market, start, end),
+            self._btc_price_at(start),
+            self._btc_price_at(end),
+        )
 
-        return rows
+        trade_rows, book_rows, wallet_rows, feature_rows = self._build_pm_tables(
+            trades_raw,
+            market=market,
+            start=start,
+            end=end,
+            settlement=settlement,
+        )
 
-    async def _pmxt_orderbooks(
-        self,
-        token: str,
-        start: datetime,
-        end: datetime,
-        market: Any,
-    ) -> list[dict[str, Any]]:
-        windows: list[tuple[datetime, datetime]] = []
-        cursor = start
-        # 5m markets fit in one window; keep chunking for longer markets
-        chunk = timedelta(minutes=15)
-        while cursor < end:
-            until = min(cursor + chunk, end)
-            windows.append((cursor, until))
-            cursor = until
+        meta = {
+            **market.as_dict(),
+            "slug": slug,
+            "start_time": start,
+            "end_time": end,
+            "settlement_time": settlement,
+            "opening_btc_price": open_px,
+            "closing_btc_price": close_px,
+        }
+        paths = sessions.write_market_bundle(
+            market.market_id,
+            slug,
+            meta=meta,
+            tables={
+                "btc_ticks": btc_ticks,
+                "trades": trade_rows,
+                "orderbooks": book_rows,
+                "wallet_positions": wallet_rows,
+                "features": feature_rows,
+                "orders": [],
+            },
+        )
+        return bool(paths)
 
-        async def _chunk(window: tuple[datetime, datetime]) -> list[dict[str, Any]]:
-            since, until = window
-            try:
-                books = await self.pmxt.fetch_order_book(
-                    token,
-                    since=datetime_to_ms(since),
-                    until=datetime_to_ms(until),
-                    limit=1000,
-                )
-            except Exception as exc:
-                logger.debug("PMXT books {} {}-{}: {}", market.slug, since, until, exc)
-                return []
-            if not isinstance(books, list):
-                books = [books] if books else []
-            out: list[dict[str, Any]] = []
-            for book in books:
-                ts_raw = book.get("timestamp")
-                ts = ms_to_datetime(ts_raw) if ts_raw is not None else until
-                bids = (book.get("bids") or [])[:20]
-                asks = (book.get("asks") or [])[:20]
-                best_bid = float(bids[0]["price"]) if bids else None
-                best_ask = float(asks[0]["price"]) if asks else None
-                spread = (
-                    best_ask - best_bid
-                    if best_bid is not None and best_ask is not None
-                    else None
-                )
-                out.append(
-                    {
-                        "record_type": "orderbook",
-                        "timestamp": ts,
-                        "market_id": market.market_id,
-                        "slug": market.slug,
-                        "best_bid": best_bid,
-                        "best_ask": best_ask,
-                        "spread": spread,
-                        "book_json": {"bids": bids, "asks": asks, "asset_id": token},
-                    }
-                )
-            return out
-
-        batches = await asyncio.gather(*[_chunk(w) for w in windows])
-        rows: list[dict[str, Any]] = []
-        for batch in batches:
-            rows.extend(batch)
-        return rows
-
-    async def _pmxt_trades(
-        self,
-        token: str,
-        start: datetime,
-        end: datetime,
-        market: Any,
-    ) -> list[dict[str, Any]]:
+    async def _btc_price_at(self, when: datetime) -> float | None:
         try:
-            trades = await self.pmxt.fetch_trades(token, limit=1000, start=start, end=end)
+            klines = await self.binance.get_klines(
+                interval="1s",
+                start_time=when,
+                end_time=when + timedelta(seconds=2),
+                limit=1,
+            )
+            if klines:
+                return float(klines[0][4])
+        except Exception:
+            pass
+        try:
+            klines = await self.binance.get_klines(
+                interval="1m",
+                start_time=when - timedelta(minutes=1),
+                end_time=when + timedelta(minutes=1),
+                limit=1,
+            )
+            if klines:
+                return float(klines[0][4])
         except Exception as exc:
-            logger.debug("PMXT trades {} : {}", market.slug, exc)
+            logger.debug("BTC price at {} failed: {}", when, exc)
+        return None
+
+    async def _btc_ticks(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        try:
+            raw = await self.binance.iter_agg_trades(start_time=start, end_time=end)
+        except Exception as exc:
+            logger.debug("BTC ticks failed: {}", exc)
             return []
         rows = []
-        for t in trades:
-            if not t.get("timestamp"):
-                continue
-            rows.append(
-                {
-                    "record_type": "trade",
-                    "timestamp": t["timestamp"],
-                    "market_id": market.market_id,
-                    "slug": market.slug,
-                    "trade_id": t.get("trade_id"),
-                    "price": t.get("price"),
-                    "size": t.get("size"),
-                    "side": t.get("side"),
-                }
-            )
+        for t in raw:
+            rows.append(BinanceClient.normalize_agg_trade(t))
         return rows
 
-    async def _pmxt_ohlcv(
-        self,
-        token: str,
-        start: datetime,
-        end: datetime,
-        market: Any,
-    ) -> list[dict[str, Any]]:
-        try:
-            candles = await self.pmxt.fetch_ohlcv(
-                token, resolution="1m", start=start, end=end, limit=1000
-            )
-        except Exception as exc:
-            logger.debug("PMXT ohlcv {} : {}", market.slug, exc)
+    async def _fetch_trades(self, market: Any, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        condition_id = getattr(market, "condition_id", None)
+        if not condition_id:
             return []
-        rows = []
-        for c in candles:
-            ts = c.get("timestamp")
-            if ts is None:
-                continue
-            dt = ms_to_datetime(ts) if float(ts) > 1e12 else datetime.fromtimestamp(float(ts), tz=UTC)
-            rows.append(
-                {
-                    "record_type": "ohlcv",
-                    "timestamp": dt,
-                    "market_id": market.market_id,
-                    "slug": market.slug,
-                    "open": c["open"],
-                    "high": c["high"],
-                    "low": c["low"],
-                    "close": c["close"],
-                    "volume": c.get("volume") or 0,
-                }
-            )
-        return rows
-
-    async def _clob_price_history(
-        self,
-        token: str,
-        start: datetime,
-        end: datetime,
-        market: Any,
-    ) -> list[dict[str, Any]]:
         try:
-            history = await self.poly.get_price_history(
-                token,
+            return await self.poly.get_trades(
+                str(condition_id),
                 start_ts=int(start.timestamp()),
                 end_ts=int(end.timestamp()),
-                fidelity=1,
             )
         except Exception as exc:
-            logger.debug("CLOB price history {} : {}", market.slug, exc)
+            logger.debug("data-api trades {} : {}", market.slug, exc)
             return []
-        rows = []
-        for point in history:
-            ts = point.get("t") or point.get("timestamp")
-            price = point.get("p") or point.get("price")
-            if ts is None or price is None:
+
+    def _build_pm_tables(
+        self,
+        trades: list[dict[str, Any]],
+        *,
+        market: Any,
+        start: datetime,
+        end: datetime,
+        settlement: datetime,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        from app.config import const
+        from app.features.depth_bands import build_orderbook_row, levels_from_prints
+
+        trade_rows: list[dict[str, Any]] = []
+        # per-second prints by outcome: buys -> asks, sells -> bids
+        by_sec: dict[datetime, dict[str, dict[str, list[tuple[float, float]]]]] = defaultdict(
+            lambda: {
+                "up": {"buys": [], "sells": [], "all": []},
+                "down": {"buys": [], "sells": [], "all": []},
+            }
+        )
+        wallet_state: dict[str, dict[str, float]] = {}
+        wallet_rows: list[dict[str, Any]] = []
+        token_yes = getattr(market, "token_yes", None)
+        token_no = getattr(market, "token_no", None)
+
+        def _outcome_key(outcome: str, asset: Any) -> str | None:
+            oc = (outcome or "").lower()
+            if oc in {"yes", "up"}:
+                return "up"
+            if oc in {"no", "down"}:
+                return "down"
+            if token_yes and str(asset) == str(token_yes):
+                return "up"
+            if token_no and str(asset) == str(token_no):
+                return "down"
+            return None
+
+        ordered = sorted(trades, key=lambda t: int(t.get("timestamp") or 0))
+        for trade in ordered:
+            ts_raw = trade.get("timestamp")
+            if ts_raw is None:
                 continue
-            dt = ms_to_datetime(ts) if float(ts) > 1e12 else datetime.fromtimestamp(float(ts), tz=UTC)
-            rows.append(
+            ts = datetime.fromtimestamp(int(ts_raw), tz=UTC)
+            if ts < start or ts > end:
+                continue
+            try:
+                price = float(trade["price"])
+                size = float(trade.get("size") or 0)
+            except (TypeError, ValueError, KeyError):
+                continue
+            side = str(trade.get("side") or "").lower()
+            outcome = str(trade.get("outcome") or "")
+            wallet = trade.get("proxyWallet") or trade.get("wallet")
+            tx = trade.get("transactionHash") or trade.get("tx")
+            asset = trade.get("asset")
+            trade_rows.append(
                 {
-                    "record_type": "trade",
-                    "timestamp": dt,
-                    "market_id": market.market_id,
-                    "slug": market.slug,
-                    "price": float(price),
-                    "size": 0.0,
-                    "side": "hist",
+                    "timestamp": ts,
+                    "trade_id": str(tx or f"{asset}-{int(ts_raw)}-{price}-{size}"),
+                    "price": price,
+                    "size": size,
+                    "side": side,
+                    "wallet": wallet,
+                    "outcome": outcome,
+                    "tx": tx,
+                    "asset": asset,
                 }
             )
-        return rows
 
-    async def _btc_bars(self, start: datetime, end: datetime, market: Any) -> list[dict[str, Any]]:
-        # Build request windows and fetch in parallel
-        interval = "1s"
-        step = timedelta(seconds=1000)  # 1000 bars of 1s
-        windows: list[tuple[datetime, datetime]] = []
-        cursor = start
-        while cursor < end:
-            until = min(cursor + step, end)
-            windows.append((cursor, until))
-            cursor = until
+            key = _outcome_key(outcome, asset)
+            sec = ts.replace(microsecond=0)
+            if key:
+                by_sec[sec][key]["all"].append((price, size))
+                if side == "buy":
+                    by_sec[sec][key]["buys"].append((price, size))
+                elif side == "sell":
+                    by_sec[sec][key]["sells"].append((price, size))
 
-        async def _fetch(window: tuple[datetime, datetime], use_interval: str) -> tuple[str, list[list[Any]]]:
-            since, until = window
-            try:
-                klines = await self.binance.get_klines(
-                    interval=use_interval,
-                    start_time=since,
-                    end_time=until,
-                    limit=1000,
+            if wallet:
+                state = wallet_state.setdefault(
+                    str(wallet), {"yes_position": 0.0, "no_position": 0.0, "pnl": 0.0}
                 )
-                return use_interval, klines
-            except Exception as exc:
-                if use_interval == "1s":
-                    logger.debug("1s kline fail {}, retry 1m", exc)
-                    try:
-                        klines = await self.binance.get_klines(
-                            interval="1m",
-                            start_time=since,
-                            end_time=until,
-                            limit=1000,
-                        )
-                        return "1m", klines
-                    except Exception as exc2:
-                        logger.debug("BTC bars failed: {}", exc2)
-                        return "1m", []
-                logger.debug("BTC bars failed: {}", exc)
-                return use_interval, []
-
-        results = await asyncio.gather(*[_fetch(w, interval) for w in windows])
-        rows: list[dict[str, Any]] = []
-        for used_interval, klines in results:
-            for k in klines:
-                ts = ms_to_datetime(k[0])
-                if ts > end:
-                    continue
-                rows.append(
+                oc = outcome.lower()
+                if oc in {"yes", "up"}:
+                    state["yes_position"] += size if side == "buy" else -size
+                elif oc in {"no", "down"}:
+                    state["no_position"] += size if side == "buy" else -size
+                elif side == "buy":
+                    state["yes_position"] += size
+                else:
+                    state["yes_position"] -= size
+                wallet_rows.append(
                     {
-                        "record_type": "btc_1s",
                         "timestamp": ts,
-                        "market_id": market.market_id,
-                        "slug": market.slug,
-                        "open": float(k[1]),
-                        "high": float(k[2]),
-                        "low": float(k[3]),
-                        "close": float(k[4]),
-                        "volume": float(k[5]),
-                        "trade_count": int(k[8]) if len(k) > 8 else None,
-                        "interval": used_interval,
+                        "wallet": str(wallet),
+                        "yes_position": state["yes_position"],
+                        "no_position": state["no_position"],
+                        "pnl": state["pnl"],
                     }
                 )
-        return rows
+
+        features = FeatureEngine()
+        feature_rows: list[dict[str, Any]] = []
+        book_rows: list[dict[str, Any]] = []
+
+        window_s = const.DEPTH_BAND_WINDOW_S
+        windows: dict[str, dict[str, list[tuple[datetime, float, float]]]] = {
+            "up": {"buys": [], "sells": []},
+            "down": {"buys": [], "sells": []},
+        }
+        last_prices: dict[str, float | None] = {"up": None, "down": None}
+        last_row: dict[str, Any] | None = None
+
+        cursor = start.replace(microsecond=0)
+        end_sec = end.replace(microsecond=0)
+        while cursor <= end_sec:
+            bucket = by_sec.get(cursor)
+            if bucket:
+                for key in ("up", "down"):
+                    for price, size in bucket[key]["sells"]:
+                        windows[key]["sells"].append((cursor, price, size))
+                    for price, size in bucket[key]["buys"]:
+                        windows[key]["buys"].append((cursor, price, size))
+                    for price, size in bucket[key]["all"]:
+                        features.note_trade(f"{market.market_id}:{key}", size, price)
+                        last_prices[key] = price
+
+            cutoff = cursor - timedelta(seconds=window_s)
+            for key in ("up", "down"):
+                windows[key]["sells"] = [x for x in windows[key]["sells"] if x[0] >= cutoff]
+                windows[key]["buys"] = [x for x in windows[key]["buys"] if x[0] >= cutoff]
+
+            up_bids = levels_from_prints(
+                [(p, s) for _, p, s in windows["up"]["sells"]], reverse=True
+            )
+            up_asks = levels_from_prints(
+                [(p, s) for _, p, s in windows["up"]["buys"]], reverse=False
+            )
+            down_bids = levels_from_prints(
+                [(p, s) for _, p, s in windows["down"]["sells"]], reverse=True
+            )
+            down_asks = levels_from_prints(
+                [(p, s) for _, p, s in windows["down"]["buys"]], reverse=False
+            )
+
+            has_book = bool(up_bids or up_asks or down_bids or down_asks)
+            if has_book:
+                last_row = build_orderbook_row(
+                    timestamp=cursor,
+                    up_bids=up_bids,
+                    up_asks=up_asks,
+                    down_bids=down_bids,
+                    down_asks=down_asks,
+                    up_price=last_prices["up"],
+                    down_price=last_prices["down"],
+                )
+                book_rows.append(last_row)
+            elif last_row is not None:
+                fwd = dict(last_row)
+                from app.features.depth_bands import timestamp_to_ms
+
+                fwd["timestamp"] = timestamp_to_ms(cursor)
+                book_rows.append(fwd)
+
+            book_for_feat = {"bids": up_bids, "asks": up_asks}
+            if up_bids or up_asks:
+                feat = features.compute(
+                    market_id=market.market_id,
+                    book=book_for_feat,
+                    settlement_time=settlement,
+                    timestamp=cursor,
+                )
+                feature_rows.append(
+                    {
+                        "timestamp": cursor,
+                        "spread": feat.get("spread"),
+                        "imbalance": feat.get("imbalance"),
+                        "momentum": feat.get("momentum"),
+                        "volatility": feat.get("volatility"),
+                        "depth": feat.get("depth"),
+                        "whale_score": feat.get("whale_score"),
+                        "time_remaining": max(0.0, (settlement - cursor).total_seconds()),
+                    }
+                )
+            else:
+                feature_rows.append(
+                    {
+                        "timestamp": cursor,
+                        "spread": None,
+                        "imbalance": None,
+                        "momentum": None,
+                        "volatility": None,
+                        "depth": None,
+                        "whale_score": 0.0,
+                        "time_remaining": max(0.0, (settlement - cursor).total_seconds()),
+                    }
+                )
+            cursor += timedelta(seconds=1)
+
+        return trade_rows, book_rows, wallet_rows, feature_rows

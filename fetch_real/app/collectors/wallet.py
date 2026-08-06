@@ -10,7 +10,12 @@ from app.utils.time import utcnow
 
 
 class WalletCollector:
-    """Optional wallet snapshots appended into market session files when market_id is known."""
+    """
+    Periodic wallet snapshots.
+
+    Note: history + live trades already append running wallet_positions on each fill.
+    This collector can push an extra heartbeat snapshot of known wallets.
+    """
 
     def __init__(self, interval_s: float = 60.0) -> None:
         self.interval_s = interval_s
@@ -39,10 +44,15 @@ class WalletCollector:
         key = (str(wallet), str(market_id))
         size = float(trade.get("size") or 0)
         side = str(trade.get("side") or "").lower()
-        if side in {"buy", "b"}:
+        outcome = str(trade.get("outcome") or "").lower()
+        if outcome in {"yes", "up"}:
+            self._positions[key]["yes_position"] += size if side in {"buy", "b"} else -size
+        elif outcome in {"no", "down"}:
+            self._positions[key]["no_position"] += size if side in {"buy", "b"} else -size
+        elif side in {"buy", "b"}:
             self._positions[key]["yes_position"] += size
         else:
-            self._positions[key]["no_position"] += size
+            self._positions[key]["yes_position"] -= size
 
     async def snapshot_once(self) -> int:
         if not self._positions:
@@ -55,7 +65,6 @@ class WalletCollector:
                 "wallet",
                 {
                     "timestamp": ts,
-                    "market_id": market_id,
                     "wallet": wallet,
                     "yes_position": vals["yes_position"],
                     "no_position": vals["no_position"],

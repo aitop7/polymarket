@@ -18,6 +18,7 @@ BTC_SYMBOL = "btcusdt"
 # Polymarket
 POLYMARKET_GAMMA_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_URL = "https://clob.polymarket.com"
+POLYMARKET_DATA_API_URL = "https://data-api.polymarket.com"
 POLYMARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com"
 MARKET_SLUG_PREFIX = "btc-updown-5m"
 
@@ -41,3 +42,6 @@ LOG_LEVEL = "INFO"
 # Market window
 MARKET_DURATION_MINUTES = 5
 MARKET_SLOT_SECONDS = 300
+
+# Trade-implied book / depth bands
+DEPTH_BAND_WINDOW_S = 15

@@ -19,6 +19,7 @@ class PolymarketClient:
     ) -> None:
         self._owns_gamma = gamma_client is None
         self._owns_clob = clob_client is None
+        self._owns_data = True
         self.gamma = gamma_client or httpx.AsyncClient(
             base_url=settings.polymarket_gamma_url,
             timeout=30.0,
@@ -27,12 +28,18 @@ class PolymarketClient:
             base_url=settings.polymarket_clob_url,
             timeout=30.0,
         )
+        self.data = httpx.AsyncClient(
+            base_url=settings.polymarket_data_api_url,
+            timeout=30.0,
+        )
 
     async def close(self) -> None:
         if self._owns_gamma:
             await self.gamma.aclose()
         if self._owns_clob:
             await self.clob.aclose()
+        if self._owns_data:
+            await self.data.aclose()
 
     async def list_markets(
         self,
@@ -189,6 +196,57 @@ class PolymarketClient:
             len(history) if isinstance(history, list) else 0,
         )
         return history if isinstance(history, list) else []
+
+    async def get_trades(
+        self,
+        condition_id: str,
+        *,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+        limit: int = 500,
+        max_pages: int = 20,
+    ) -> list[dict[str, Any]]:
+        """
+        Historical trades from Polymarket data-api (works for closed 5m markets).
+        Filter by condition id via market=...
+        """
+        if not condition_id:
+            return []
+        out: list[dict[str, Any]] = []
+        offset = 0
+        for _ in range(max_pages):
+            resp = await self.data.get(
+                "/trades",
+                params={"market": condition_id, "limit": limit, "offset": offset},
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            if not isinstance(batch, list) or not batch:
+                break
+            for trade in batch:
+                ts = int(trade.get("timestamp") or 0)
+                if start_ts is not None and ts < start_ts:
+                    continue
+                if end_ts is not None and ts > end_ts:
+                    continue
+                out.append(trade)
+            if len(batch) < limit:
+                break
+            offset += limit
+            # data-api returns newest-first; stop if entire page is before window
+            oldest = min(int(t.get("timestamp") or 0) for t in batch)
+            if start_ts is not None and oldest < start_ts and all(
+                int(t.get("timestamp") or 0) < start_ts for t in batch
+            ):
+                break
+        logger.debug(
+            "data-api /trades condition={} points={} window={}-{}",
+            condition_id[:16],
+            len(out),
+            start_ts,
+            end_ts,
+        )
+        return out
 
     @staticmethod
     def parse_token_ids(market: dict[str, Any]) -> tuple[str | None, str | None]:

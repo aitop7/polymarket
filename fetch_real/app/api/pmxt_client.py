@@ -124,12 +124,12 @@ class PmxtClient:
                 params["until"] = until
             if outcome is not None:
                 params["outcome"] = outcome
-            kwargs: dict[str, Any] = {}
+            # PMXT expects limit inside params for historical range queries
             if limit is not None:
-                kwargs["limit"] = limit
+                params["limit"] = limit
             if params:
-                kwargs["params"] = params
-            return client.fetch_order_book(outcome_id, **kwargs)
+                return client.fetch_order_book(outcome_id, params=params)
+            return client.fetch_order_book(outcome_id, limit=limit)
 
         result = await self._run(_call)
         if isinstance(result, list):

@@ -16,13 +16,19 @@ from app.utils.time import ms_to_datetime, utcnow
 
 
 class TradeCollector:
-    """Stream trades into the per-market session buffer (one parquet per 5m market)."""
+    """Stream Polymarket fills into per-market `trades` (+ wallet_positions via store)."""
 
-    def __init__(self, features: FeatureEngine | None = None) -> None:
+    def __init__(
+        self,
+        features: FeatureEngine | None = None,
+        on_trade_price: Any | None = None,
+    ) -> None:
         self.features = features or FeatureEngine()
+        self.on_trade_price = on_trade_price
         self._running = False
         self._asset_to_market: dict[str, str] = {}
         self._asset_to_slug: dict[str, str] = {}
+        self._asset_to_outcome: dict[str, str] = {}
 
     async def run(self) -> None:
         self._running = True
@@ -45,15 +51,19 @@ class TradeCollector:
         markets.reload()
         mapping: dict[str, str] = {}
         slugs: dict[str, str] = {}
+        outcomes: dict[str, str] = {}
         for m in markets.list_active():
             if m.token_yes:
                 mapping[m.token_yes] = m.market_id
                 slugs[m.token_yes] = m.slug
+                outcomes[m.token_yes] = "Yes"
             if m.token_no:
                 mapping[m.token_no] = m.market_id
                 slugs[m.token_no] = m.slug
+                outcomes[m.token_no] = "No"
         self._asset_to_market = mapping
         self._asset_to_slug = slugs
+        self._asset_to_outcome = outcomes
 
     async def _stream(self) -> None:
         url = settings.polymarket_market_ws
@@ -117,18 +127,21 @@ class TradeCollector:
                 or f"{asset_id}-{ts_raw}-{price}-{size}"
             )
             self.features.note_trade(market_id, size, price)
+            outcome = self._asset_to_outcome.get(asset_id)
+            if self.on_trade_price is not None and outcome is not None:
+                self.on_trade_price(market_id, outcome, price)
             sessions.append(
                 market_id,
                 "trade",
                 {
                     "timestamp": ts,
-                    "market_id": market_id,
-                    "slug": self._asset_to_slug.get(asset_id),
                     "trade_id": trade_id,
                     "price": price,
                     "size": size,
                     "side": side,
                     "wallet": event.get("maker_address") or event.get("taker_address"),
-                    "asset_id": asset_id,
+                    "outcome": outcome,
+                    "tx": event.get("transaction_hash") or event.get("hash"),
+                    "asset": asset_id,
                 },
             )

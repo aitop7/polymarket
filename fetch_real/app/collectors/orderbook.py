@@ -7,6 +7,8 @@ from app.api.pmxt_client import PmxtClient
 from app.api.polymarket import PolymarketClient
 from app.config import settings
 from app.features import FeatureEngine
+from app.features.depth_bands import build_orderbook_row
+from app.features.spread import top_levels
 from app.storage.market_sessions import sessions
 from app.storage.markets import markets
 from app.utils.logger import logger
@@ -14,7 +16,7 @@ from app.utils.time import utcnow
 
 
 class OrderBookCollector:
-    """Poll order books each second in parallel across active markets."""
+    """Poll Up+Down books; write flat storage-optimized orderbook rows."""
 
     def __init__(
         self,
@@ -30,6 +32,7 @@ class OrderBookCollector:
         self._running = False
         self._flush_every = 30
         self._sem = asyncio.Semaphore(max(1, settings.download_concurrency))
+        self._last_trade_px: dict[str, dict[str, float]] = {}
 
     async def run(self) -> None:
         self._running = True
@@ -59,6 +62,10 @@ class OrderBookCollector:
         if self._owns_pmxt:
             await self.pmxt.close()
 
+    def note_trade_price(self, market_id: str, outcome: str, price: float) -> None:
+        key = "up" if str(outcome).lower() in {"yes", "up"} else "down"
+        self._last_trade_px.setdefault(market_id, {})[key] = float(price)
+
     def _finalize_expired(self) -> None:
         expired = markets.list_expired_active()
         for m in expired:
@@ -79,47 +86,58 @@ class OrderBookCollector:
                     logger.debug("PMXT orderbook miss for {}: {}", token_id[:16], exc)
             return await self.client.get_order_book(token_id)
 
+    @staticmethod
+    def _levels(book: dict[str, Any] | None, side: str) -> list[dict[str, float]]:
+        if not book:
+            return []
+        return top_levels(book, side, 50)
+
     async def _snapshot_market(self, market: Any, ts: Any) -> bool:
-        token_id = market.token_yes
-        if not token_id:
+        token_yes = market.token_yes
+        token_no = market.token_no
+        if not token_yes and not token_no:
             return False
+
+        up_book = down_book = None
         try:
-            book = await self._fetch_book(token_id)
+            if token_yes:
+                up_book = await self._fetch_book(token_yes)
+            if token_no:
+                try:
+                    down_book = await self._fetch_book(token_no)
+                except Exception as exc:
+                    logger.debug("Down book miss {}: {}", market.market_id, exc)
         except Exception as exc:
             logger.warning("Missed orderbook snapshot for {}: {}", market.market_id, exc)
             return False
 
+        if not up_book and not down_book:
+            return False
+
+        px = self._last_trade_px.get(market.market_id) or {}
+        row = build_orderbook_row(
+            timestamp=ts,
+            up_bids=self._levels(up_book, "bids"),
+            up_asks=self._levels(up_book, "asks"),
+            down_bids=self._levels(down_book, "bids"),
+            down_asks=self._levels(down_book, "asks"),
+            up_price=px.get("up"),
+            down_price=px.get("down"),
+        )
+        primary = up_book or down_book or {"bids": [], "asks": []}
         feat = self.features.compute(
             market_id=market.market_id,
-            book=book,
+            book=primary,
             settlement_time=market.settlement_time or market.end_time,
             timestamp=ts,
         )
-        sessions.append(
-            market.market_id,
-            "orderbook",
-            {
-                "timestamp": ts,
-                "market_id": market.market_id,
-                "slug": market.slug,
-                "best_bid": feat.get("best_bid"),
-                "best_ask": feat.get("best_ask"),
-                "spread": feat.get("spread"),
-                "book_json": {
-                    "bids": (book.get("bids") or [])[:20],
-                    "asks": (book.get("asks") or [])[:20],
-                    "asset_id": token_id,
-                    "source": "pmxt" if settings.pmxt_enabled else "clob",
-                },
-            },
-        )
+        sessions.set_market_meta(market.as_dict())
+        sessions.append(market.market_id, "orderbook", row)
         sessions.append(
             market.market_id,
             "feature",
             {
                 "timestamp": feat["timestamp"],
-                "market_id": feat["market_id"],
-                "slug": market.slug,
                 "spread": feat["spread"],
                 "imbalance": feat["imbalance"],
                 "momentum": feat["momentum"],
@@ -127,7 +145,6 @@ class OrderBookCollector:
                 "depth": feat["depth"],
                 "whale_score": feat["whale_score"],
                 "time_remaining": feat["time_remaining"],
-                "extras": feat["extras"],
             },
         )
         return True

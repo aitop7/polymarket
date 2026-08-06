@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     polymarket_gamma_url: str = const.POLYMARKET_GAMMA_URL
     polymarket_clob_url: str = const.POLYMARKET_CLOB_URL
+    polymarket_data_api_url: str = const.POLYMARKET_DATA_API_URL
     polymarket_ws_url: str = const.POLYMARKET_WS_URL
 
     pmxt_api_key: str = ""

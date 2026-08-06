@@ -25,7 +25,10 @@ class CollectorScheduler:
         self.discovery = MarketDiscovery()
         self.metadata = MetadataCollector()
         self.orderbook = OrderBookCollector(features=self.features)
-        self.trades = TradeCollector(features=self.features)
+        self.trades = TradeCollector(
+            features=self.features,
+            on_trade_price=self.orderbook.note_trade_price,
+        )
         self.wallet = WalletCollector()
         self.orders = OrderCollector()
         self._tasks: list[asyncio.Task[Any]] = []
