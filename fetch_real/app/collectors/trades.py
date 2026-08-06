@@ -8,7 +8,6 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from app.config import settings
-from app.features import FeatureEngine
 from app.features.trade_schema import build_trade_row
 from app.storage.market_sessions import sessions
 from app.storage.markets import markets
@@ -19,12 +18,7 @@ from app.utils.time import ms_to_datetime, utcnow
 class TradeCollector:
     """Stream Polymarket fills into per-market `trades.parquet`."""
 
-    def __init__(
-        self,
-        features: FeatureEngine | None = None,
-        on_trade_price: Any | None = None,
-    ) -> None:
-        self.features = features or FeatureEngine()
+    def __init__(self, on_trade_price: Any | None = None) -> None:
         self.on_trade_price = on_trade_price
         self._running = False
         self._asset_to_market: dict[str, str] = {}
@@ -123,7 +117,6 @@ class TradeCollector:
             size = float(event.get("size") or 0)
             side = str(event.get("side") or "buy").lower()
             token = self._asset_to_token.get(asset_id)
-            self.features.note_trade(market_id, size, price)
             if self.on_trade_price is not None and token is not None:
                 self.on_trade_price(market_id, "up" if token else "down", price)
             row = build_trade_row(

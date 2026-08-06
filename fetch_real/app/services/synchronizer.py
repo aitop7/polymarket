@@ -10,7 +10,6 @@ from app.api.binance import BinanceClient
 from app.api.pmxt_client import PmxtClient
 from app.api.polymarket import PolymarketClient
 from app.config import settings
-from app.features import FeatureEngine
 from app.storage import store
 from app.storage.market_sessions import sessions
 from app.storage.markets import markets
@@ -177,7 +176,7 @@ class HistorySynchronizer:
             self._btc_price_at(end),
         )
 
-        trade_rows, book_rows, feature_rows = self._build_pm_tables(
+        trade_rows, book_rows = self._build_pm_tables(
             trades_raw,
             market=market,
             start=start,
@@ -186,13 +185,19 @@ class HistorySynchronizer:
         )
 
         meta = {
-            **market.as_dict(),
+            "market_id": market.market_id,
             "slug": slug,
             "start_time": start,
             "end_time": end,
-            "settlement_time": settlement,
-            "opening_btc_price": open_px,
-            "closing_btc_price": close_px,
+            "resolved_at": settlement,
+            "btc_open_price": open_px,
+            "btc_close_price": close_px,
+            "winner": getattr(market, "winner", None),
+            # keep tokens in memory for collectors; not written to meta.json
+            "condition_id": getattr(market, "condition_id", None),
+            "token_yes": getattr(market, "token_yes", None),
+            "token_no": getattr(market, "token_no", None),
+            "status": getattr(market, "status", None),
         }
         paths = sessions.write_market_bundle(
             market.market_id,
@@ -202,7 +207,6 @@ class HistorySynchronizer:
                 "btc": btc_rows,
                 "trades": trade_rows,
                 "orderbooks": book_rows,
-                "features": feature_rows,
                 "orders": [],
             },
         )
@@ -289,7 +293,7 @@ class HistorySynchronizer:
         start: datetime,
         end: datetime,
         settlement: datetime,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         from app.config import const
         from app.features.depth_bands import build_orderbook_row, levels_from_prints
         from app.features.trade_schema import build_trade_row
@@ -360,8 +364,6 @@ class HistorySynchronizer:
                 elif side == "sell":
                     by_sec[sec][key]["sells"].append((price, size))
 
-        features = FeatureEngine()
-        feature_rows: list[dict[str, Any]] = []
         book_rows: list[dict[str, Any]] = []
 
         window_s = const.DEPTH_BAND_WINDOW_S
@@ -383,7 +385,6 @@ class HistorySynchronizer:
                     for price, size in bucket[key]["buys"]:
                         windows[key]["buys"].append((cursor, price, size))
                     for price, size in bucket[key]["all"]:
-                        features.note_trade(f"{market.market_id}:{key}", size, price)
                         last_prices[key] = price
 
             cutoff = cursor - timedelta(seconds=window_s)
@@ -423,39 +424,6 @@ class HistorySynchronizer:
                 fwd["timestamp"] = timestamp_to_ms(cursor)
                 book_rows.append(fwd)
 
-            book_for_feat = {"bids": up_bids, "asks": up_asks}
-            if up_bids or up_asks:
-                feat = features.compute(
-                    market_id=market.market_id,
-                    book=book_for_feat,
-                    settlement_time=settlement,
-                    timestamp=cursor,
-                )
-                feature_rows.append(
-                    {
-                        "timestamp": cursor,
-                        "spread": feat.get("spread"),
-                        "imbalance": feat.get("imbalance"),
-                        "momentum": feat.get("momentum"),
-                        "volatility": feat.get("volatility"),
-                        "depth": feat.get("depth"),
-                        "whale_score": feat.get("whale_score"),
-                        "time_remaining": max(0.0, (settlement - cursor).total_seconds()),
-                    }
-                )
-            else:
-                feature_rows.append(
-                    {
-                        "timestamp": cursor,
-                        "spread": None,
-                        "imbalance": None,
-                        "momentum": None,
-                        "volatility": None,
-                        "depth": None,
-                        "whale_score": 0.0,
-                        "time_remaining": max(0.0, (settlement - cursor).total_seconds()),
-                    }
-                )
             cursor += timedelta(seconds=1)
 
-        return trade_rows, book_rows, feature_rows
+        return trade_rows, book_rows

@@ -11,7 +11,6 @@ from app.collectors import (
     OrderCollector,
     TradeCollector,
 )
-from app.features import FeatureEngine
 from app.utils.logger import logger
 
 
@@ -19,15 +18,11 @@ class CollectorScheduler:
     """Run all realtime collectors on a shared asyncio event loop."""
 
     def __init__(self) -> None:
-        self.features = FeatureEngine()
         self.btc = BtcCollector()
         self.discovery = MarketDiscovery()
         self.metadata = MetadataCollector()
-        self.orderbook = OrderBookCollector(features=self.features)
-        self.trades = TradeCollector(
-            features=self.features,
-            on_trade_price=self.orderbook.note_trade_price,
-        )
+        self.orderbook = OrderBookCollector()
+        self.trades = TradeCollector(on_trade_price=self.orderbook.note_trade_price)
         self.orders = OrderCollector()
         self._tasks: list[asyncio.Task[Any]] = []
         self._running = False

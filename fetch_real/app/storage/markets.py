@@ -21,7 +21,7 @@ class MarketRecord:
     settlement_time: datetime | None = None
     opening_btc_price: float | None = None
     closing_btc_price: float | None = None
-    winner: str | None = None
+    winner: str | bool | None = None
     status: str = "active"
     raw_json: dict[str, Any] | None = None
 
@@ -32,6 +32,11 @@ class MarketRecord:
                 return None
             if isinstance(value, datetime):
                 return value
+            if isinstance(value, (int, float)):
+                from app.utils.time import ms_to_datetime
+
+                v = int(value)
+                return ms_to_datetime(v if v > 10_000_000_000 else v * 1000)
             text = str(value)
             if text in {"", "None", "NaT", "nan"}:
                 return None
@@ -49,6 +54,11 @@ class MarketRecord:
             except json.JSONDecodeError:
                 raw = {"raw": raw}
 
+        winner = row.get("winner")
+        open_px = row.get("btc_open_price", row.get("opening_btc_price"))
+        close_px = row.get("btc_close_price", row.get("closing_btc_price"))
+        resolved = row.get("resolved_at", row.get("settlement_time"))
+
         return cls(
             market_id=str(row.get("market_id") or ""),
             slug=str(row.get("slug") or ""),
@@ -57,10 +67,10 @@ class MarketRecord:
             token_no=_optional_str(row.get("token_no")),
             start_time=_dt(row.get("start_time")),
             end_time=_dt(row.get("end_time")),
-            settlement_time=_dt(row.get("settlement_time")),
-            opening_btc_price=_optional_float(row.get("opening_btc_price")),
-            closing_btc_price=_optional_float(row.get("closing_btc_price")),
-            winner=_optional_str(row.get("winner")),
+            settlement_time=_dt(resolved),
+            opening_btc_price=_optional_float(open_px),
+            closing_btc_price=_optional_float(close_px),
+            winner=winner if isinstance(winner, bool) else _optional_str(winner),
             status=str(row.get("status") or "active"),
             raw_json=raw if isinstance(raw, dict) else None,
         )
@@ -75,8 +85,11 @@ class MarketRecord:
             "start_time": self.start_time,
             "end_time": self.end_time,
             "settlement_time": self.settlement_time,
+            "resolved_at": self.settlement_time,
             "opening_btc_price": self.opening_btc_price,
             "closing_btc_price": self.closing_btc_price,
+            "btc_open_price": self.opening_btc_price,
+            "btc_close_price": self.closing_btc_price,
             "winner": self.winner,
             "status": self.status,
             "raw_json": self.raw_json,

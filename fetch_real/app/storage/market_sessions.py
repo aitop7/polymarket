@@ -22,16 +22,6 @@ TABLE_COLUMNS: dict[str, list[str]] = {
     "orderbooks": list(ORDERBOOK_COLUMNS),
     "trades": list(TRADE_COLUMNS),
     "orders": ["timestamp", "order_id", "wallet", "price", "quantity", "event_type"],
-    "features": [
-        "timestamp",
-        "spread",
-        "imbalance",
-        "momentum",
-        "volatility",
-        "depth",
-        "whale_score",
-        "time_remaining",
-    ],
 }
 
 # map legacy / collector record_type -> table name
@@ -43,7 +33,6 @@ RECORD_TO_TABLE = {
     "orderbook": "orderbooks",
     "trade": "trades",
     "order": "orders",
-    "feature": "features",
 }
 
 
@@ -83,7 +72,6 @@ class MarketSessionStore:
         orderbooks.parquet
         trades.parquet
         orders.parquet
-        features.parquet
     """
 
     def __init__(self, data_dir: Path | None = None, compression: str | None = None) -> None:
@@ -141,6 +129,8 @@ class MarketSessionStore:
             self._meta[market_id] = {**prev, **market, "market_id": market_id}
 
     def write_meta(self, market_id: str, meta: dict[str, Any] | None = None, slug: str | None = None) -> Path:
+        from app.features.meta_schema import build_meta_document
+
         with self._lock:
             payload = dict(meta or self._meta.get(market_id) or {})
             if slug:
@@ -148,16 +138,8 @@ class MarketSessionStore:
             self._meta[market_id] = {**self._meta.get(market_id, {}), **payload, "market_id": market_id}
             slug_final = payload.get("slug") or self._meta[market_id].get("slug") or market_id
         path = self.market_dir(market_id, slug=str(slug_final)) / "meta.json"
-
-        def _ser(obj: Any) -> Any:
-            if isinstance(obj, datetime):
-                return obj.isoformat()
-            return obj
-
-        clean = {k: _ser(v) for k, v in payload.items() if k != "raw_json"}
-        if "raw_json" in payload and isinstance(payload["raw_json"], dict):
-            clean["raw_keys"] = sorted(payload["raw_json"].keys())
-        path.write_text(json.dumps(clean, indent=2, default=str), encoding="utf-8")
+        doc = build_meta_document({**payload, "market_id": market_id})
+        path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         return path
 
     def append(self, market_id: str, record_type: str, row: dict[str, Any]) -> None:
@@ -311,7 +293,7 @@ class MarketSessionStore:
                     subset = list(TRADE_COLUMNS)
                 elif table == "orders" and "order_id" in combined.columns:
                     subset = ["order_id", "event_type"]
-                elif table in {"btc", "orderbooks", "features"}:
+                elif table in {"btc", "orderbooks"}:
                     subset = ["timestamp"]
                 else:
                     subset = list(combined.columns)

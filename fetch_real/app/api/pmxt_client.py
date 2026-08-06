@@ -255,6 +255,12 @@ class PmxtClient:
         resolution = getattr(market, "resolution_date", None)
         slug = getattr(market, "slug", None) or market_id
 
+        winner = None
+        if isinstance(meta, dict):
+            from app.api.polymarket import PolymarketClient
+
+            winner = PolymarketClient.parse_winner(meta)
+
         return {
             "market_id": market_id,
             "slug": str(slug),
@@ -266,7 +272,7 @@ class PmxtClient:
             "settlement_time": resolution if isinstance(resolution, datetime) else None,
             "opening_btc_price": None,
             "closing_btc_price": None,
-            "winner": None,
+            "winner": winner,
             "status": status,
             "raw_json": {
                 "title": getattr(market, "title", None),

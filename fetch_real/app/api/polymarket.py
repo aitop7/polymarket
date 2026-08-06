@@ -265,6 +265,49 @@ class PolymarketClient:
         return yes, no
 
     @staticmethod
+    def _json_list(value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return [x.strip() for x in value.split(",") if x.strip()]
+            return parsed if isinstance(parsed, list) else []
+        return []
+
+    @classmethod
+    def parse_winner(cls, market: dict[str, Any]) -> str | None:
+        """
+        Resolve UP/DOWN winner.
+
+        Gamma often omits winningOutcome; resolved markets instead set
+        outcomes=["Up","Down"] and outcomePrices=["1","0"] (or reverse).
+        """
+        for key in ("winningOutcome", "winner", "resolvedOutcome"):
+            raw = market.get(key)
+            if raw is not None and str(raw).strip() not in {"", "None", "null"}:
+                return str(raw)
+
+        outcomes = [str(x) for x in cls._json_list(market.get("outcomes"))]
+        prices_raw = cls._json_list(market.get("outcomePrices") or market.get("outcome_prices"))
+        if not outcomes or not prices_raw:
+            return None
+        try:
+            prices = [float(p) for p in prices_raw]
+        except (TypeError, ValueError):
+            return None
+        # unresolved books stay near 0.5/0.5; resolved snap to ~1/0
+        if max(prices) < 0.99:
+            return None
+        idx = prices.index(max(prices))
+        if idx >= len(outcomes):
+            return None
+        return outcomes[idx]
+
+    @staticmethod
     def parse_datetime(value: Any) -> datetime | None:
         if value is None:
             return None
@@ -295,9 +338,7 @@ class PolymarketClient:
         else:
             status = "inactive"
 
-        winner = None
-        if market.get("umaResolutionStatus") == "resolved" or closed:
-            winner = market.get("winningOutcome") or market.get("winner")
+        winner = self.parse_winner(market)
 
         return {
             "market_id": market_id,
@@ -312,7 +353,7 @@ class PolymarketClient:
             ),
             "opening_btc_price": None,
             "closing_btc_price": None,
-            "winner": str(winner) if winner else None,
+            "winner": winner,
             "status": status,
             "raw_json": market,
         }

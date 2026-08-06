@@ -12,6 +12,7 @@ from app.features.depth_bands import (
     timestamp_to_ms,
 )
 from app.features.imbalance import order_imbalance
+from app.features.meta_schema import META_KEYS, build_meta_document, encode_winner
 from app.features.momentum import MomentumTracker
 from app.features.spread import compute_spread, mid_price, top_levels
 from app.features.trade_schema import TRADE_COLUMNS, build_trade_row
@@ -97,4 +98,7 @@ __all__ = [
     "timestamp_to_ms",
     "TRADE_COLUMNS",
     "build_trade_row",
+    "META_KEYS",
+    "build_meta_document",
+    "encode_winner",
 ]

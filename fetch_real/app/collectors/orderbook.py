@@ -6,7 +6,6 @@ from typing import Any
 from app.api.pmxt_client import PmxtClient
 from app.api.polymarket import PolymarketClient
 from app.config import settings
-from app.features import FeatureEngine
 from app.features.depth_bands import build_orderbook_row
 from app.features.spread import top_levels
 from app.storage.market_sessions import sessions
@@ -22,11 +21,9 @@ class OrderBookCollector:
         self,
         client: PolymarketClient | None = None,
         pmxt: PmxtClient | None = None,
-        features: FeatureEngine | None = None,
     ) -> None:
         self.client = client or PolymarketClient()
         self.pmxt = pmxt or PmxtClient()
-        self.features = features or FeatureEngine()
         self._owns_client = client is None
         self._owns_pmxt = pmxt is None
         self._running = False
@@ -124,29 +121,8 @@ class OrderBookCollector:
             up_price=px.get("up"),
             down_price=px.get("down"),
         )
-        primary = up_book or down_book or {"bids": [], "asks": []}
-        feat = self.features.compute(
-            market_id=market.market_id,
-            book=primary,
-            settlement_time=market.settlement_time or market.end_time,
-            timestamp=ts,
-        )
         sessions.set_market_meta(market.as_dict())
         sessions.append(market.market_id, "orderbook", row)
-        sessions.append(
-            market.market_id,
-            "feature",
-            {
-                "timestamp": feat["timestamp"],
-                "spread": feat["spread"],
-                "imbalance": feat["imbalance"],
-                "momentum": feat["momentum"],
-                "volatility": feat["volatility"],
-                "depth": feat["depth"],
-                "whale_score": feat["whale_score"],
-                "time_remaining": feat["time_remaining"],
-            },
-        )
         return True
 
     async def snapshot_once(self) -> int:

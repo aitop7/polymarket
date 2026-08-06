@@ -61,7 +61,8 @@ class MetadataCollector:
                         limit=1,
                     )
                     if klines:
-                        row["opening_btc_price"] = float(klines[0][1])
+                        row["btc_open_price"] = float(klines[0][1])
+                        row["opening_btc_price"] = row["btc_open_price"]
                 except Exception as exc:
                     logger.warning("BTC open price fetch failed for {}: {}", market.market_id, exc)
 
@@ -73,17 +74,17 @@ class MetadataCollector:
                         limit=1,
                     )
                     if klines:
-                        row["closing_btc_price"] = float(klines[0][4])
+                        row["btc_close_price"] = float(klines[0][4])
+                        row["closing_btc_price"] = row["btc_close_price"]
                 except Exception as exc:
                     logger.warning("BTC close price fetch failed for {}: {}", market.market_id, exc)
 
+            if row.get("settlement_time") is not None:
+                row["resolved_at"] = row["settlement_time"]
+
             markets.upsert_one(row)
             sessions.set_market_meta(row)
-            sessions.append(
-                market.market_id,
-                "meta",
-                {**row, "timestamp": utcnow(), "slug": market.slug},
-            )
+            sessions.write_meta(market.market_id, meta=row, slug=market.slug)
             updated += 1
 
         logger.info("Metadata refreshed {} markets", updated)
