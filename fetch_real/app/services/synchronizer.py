@@ -177,7 +177,7 @@ class HistorySynchronizer:
             self._btc_price_at(end),
         )
 
-        trade_rows, book_rows, wallet_rows, feature_rows = self._build_pm_tables(
+        trade_rows, book_rows, feature_rows = self._build_pm_tables(
             trades_raw,
             market=market,
             start=start,
@@ -202,7 +202,6 @@ class HistorySynchronizer:
                 "btc": btc_rows,
                 "trades": trade_rows,
                 "orderbooks": book_rows,
-                "wallet_positions": wallet_rows,
                 "features": feature_rows,
                 "orders": [],
             },
@@ -290,7 +289,7 @@ class HistorySynchronizer:
         start: datetime,
         end: datetime,
         settlement: datetime,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         from app.config import const
         from app.features.depth_bands import build_orderbook_row, levels_from_prints
         from app.features.trade_schema import build_trade_row
@@ -303,8 +302,6 @@ class HistorySynchronizer:
                 "down": {"buys": [], "sells": [], "all": []},
             }
         )
-        wallet_state: dict[str, dict[str, float]] = {}
-        wallet_rows: list[dict[str, Any]] = []
         token_yes = getattr(market, "token_yes", None)
         token_no = getattr(market, "token_no", None)
 
@@ -362,27 +359,6 @@ class HistorySynchronizer:
                     by_sec[sec][key]["buys"].append((price, size))
                 elif side == "sell":
                     by_sec[sec][key]["sells"].append((price, size))
-
-            if wallet:
-                state = wallet_state.setdefault(
-                    str(wallet), {"yes_position": 0.0, "no_position": 0.0, "pnl": 0.0}
-                )
-                is_up = bool(row["token"])
-                is_buy = bool(row["side"])
-                delta = float(row["shares"]) if is_buy else -float(row["shares"])
-                if is_up:
-                    state["yes_position"] += delta
-                else:
-                    state["no_position"] += delta
-                wallet_rows.append(
-                    {
-                        "timestamp": ts,
-                        "wallet": str(wallet),
-                        "yes_position": state["yes_position"],
-                        "no_position": state["no_position"],
-                        "pnl": state["pnl"],
-                    }
-                )
 
         features = FeatureEngine()
         feature_rows: list[dict[str, Any]] = []
@@ -482,4 +458,4 @@ class HistorySynchronizer:
                 )
             cursor += timedelta(seconds=1)
 
-        return trade_rows, book_rows, wallet_rows, feature_rows
+        return trade_rows, book_rows, feature_rows

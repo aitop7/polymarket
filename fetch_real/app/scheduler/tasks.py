@@ -10,7 +10,6 @@ from app.collectors import (
     OrderBookCollector,
     OrderCollector,
     TradeCollector,
-    WalletCollector,
 )
 from app.features import FeatureEngine
 from app.utils.logger import logger
@@ -29,7 +28,6 @@ class CollectorScheduler:
             features=self.features,
             on_trade_price=self.orderbook.note_trade_price,
         )
-        self.wallet = WalletCollector()
         self.orders = OrderCollector()
         self._tasks: list[asyncio.Task[Any]] = []
         self._running = False
@@ -48,7 +46,6 @@ class CollectorScheduler:
             ("metadata", self.metadata.run()),
             ("orderbook", self.orderbook.run()),
             ("trades", self.trades.run()),
-            ("wallet", self.wallet.run()),
             ("orders", self.orders.run()),
         ]
         for name, coro in collectors:
@@ -72,7 +69,6 @@ class CollectorScheduler:
         self.metadata.stop()
         self.orderbook.stop()
         self.trades.stop()
-        self.wallet.stop()
         self.orders.stop()
         for task in self._tasks:
             task.cancel()

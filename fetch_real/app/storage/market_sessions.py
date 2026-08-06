@@ -22,7 +22,6 @@ TABLE_COLUMNS: dict[str, list[str]] = {
     "orderbooks": list(ORDERBOOK_COLUMNS),
     "trades": list(TRADE_COLUMNS),
     "orders": ["timestamp", "order_id", "wallet", "price", "quantity", "event_type"],
-    "wallet_positions": ["timestamp", "wallet", "yes_position", "no_position", "pnl"],
     "features": [
         "timestamp",
         "spread",
@@ -44,7 +43,6 @@ RECORD_TO_TABLE = {
     "orderbook": "orderbooks",
     "trade": "trades",
     "order": "orders",
-    "wallet": "wallet_positions",
     "feature": "features",
 }
 
@@ -85,7 +83,6 @@ class MarketSessionStore:
         orderbooks.parquet
         trades.parquet
         orders.parquet
-        wallet_positions.parquet
         features.parquet
     """
 
@@ -98,7 +95,6 @@ class MarketSessionStore:
         self._buffers: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
             lambda: {name: [] for name in TABLE_COLUMNS}
         )
-        self._wallet_state: dict[str, dict[str, dict[str, float]]] = defaultdict(dict)
         self._lock = threading.Lock()
         self._market_locks: dict[str, threading.Lock] = {}
         self._load_done()
@@ -175,8 +171,6 @@ class MarketSessionStore:
             return
         with self._lock:
             self._buffers[market_id][table].append(cleaned)
-            if table == "trades":
-                self._apply_trade_wallet(market_id, cleaned)
 
     def append_btc_tick_to_active(self, tick: dict[str, Any], active_markets: list[Any]) -> None:
         ts = tick.get("timestamp")
@@ -200,40 +194,6 @@ class MarketSessionStore:
         self.append_btc_tick_to_active(
             {"timestamp": bar.get("timestamp"), "price": bar.get("close") or bar.get("price")},
             active_markets,
-        )
-
-    def _apply_trade_wallet(self, market_id: str, trade: dict[str, Any]) -> None:
-        wallet = trade.get("wallet")
-        if not wallet:
-            return
-        shares = float(trade.get("shares") if trade.get("shares") is not None else trade.get("size") or 0)
-        is_buy = trade.get("side")
-        if isinstance(is_buy, str):
-            is_buy = str(is_buy).lower() in {"buy", "b", "1", "true"}
-        else:
-            is_buy = bool(is_buy)
-        is_up = trade.get("token")
-        if is_up is None:
-            oc = str(trade.get("outcome") or "").lower()
-            is_up = oc in {"yes", "up"} if oc else True
-        else:
-            is_up = bool(is_up)
-        state = self._wallet_state[market_id].setdefault(
-            str(wallet), {"yes_position": 0.0, "no_position": 0.0, "pnl": 0.0}
-        )
-        delta = shares if is_buy else -shares
-        if is_up:
-            state["yes_position"] += delta
-        else:
-            state["no_position"] += delta
-        self._buffers[market_id]["wallet_positions"].append(
-            {
-                "timestamp": trade.get("timestamp") or utcnow(),
-                "wallet": str(wallet),
-                "yes_position": state["yes_position"],
-                "no_position": state["no_position"],
-                "pnl": state["pnl"],
-            }
         )
 
     def _normalize_row(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
@@ -338,21 +298,17 @@ class MarketSessionStore:
                 elif table == "trades":
                     from app.features.trade_schema import TRADE_COLUMNS as _TC
 
-                    # rebuild legacy rows if needed via normalize path already on df;
-                    # keep only current schema columns from old file when compatible
                     keep = [c for c in _TC if c in old.columns]
                     if keep == list(_TC):
                         old = old[keep]
                     else:
-                        old = df.iloc[0:0]  # schema changed; replace rather than merge
+                        old = df.iloc[0:0]
                 combined = pd.concat([old, df], ignore_index=True)
             else:
                 combined = df
             if "timestamp" in combined.columns:
                 if table == "trades":
                     subset = list(TRADE_COLUMNS)
-                elif table == "wallet_positions" and "wallet" in combined.columns:
-                    subset = ["timestamp", "wallet"]
                 elif table == "orders" and "order_id" in combined.columns:
                     subset = ["order_id", "event_type"]
                 elif table in {"btc", "orderbooks", "features"}:
@@ -360,10 +316,7 @@ class MarketSessionStore:
                 else:
                     subset = list(combined.columns)
                 combined = combined.drop_duplicates(subset=subset, keep="last")
-                sort_cols = ["timestamp"] + (["wallet"] if table == "wallet_positions" else [])
-                combined = combined.sort_values(
-                    [c for c in sort_cols if c in combined.columns]
-                ).reset_index(drop=True)
+                combined = combined.sort_values(["timestamp"]).reset_index(drop=True)
             combined.to_parquet(path, index=False, compression=self.compression)
         return path
 
@@ -391,7 +344,6 @@ class MarketSessionStore:
         with self._lock:
             self._done_markets.add(market_id)
             self._buffers.pop(market_id, None)
-            self._wallet_state.pop(market_id, None)
             self._save_done()
         return paths
 
