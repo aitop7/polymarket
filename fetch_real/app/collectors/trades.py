@@ -9,6 +9,7 @@ from websockets.exceptions import ConnectionClosed
 
 from app.config import settings
 from app.features import FeatureEngine
+from app.features.trade_schema import build_trade_row
 from app.storage.market_sessions import sessions
 from app.storage.markets import markets
 from app.utils.logger import logger
@@ -16,7 +17,7 @@ from app.utils.time import ms_to_datetime, utcnow
 
 
 class TradeCollector:
-    """Stream Polymarket fills into per-market `trades` (+ wallet_positions via store)."""
+    """Stream Polymarket fills into per-market `trades.parquet`."""
 
     def __init__(
         self,
@@ -28,7 +29,7 @@ class TradeCollector:
         self._running = False
         self._asset_to_market: dict[str, str] = {}
         self._asset_to_slug: dict[str, str] = {}
-        self._asset_to_outcome: dict[str, str] = {}
+        self._asset_to_token: dict[str, bool] = {}
 
     async def run(self) -> None:
         self._running = True
@@ -51,19 +52,19 @@ class TradeCollector:
         markets.reload()
         mapping: dict[str, str] = {}
         slugs: dict[str, str] = {}
-        outcomes: dict[str, str] = {}
+        tokens: dict[str, bool] = {}
         for m in markets.list_active():
             if m.token_yes:
                 mapping[m.token_yes] = m.market_id
                 slugs[m.token_yes] = m.slug
-                outcomes[m.token_yes] = "Yes"
+                tokens[m.token_yes] = True  # UP
             if m.token_no:
                 mapping[m.token_no] = m.market_id
                 slugs[m.token_no] = m.slug
-                outcomes[m.token_no] = "No"
+                tokens[m.token_no] = False  # DOWN
         self._asset_to_market = mapping
         self._asset_to_slug = slugs
-        self._asset_to_outcome = outcomes
+        self._asset_to_token = tokens
 
     async def _stream(self) -> None:
         url = settings.polymarket_market_ws
@@ -121,27 +122,18 @@ class TradeCollector:
             price = float(event.get("price") or 0)
             size = float(event.get("size") or 0)
             side = str(event.get("side") or "buy").lower()
-            trade_id = str(
-                event.get("transaction_hash")
-                or event.get("hash")
-                or f"{asset_id}-{ts_raw}-{price}-{size}"
-            )
+            token = self._asset_to_token.get(asset_id)
             self.features.note_trade(market_id, size, price)
-            outcome = self._asset_to_outcome.get(asset_id)
-            if self.on_trade_price is not None and outcome is not None:
-                self.on_trade_price(market_id, outcome, price)
-            sessions.append(
-                market_id,
-                "trade",
-                {
-                    "timestamp": ts,
-                    "trade_id": trade_id,
-                    "price": price,
-                    "size": size,
-                    "side": side,
-                    "wallet": event.get("maker_address") or event.get("taker_address"),
-                    "outcome": outcome,
-                    "tx": event.get("transaction_hash") or event.get("hash"),
-                    "asset": asset_id,
-                },
+            if self.on_trade_price is not None and token is not None:
+                self.on_trade_price(market_id, "up" if token else "down", price)
+            row = build_trade_row(
+                timestamp=ts,
+                wallet=event.get("maker_address") or event.get("taker_address"),
+                price=price,
+                size=size,
+                side=side,
+                token=token,
             )
+            if row is None:
+                continue
+            sessions.append(market_id, "trade", row)

@@ -42,17 +42,23 @@ class WalletCollector:
         if not wallet or not market_id:
             return
         key = (str(wallet), str(market_id))
-        size = float(trade.get("size") or 0)
-        side = str(trade.get("side") or "").lower()
-        outcome = str(trade.get("outcome") or "").lower()
-        if outcome in {"yes", "up"}:
-            self._positions[key]["yes_position"] += size if side in {"buy", "b"} else -size
-        elif outcome in {"no", "down"}:
-            self._positions[key]["no_position"] += size if side in {"buy", "b"} else -size
-        elif side in {"buy", "b"}:
-            self._positions[key]["yes_position"] += size
+        shares = float(trade.get("shares") if trade.get("shares") is not None else trade.get("size") or 0)
+        is_buy = trade.get("side")
+        if isinstance(is_buy, str):
+            is_buy = str(is_buy).lower() in {"buy", "b", "1", "true"}
         else:
-            self._positions[key]["yes_position"] -= size
+            is_buy = bool(is_buy)
+        is_up = trade.get("token")
+        if is_up is None:
+            oc = str(trade.get("outcome") or "").lower()
+            is_up = oc in {"yes", "up"} if oc else True
+        else:
+            is_up = bool(is_up)
+        delta = shares if is_buy else -shares
+        if is_up:
+            self._positions[key]["yes_position"] += delta
+        else:
+            self._positions[key]["no_position"] += delta
 
     async def snapshot_once(self) -> int:
         if not self._positions:

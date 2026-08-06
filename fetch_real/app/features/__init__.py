@@ -14,6 +14,7 @@ from app.features.depth_bands import (
 from app.features.imbalance import order_imbalance
 from app.features.momentum import MomentumTracker
 from app.features.spread import compute_spread, mid_price, top_levels
+from app.features.trade_schema import TRADE_COLUMNS, build_trade_row
 from app.features.volatility import VolatilityTracker
 from app.features.whale import whale_score
 from app.utils.time import utcnow
@@ -94,4 +95,6 @@ __all__ = [
     "levels_from_prints",
     "ref_price_from_book",
     "timestamp_to_ms",
+    "TRADE_COLUMNS",
+    "build_trade_row",
 ]

@@ -170,8 +170,8 @@ class HistorySynchronizer:
         settlement = market.settlement_time or market.end_time or end
         slug = str(market.slug or market.market_id)
 
-        btc_ticks, trades_raw, open_px, close_px = await asyncio.gather(
-            self._btc_ticks(start, end),
+        btc_rows, trades_raw, open_px, close_px = await asyncio.gather(
+            self._btc_series(start, end),
             self._fetch_trades(market, start, end),
             self._btc_price_at(start),
             self._btc_price_at(end),
@@ -199,7 +199,7 @@ class HistorySynchronizer:
             slug,
             meta=meta,
             tables={
-                "btc_ticks": btc_ticks,
+                "btc": btc_rows,
                 "trades": trade_rows,
                 "orderbooks": book_rows,
                 "wallet_positions": wallet_rows,
@@ -234,15 +234,38 @@ class HistorySynchronizer:
             logger.debug("BTC price at {} failed: {}", when, exc)
         return None
 
-    async def _btc_ticks(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    async def _btc_series(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        """1s last-traded BTC price series for [start, end] (Unix ms timestamps)."""
+        from app.utils.time import datetime_to_ms
+
         try:
             raw = await self.binance.iter_agg_trades(start_time=start, end_time=end)
         except Exception as exc:
-            logger.debug("BTC ticks failed: {}", exc)
+            logger.debug("BTC series failed: {}", exc)
             return []
-        rows = []
+
+        by_sec: dict[int, float] = {}
         for t in raw:
-            rows.append(BinanceClient.normalize_agg_trade(t))
+            try:
+                ts_ms = (int(t["T"]) // 1000) * 1000
+                by_sec[ts_ms] = float(t["p"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        start_ms = (datetime_to_ms(start) // 1000) * 1000
+        end_ms = (datetime_to_ms(end) // 1000) * 1000
+        if end_ms < start_ms:
+            return []
+
+        rows: list[dict[str, Any]] = []
+        last: float | None = None
+        cursor = start_ms
+        while cursor <= end_ms:
+            if cursor in by_sec:
+                last = by_sec[cursor]
+            if last is not None:
+                rows.append({"timestamp": cursor, "price": last})
+            cursor += 1000
         return rows
 
     async def _fetch_trades(self, market: Any, start: datetime, end: datetime) -> list[dict[str, Any]]:
@@ -270,6 +293,7 @@ class HistorySynchronizer:
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         from app.config import const
         from app.features.depth_bands import build_orderbook_row, levels_from_prints
+        from app.features.trade_schema import build_trade_row
 
         trade_rows: list[dict[str, Any]] = []
         # per-second prints by outcome: buys -> asks, sells -> bids
@@ -301,7 +325,9 @@ class HistorySynchronizer:
             ts_raw = trade.get("timestamp")
             if ts_raw is None:
                 continue
-            ts = datetime.fromtimestamp(int(ts_raw), tz=UTC)
+            # data-api timestamps are unix seconds
+            ts_sec = int(ts_raw)
+            ts = datetime.fromtimestamp(ts_sec, tz=UTC)
             if ts < start or ts > end:
                 continue
             try:
@@ -312,21 +338,21 @@ class HistorySynchronizer:
             side = str(trade.get("side") or "").lower()
             outcome = str(trade.get("outcome") or "")
             wallet = trade.get("proxyWallet") or trade.get("wallet")
-            tx = trade.get("transactionHash") or trade.get("tx")
             asset = trade.get("asset")
-            trade_rows.append(
-                {
-                    "timestamp": ts,
-                    "trade_id": str(tx or f"{asset}-{int(ts_raw)}-{price}-{size}"),
-                    "price": price,
-                    "size": size,
-                    "side": side,
-                    "wallet": wallet,
-                    "outcome": outcome,
-                    "tx": tx,
-                    "asset": asset,
-                }
+            row = build_trade_row(
+                timestamp=ts_sec * 1000,
+                wallet=wallet,
+                price=price,
+                size=size,
+                side=side,
+                outcome=outcome,
+                asset=asset,
+                token_yes=token_yes,
+                token_no=token_no,
             )
+            if row is None:
+                continue
+            trade_rows.append(row)
 
             key = _outcome_key(outcome, asset)
             sec = ts.replace(microsecond=0)
@@ -341,15 +367,13 @@ class HistorySynchronizer:
                 state = wallet_state.setdefault(
                     str(wallet), {"yes_position": 0.0, "no_position": 0.0, "pnl": 0.0}
                 )
-                oc = outcome.lower()
-                if oc in {"yes", "up"}:
-                    state["yes_position"] += size if side == "buy" else -size
-                elif oc in {"no", "down"}:
-                    state["no_position"] += size if side == "buy" else -size
-                elif side == "buy":
-                    state["yes_position"] += size
+                is_up = bool(row["token"])
+                is_buy = bool(row["side"])
+                delta = float(row["shares"]) if is_buy else -float(row["shares"])
+                if is_up:
+                    state["yes_position"] += delta
                 else:
-                    state["yes_position"] -= size
+                    state["no_position"] += delta
                 wallet_rows.append(
                     {
                         "timestamp": ts,
