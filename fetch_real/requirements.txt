@@ -8,3 +8,6 @@ loguru>=0.7.2
 pydantic>=2.9.0
 pydantic-settings>=2.6.0
 python-dotenv>=1.0.0
+lightgbm>=4.5.0
+scikit-learn>=1.5.0
+matplotlib>=3.9.0

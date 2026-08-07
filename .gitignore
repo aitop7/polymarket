@@ -1,6 +1,9 @@
 .env
 data/
 dataset/
+training/
+features/
+models/
 raw/
 venv/
 *.pyc
