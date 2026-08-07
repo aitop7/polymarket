@@ -12,6 +12,7 @@ type Props = {
   cash?: number
   heldShares?: number
   tradeDisabled: boolean
+  monitorHint?: boolean
 }
 
 export default function TradeSidebar(props: Props) {
@@ -27,12 +28,13 @@ export default function TradeSidebar(props: Props) {
     cash,
     heldShares,
     tradeDisabled,
+    monitorHint,
   } = props
 
   return (
     <aside className="control-sidebar control-sidebar-right">
       <TradeCard
-        monitorHint={mode === 'monitor'}
+        monitorHint={monitorHint ?? mode === 'monitor'}
         tradeAction={tradeAction}
         onTradeAction={onTradeAction}
         side={side}

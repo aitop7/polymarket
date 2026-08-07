@@ -2,6 +2,11 @@ import type { MarketSummary } from '../api'
 
 type Props = {
   mode: 'monitor' | 'paper'
+  liveActive: boolean
+  onToggleLive: () => void
+  liveLabel?: string
+  liveInterval: number
+  onLiveInterval: (s: number) => void
   split: string
   onSplit: (s: string) => void
   indexing: boolean
@@ -33,6 +38,11 @@ type Props = {
 export default function ControlSidebar(props: Props) {
   const {
     mode,
+    liveActive,
+    onToggleLive,
+    liveLabel,
+    liveInterval,
+    onLiveInterval,
     split,
     onSplit,
     indexing,
@@ -61,12 +71,40 @@ export default function ControlSidebar(props: Props) {
     onStrategy,
   } = props
 
+  const histDisabled = liveActive || indexing
+
   return (
     <aside className="control-sidebar control-sidebar-left">
       <div className="sidebar-section">
+        <div className="sidebar-heading">Mode</div>
+        <button
+          type="button"
+          className={`sidebar-btn full ${liveActive ? 'primary live-on' : ''}`}
+          onClick={onToggleLive}
+        >
+          {liveActive ? 'Exit live' : 'Live trading'}
+        </button>
+        {liveActive && (
+          <div className="sidebar-badge live-badge">{liveLabel || 'LIVE · view only'}</div>
+        )}
+        <label className="sidebar-label">Fetch interval</label>
+        <select
+          value={liveInterval}
+          onChange={(e) => onLiveInterval(Number(e.target.value))}
+        >
+          <option value={0.1}>0.1s</option>
+          <option value={0.2}>0.2s</option>
+          <option value={0.5}>0.5s</option>
+          <option value={1}>1s</option>
+          <option value={1.5}>1.5s</option>
+          <option value={2}>2s</option>
+        </select>
+      </div>
+
+      <div className="sidebar-section">
         <div className="sidebar-heading">Data</div>
         <label className="sidebar-label">Dataset</label>
-        <select value={split} onChange={(e) => onSplit(e.target.value)} disabled={indexing}>
+        <select value={split} onChange={(e) => onSplit(e.target.value)} disabled={histDisabled}>
           <option value="validation">Validation</option>
           <option value="test">Test</option>
           <option value="train">Train</option>
@@ -78,14 +116,14 @@ export default function ControlSidebar(props: Props) {
           value={selectedDate}
           min={dateMin || undefined}
           max={dateMax || undefined}
-          disabled={!dateMin}
+          disabled={!dateMin || liveActive}
           onChange={(e) => onDate(e.target.value)}
         />
 
         <label className="sidebar-label">Time window (ET)</label>
         <select
           value={selectedTime}
-          disabled={!markets.length || indexing}
+          disabled={!markets.length || histDisabled}
           onChange={(e) => onTime(e.target.value)}
         >
           {markets.length === 0 && (
@@ -102,7 +140,8 @@ export default function ControlSidebar(props: Props) {
           <div className="sidebar-badge">Indexing calendar…</div>
         ) : (
           dateMin &&
-          dateMax && (
+          dateMax &&
+          !liveActive && (
             <div className="sidebar-meta">
               {dateMin} → {dateMax}
             </div>
@@ -113,7 +152,7 @@ export default function ControlSidebar(props: Props) {
       <div className="sidebar-section sidebar-section-last">
         <div className="sidebar-heading">Playback</div>
         <label className="sidebar-label">Speed</label>
-        <select value={speed} onChange={(e) => onSpeed(Number(e.target.value))}>
+        <select value={speed} onChange={(e) => onSpeed(Number(e.target.value))} disabled={liveActive}>
           <option value={1}>1x · Normal</option>
           <option value={5}>5x</option>
           <option value={10}>10x</option>
@@ -125,7 +164,11 @@ export default function ControlSidebar(props: Props) {
         {mode === 'paper' && (
           <>
             <label className="sidebar-label">Strategy</label>
-            <select value={strategy} onChange={(e) => onStrategy(e.target.value)}>
+            <select
+              value={strategy}
+              onChange={(e) => onStrategy(e.target.value)}
+              disabled={liveActive}
+            >
               <option value="none">Manual only</option>
               <option value="lgbm_edge">LightGBM edge</option>
               <option value="edge_threshold">Edge threshold</option>
@@ -139,16 +182,16 @@ export default function ControlSidebar(props: Props) {
               type="button"
               className="sidebar-btn primary"
               onClick={onPlay}
-              disabled={!marketId || indexing}
+              disabled={!marketId || histDisabled}
             >
               Play
             </button>
           ) : paused ? (
-            <button type="button" className="sidebar-btn primary" onClick={onResume}>
+            <button type="button" className="sidebar-btn primary" onClick={onResume} disabled={liveActive}>
               Resume
             </button>
           ) : (
-            <button type="button" className="sidebar-btn" onClick={onPause}>
+            <button type="button" className="sidebar-btn" onClick={onPause} disabled={liveActive}>
               Pause
             </button>
           )}
@@ -156,17 +199,27 @@ export default function ControlSidebar(props: Props) {
             type="button"
             className="sidebar-btn danger"
             onClick={onStop}
-            disabled={!playing && !paused}
+            disabled={liveActive || (!playing && !paused)}
           >
             Stop
           </button>
         </div>
 
         <div className="sidebar-btn-row">
-          <button type="button" className="sidebar-btn" onClick={onPrev} disabled={!hasPrev || indexing}>
+          <button
+            type="button"
+            className="sidebar-btn"
+            onClick={onPrev}
+            disabled={!hasPrev || histDisabled}
+          >
             ← Prev
           </button>
-          <button type="button" className="sidebar-btn" onClick={onNext} disabled={!hasNext || indexing}>
+          <button
+            type="button"
+            className="sidebar-btn"
+            onClick={onNext}
+            disabled={!hasNext || histDisabled}
+          >
             Next →
           </button>
         </div>

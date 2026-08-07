@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from typing import Any
 
@@ -266,6 +267,96 @@ def paper_status(session_id: str) -> dict[str, Any]:
         "portfolio": session.portfolio.snapshot().to_dict(),
         "fills": [f.to_dict() for f in session.portfolio.fills[-50:]],
     }
+
+
+@router.get("/live/state")
+async def live_state() -> dict[str, Any]:
+    """One-shot live market snapshot (BTC + Up/Down + CLOB ladder)."""
+    from app.live import get_live_service
+
+    return await get_live_service().snapshot()
+
+
+@router.websocket("/ws/live")
+async def ws_live(websocket: WebSocket) -> None:
+    """Stream live market state. View-only; no order placement.
+
+    Client may send `{interval_s: 0.5}` on connect and later
+    `{type: "interval", interval_s: 0.1..2}` to change poll rate.
+    """
+    from app.live import get_live_service
+
+    await websocket.accept()
+    svc = get_live_service()
+    last_market_id: str | None = None
+    interval_s = 0.5
+
+    def _clamp_interval(raw: Any) -> float:
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            return interval_s
+        return max(0.1, min(2.0, v))
+
+    try:
+        # First client message sets poll interval (default 0.5s).
+        try:
+            init = await asyncio.wait_for(websocket.receive_json(), timeout=2.0)
+            if isinstance(init, dict) and "interval_s" in init:
+                interval_s = _clamp_interval(init.get("interval_s"))
+        except (asyncio.TimeoutError, WebSocketDisconnect):
+            pass
+
+        meta = await svc.market_meta()
+        if meta:
+            last_market_id = meta.get("market_id")
+            await websocket.send_json(meta)
+
+        async def reader() -> None:
+            nonlocal interval_s
+            while True:
+                msg = await websocket.receive_json()
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("type") == "interval" or "interval_s" in msg:
+                    interval_s = _clamp_interval(msg.get("interval_s"))
+
+        reader_task = asyncio.create_task(reader())
+        try:
+            while True:
+                t0 = time.perf_counter()
+                snap = await svc.snapshot()
+                mid = snap.get("market_id")
+                if mid and mid != last_market_id:
+                    await websocket.send_json(
+                        {
+                            "type": "market",
+                            "live": True,
+                            "market_id": mid,
+                            "slug": snap.get("slug"),
+                            "start_time": snap.get("start_time"),
+                            "end_time": snap.get("end_time"),
+                        }
+                    )
+                    last_market_id = mid
+                snap["interval_s"] = interval_s
+                await websocket.send_json(snap)
+                # Target cadence = interval_s (don't add fetch time on top).
+                elapsed = time.perf_counter() - t0
+                await asyncio.sleep(max(0.0, interval_s - elapsed))
+        finally:
+            reader_task.cancel()
+            try:
+                await reader_task
+            except asyncio.CancelledError:
+                pass
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        try:
+            await websocket.send_json({"type": "error", "message": str(exc)})
+        except Exception:
+            pass
 
 
 @router.websocket("/ws/replay")

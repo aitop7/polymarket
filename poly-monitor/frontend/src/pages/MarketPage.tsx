@@ -28,6 +28,14 @@ type Tick = {
   equity?: number
   fills?: { side: string; action: string; price: number; shares: number; reason: string; source: string }[]
   settlement?: { winner: number; ending_cash: number }
+  market_id?: string | null
+  start_time?: number | null
+  end_time?: number | null
+  price_to_beat?: number | null
+  book?: BookPayload
+  live?: boolean
+  error?: string
+  message?: string
 }
 
 type FillRow = {
@@ -45,7 +53,6 @@ type Props = {
 }
 
 function formatSlotLabel(timeEt: string, startMs?: number, endMs?: number): string {
-  // timeEt is HH:MM 24h ET — show 12h label when we have ms
   if (startMs != null && endMs != null) {
     const s = new Date(startMs)
     const e = new Date(endMs)
@@ -91,17 +98,21 @@ export default function MarketPage({ mode }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [indexing, setIndexing] = useState(false)
   const [paused, setPaused] = useState(false)
+  const [liveActive, setLiveActive] = useState(false)
+  const [liveMarketId, setLiveMarketId] = useState<string>('')
+  const [liveWindow, setLiveWindow] = useState<{ start: number; end: number } | null>(null)
+  const [liveInterval, setLiveInterval] = useState(0.5)
   const wsRef = useRef<WebSocket | null>(null)
+  const liveWsRef = useRef<WebSocket | null>(null)
 
-  // Load available dates when split changes
   useEffect(() => {
+    if (liveActive) return
     let cancelled = false
     setIndexing(true)
     setError(null)
     setMarkets([])
     setMarketId('')
     setSelectedTime('')
-    // keep selectedDate visible until new range arrives (avoids empty disabled picker)
     api
       .marketDates(split)
       .then((res) => {
@@ -125,11 +136,10 @@ export default function MarketPage({ mode }: Props) {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [split])
+  }, [split, liveActive])
 
-  // Load 5m slots for selected date
   useEffect(() => {
-    if (!selectedDate) return
+    if (liveActive || !selectedDate) return
     let cancelled = false
     api
       .markets(split, { date: selectedDate })
@@ -160,7 +170,7 @@ export default function MarketPage({ mode }: Props) {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [split, selectedDate])
+  }, [split, selectedDate, liveActive])
 
   const onTimeChange = (timeEt: string) => {
     setSelectedTime(timeEt)
@@ -176,7 +186,7 @@ export default function MarketPage({ mode }: Props) {
   }
 
   useEffect(() => {
-    if (!marketId) return
+    if (liveActive || !marketId) return
     setError(null)
     Promise.all([api.market(marketId, split), api.neighbors(marketId, split), api.book(marketId)])
       .then(([d, n, b]) => {
@@ -187,7 +197,6 @@ export default function MarketPage({ mode }: Props) {
         setTick(null)
         setActivity([])
         setPlaying(false)
-        // sync pickers from loaded market
         if (d.start_time) {
           const etDate = new Intl.DateTimeFormat('en-CA', {
             timeZone: 'America/New_York',
@@ -206,14 +215,14 @@ export default function MarketPage({ mode }: Props) {
         }
       })
       .catch((e) => setError(String(e)))
-  }, [marketId, split])
+  }, [marketId, split, liveActive])
 
   const stopWs = () => {
     wsRef.current?.close()
     wsRef.current = null
     setPlaying(false)
     setPaused(false)
-    if (detail) {
+    if (detail && !liveActive) {
       setSeriesLive(
         detail.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc })),
       )
@@ -246,7 +255,7 @@ export default function MarketPage({ mode }: Props) {
   }
 
   const startReplay = async () => {
-    if (!marketId) return
+    if (!marketId || liveActive) return
     stopWs()
     setActivity([])
     setSeriesLive([])
@@ -325,12 +334,115 @@ export default function MarketPage({ mode }: Props) {
     }
   }
 
-  useEffect(() => () => stopWs(), [])
+  const startLive = () => {
+    stopWs()
+    liveWsRef.current?.close()
+    liveWsRef.current = null
+    setLiveActive(true)
+    setSeriesLive([])
+    setTick(null)
+    setActivity([])
+    setBook(null)
+    setError(null)
+    setLiveMarketId('')
+    setLiveWindow(null)
+
+    const interval = Math.max(0.1, Math.min(2, liveInterval))
+    const ws = new WebSocket(wsUrl('/api/ws/live'))
+    liveWsRef.current = ws
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ interval_s: interval }))
+    }
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data) as Tick
+      if (msg.type === 'error') {
+        setError(msg.message || 'Live feed error')
+        return
+      }
+      if (msg.type === 'market') {
+        if (msg.market_id) setLiveMarketId(String(msg.market_id))
+        if (msg.start_time != null && msg.end_time != null) {
+          setLiveWindow({ start: Number(msg.start_time), end: Number(msg.end_time) })
+        }
+        setSeriesLive([])
+        return
+      }
+      if (msg.type === 'tick') {
+        if (msg.error) setError(String(msg.error))
+        setTick(msg)
+        if (msg.market_id) setLiveMarketId(String(msg.market_id))
+        if (msg.start_time != null && msg.end_time != null) {
+          setLiveWindow({ start: Number(msg.start_time), end: Number(msg.end_time) })
+        }
+        if (msg.book) setBook(msg.book as BookPayload)
+        if (msg.up_price != null && msg.down_price != null) {
+          setSeriesLive((prev) => {
+            const point = {
+              t: msg.timestamp,
+              up: msg.up_price!,
+              down: msg.down_price!,
+              btc: msg.btc_price ?? null,
+            }
+            const next = [...prev, point]
+            return next.length > 600 ? next.slice(-600) : next
+          })
+        }
+      }
+    }
+    ws.onerror = () => setError('Live WebSocket error')
+  }
+
+  const onLiveInterval = (s: number) => {
+    const v = Math.max(0.1, Math.min(2, s))
+    setLiveInterval(v)
+    const ws = liveWsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'interval', interval_s: v }))
+    }
+  }
+
+  const toggleLive = () => {
+    if (liveActive) {
+      liveWsRef.current?.close()
+      liveWsRef.current = null
+      setLiveActive(false)
+      setLiveMarketId('')
+      setLiveWindow(null)
+      if (detail) {
+        setSeriesLive(
+          detail.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc })),
+        )
+        setTick(null)
+        api.book(detail.market_id).then((b) => setBook(b as BookPayload)).catch(() => {})
+      }
+      return
+    }
+    startLive()
+  }
+
+  useEffect(
+    () => () => {
+      wsRef.current?.close()
+      liveWsRef.current?.close()
+    },
+    [],
+  )
+
+  const displayMarketId = liveActive ? liveMarketId || '—' : marketId || detail?.market_id
+  const windowLabel = liveActive
+    ? liveWindow
+      ? formatWindowEt(liveWindow.start, liveWindow.end)
+      : 'Live market…'
+    : detail
+      ? formatWindowEt(detail.start_time, detail.end_time)
+      : '—'
 
   const up = tick?.up_price ?? detail?.first.up_price ?? 0.5
   const down = tick?.down_price ?? detail?.first.down_price ?? 0.5
   const btc = tick?.btc_price ?? detail?.first.btc_price
-  const beat = tick?.btc_open ?? detail?.btc_open_price
+  const beat = liveActive
+    ? tick?.price_to_beat ?? tick?.btc_open ?? null
+    : tick?.btc_open ?? detail?.btc_open_price
   const remaining = tick?.remaining_seconds
 
   const chartData = useMemo(() => {
@@ -338,8 +450,14 @@ export default function MarketPage({ mode }: Props) {
     return detail?.series ?? []
   }, [seriesLive, detail])
 
+  const liveLabel = liveActive
+    ? liveMarketId
+      ? `LIVE · ${liveMarketId}${remaining != null ? ` · ${Math.max(0, Math.floor(remaining))}s` : ''}`
+      : 'LIVE · connecting…'
+    : undefined
+
   const onTrade = (opts: { size_usd?: number; shares?: number }) => {
-    if (mode !== 'paper') return
+    if (mode !== 'paper' || liveActive) return
     const payload = {
       type: 'order',
       side,
@@ -369,6 +487,11 @@ export default function MarketPage({ mode }: Props) {
     <div className="workspace">
       <ControlSidebar
         mode={mode}
+        liveActive={liveActive}
+        onToggleLive={toggleLive}
+        liveLabel={liveLabel}
+        liveInterval={liveInterval}
+        onLiveInterval={onLiveInterval}
         split={split}
         onSplit={setSplit}
         indexing={indexing}
@@ -401,12 +524,17 @@ export default function MarketPage({ mode }: Props) {
         {error && <p className="error">{error}</p>}
 
         <BtcPricePanel
-          marketId={marketId || detail?.market_id}
-          windowLabel={detail ? formatWindowEt(detail.start_time, detail.end_time) : '—'}
+          marketId={displayMarketId}
+          windowLabel={windowLabel}
           priceToBeat={beat}
           currentPrice={btc}
           remainingSeconds={
-            remaining ?? (detail ? (detail.end_time - detail.start_time) / 1000 : null)
+            remaining ??
+            (liveActive
+              ? null
+              : detail
+                ? (detail.end_time - detail.start_time) / 1000
+                : null)
           }
         />
 
@@ -433,7 +561,9 @@ export default function MarketPage({ mode }: Props) {
         <div className="panel">
           {tab === 'activity' && (
             <ul className="activity-list">
-              {activity.length === 0 && <li className="muted">No fills yet</li>}
+              {activity.length === 0 && (
+                <li className="muted">{liveActive ? 'Live view — no fills' : 'No fills yet'}</li>
+              )}
               {activity.map((f, i) => (
                 <li key={i}>
                   <span>
@@ -476,12 +606,12 @@ export default function MarketPage({ mode }: Props) {
                 <strong>Down</strong>.
               </p>
               <p>
-                Order book depth uses share buckets mapped to <strong>absolute price ranges</strong>,
-                derived from distance-from-traded-price storage bands.
+                {liveActive
+                  ? 'Live mode shows the current CLOB ladder and Binance BTC. View only — no orders are sent.'
+                  : 'Order book depth uses share buckets mapped to absolute price ranges from distance-from-traded-price storage bands.'}
               </p>
               <p>
-                poly-monitor v1 replays historical data only. Paper fills are simulated; no live orders
-                are sent.
+                Historical replay and paper fills are simulated. Live trading view does not place orders.
               </p>
             </div>
           )}
@@ -501,7 +631,8 @@ export default function MarketPage({ mode }: Props) {
         heldShares={
           side === 'UP' ? tick?.portfolio?.up_shares ?? 0 : tick?.portfolio?.down_shares ?? 0
         }
-        tradeDisabled={mode !== 'paper' || (!playing && !sessionId)}
+        tradeDisabled={liveActive || mode !== 'paper' || (!playing && !sessionId)}
+        monitorHint={liveActive || mode === 'monitor'}
       />
     </div>
   )

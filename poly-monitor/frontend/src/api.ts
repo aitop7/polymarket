@@ -70,6 +70,27 @@ export const api = {
   paperOrder: (body: Record<string, unknown>) =>
     json<{ ok: boolean }>('/api/paper/order', { method: 'POST', body: JSON.stringify(body) }),
   paperStatus: (sessionId: string) => json<Record<string, unknown>>(`/api/paper/${sessionId}`),
+  liveState: () => json<LiveTick>('/api/live/state'),
+}
+
+export type LiveTick = {
+  type: string
+  live?: boolean
+  timestamp: number
+  market_id?: string | null
+  slug?: string | null
+  start_time?: number | null
+  end_time?: number | null
+  btc_price?: number | null
+  price_to_beat?: number | null
+  btc_open?: number | null
+  up_price?: number
+  down_price?: number
+  remaining_seconds?: number
+  elapsed_seconds?: number
+  book?: Record<string, unknown>
+  error?: string
+  message?: string
 }
 
 export function wsUrl(path: string): string {

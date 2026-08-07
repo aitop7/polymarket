@@ -1,8 +1,10 @@
-# poly-monitor
+﻿# poly-monitor
 
 Historical monitor, backtest, and paper trading for Polymarket BTC Up/Down 5m markets.
 
-Uses datasets from `../fetch_real` (`training/`, `features/`, `models/`). **No live trading in v1.**
+Uses datasets from `../fetch_real` (`training/`, `features/`, `models/`).
+
+**Live trading** (left sidebar) shows a **view-only** feed of the current 5m market (Binance BTC + Polymarket CLOB Up/Down + order book). It does **not** place live orders.
 
 ## Setup
 
@@ -26,6 +28,8 @@ cd poly-monitor/backend
 set PYTHONPATH=%CD%;%CD%\..
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+Or use `poly-monitor/run-api.bat`.
 
 Terminal 2 — UI:
 

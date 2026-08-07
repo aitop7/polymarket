@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { formatCents, formatUsd } from '../api'
+import { formatCents, formatCentsInt, formatUsd } from '../api'
 
 export type BookLevel = {
   range: string
@@ -7,6 +7,7 @@ export type BookLevel = {
   shares: number
   approx_price: number
   notional: number
+  price?: number
   price_lo?: number
   price_hi?: number | null
 }
@@ -37,7 +38,10 @@ type Props = {
 
 type DepthLevel = BookLevel & { cumShares: number }
 
-function formatAbsRange(level: BookLevel): string {
+function formatAbsRange(level: BookLevel, ladder: boolean): string {
+  if (ladder && level.price != null) {
+    return formatCentsInt(level.price)
+  }
   if (level.price_lo != null) {
     const lo = Math.round(Math.max(0, Math.min(100, level.price_lo * 100)))
     if (level.price_hi == null) return `${lo}¢+`
@@ -46,7 +50,7 @@ function formatAbsRange(level: BookLevel): string {
     let b = hi
     if (a > b) [a, b] = [b, a]
     if (a === b) return `${a}¢`
-    return `${a}–${b}¢`
+    return ladder ? `${a}¢` : `${a}–${b}¢`
   }
   return level.range
 }
@@ -60,7 +64,6 @@ function formatVol(usd: number): string {
   return `$${usd.toFixed(0)} Vol.`
 }
 
-/** Asks are listed far→near (best ask last). Cumulate from mid outward. */
 function withAskCum(asks: BookLevel[]): DepthLevel[] {
   const visible = asks.filter((l) => l.shares > 0)
   let running = 0
@@ -71,7 +74,6 @@ function withAskCum(asks: BookLevel[]): DepthLevel[] {
   return fromMid.reverse()
 }
 
-/** Bids are listed near→far (best bid first). Cumulate from mid outward. */
 function withBidCum(bids: BookLevel[]): DepthLevel[] {
   const visible = bids.filter((l) => l.shares > 0)
   let running = 0
@@ -86,11 +88,13 @@ function DepthRow({
   kind,
   maxCum,
   showTag,
+  ladder,
 }: {
   level: DepthLevel
   kind: 'ask' | 'bid'
   maxCum: number
   showTag?: 'Asks' | 'Bids'
+  ladder: boolean
 }) {
   const width = maxCum > 0 ? Math.min(100, (level.cumShares / maxCum) * 100) : 0
   return (
@@ -99,7 +103,7 @@ function DepthRow({
       <div className="ob-cell ob-tag">
         {showTag ? <span className={`ob-pill ${kind}`}>{showTag}</span> : null}
       </div>
-      <div className={`ob-cell ob-range ${kind}`}>{formatAbsRange(level)}</div>
+      <div className={`ob-cell ob-range ${kind}`}>{formatAbsRange(level, ladder)}</div>
       <div className="ob-cell ob-shares">
         {level.shares.toLocaleString(undefined, { maximumFractionDigits: 2 })}
       </div>
@@ -111,6 +115,7 @@ function DepthRow({
 export default function OrderBookPanel({ book }: Props) {
   const [tab, setTab] = useState<'up' | 'down'>('up')
   const side = tab === 'up' ? book?.up : book?.down
+  const ladder = book?.mode === 'ladder'
 
   const askLevels = useMemo(() => (side ? withAskCum(side.asks) : []), [side])
   const bidLevels = useMemo(() => (side ? withBidCum(side.bids) : []), [side])
@@ -130,7 +135,13 @@ export default function OrderBookPanel({ book }: Props) {
       <div className="ob-header">
         <div className="ob-title">
           Order Book
-          <span className="ob-info" title={book?.note || 'Absolute price ranges from distance buckets'}>
+          <span
+            className="ob-info"
+            title={
+              book?.note ||
+              (ladder ? 'Live CLOB price ladder' : 'Absolute price ranges from distance buckets')
+            }
+          >
             i
           </span>
         </div>
@@ -169,6 +180,7 @@ export default function OrderBookPanel({ book }: Props) {
                 kind="ask"
                 maxCum={maxCum}
                 showTag={i === askLevels.length - 1 ? 'Asks' : undefined}
+                ladder={ladder}
               />
             ))}
           </div>
@@ -186,6 +198,7 @@ export default function OrderBookPanel({ book }: Props) {
                 kind="bid"
                 maxCum={maxCum}
                 showTag={i === 0 ? 'Bids' : undefined}
+                ladder={ladder}
               />
             ))}
           </div>

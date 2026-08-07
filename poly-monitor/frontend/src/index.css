@@ -261,6 +261,18 @@ select {
   cursor: default;
 }
 
+.sidebar-btn.primary.live-on {
+  background: #0f766e;
+  border-color: #0f766e;
+}
+
+.sidebar-badge.live-badge {
+  margin-top: 0.5rem;
+  background: rgba(15, 118, 110, 0.12);
+  color: #0f766e;
+  border: 1px solid rgba(15, 118, 110, 0.35);
+}
+
 .sidebar-toggle {
   display: grid;
   grid-template-columns: 1fr 1fr;
