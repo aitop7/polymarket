@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { formatCents, formatCentsInt, formatUsd } from '../api'
 
 export type BookLevel = {
@@ -37,6 +37,9 @@ type Props = {
 }
 
 type DepthLevel = BookLevel & { cumShares: number }
+
+/** Visible order rows in collapsed (scrollable) mode — about 9 levels. */
+const COLLAPSED_ROWS = 9
 
 function formatAbsRange(level: BookLevel, ladder: boolean): string {
   if (ladder && level.price != null) {
@@ -99,8 +102,11 @@ function DepthRow({
   const width = maxCum > 0 ? Math.min(100, (level.cumShares / maxCum) * 100) : 0
   return (
     <div className={`ob-row ${kind}`}>
-      <div className="ob-depth" style={{ width: `${Math.max(width, level.shares > 0 ? 2 : 0)}%` }} />
       <div className="ob-cell ob-tag">
+        <div
+          className="ob-depth"
+          style={{ width: `${Math.max(width, level.shares > 0 ? 2 : 0)}%` }}
+        />
         {showTag ? <span className={`ob-pill ${kind}`}>{showTag}</span> : null}
       </div>
       <div className={`ob-cell ob-range ${kind}`}>{formatAbsRange(level, ladder)}</div>
@@ -112,8 +118,40 @@ function DepthRow({
   )
 }
 
+function ExpandIcon({ expanded }: { expanded: boolean }) {
+  if (expanded) {
+    // Collapse: inward corners
+    return (
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path
+          d="M9 3v6H3M15 3v6h6M9 21v-6H3M15 21v-6h6"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    )
+  }
+  // Expand: outward corners
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M9 3H3v6M15 3h6v6M9 21H3v-6M15 21h6v-6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 export default function OrderBookPanel({ book }: Props) {
   const [tab, setTab] = useState<'up' | 'down'>('up')
+  const [expanded, setExpanded] = useState(false)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const midRef = useRef<HTMLDivElement>(null)
   const side = tab === 'up' ? book?.up : book?.down
   const ladder = book?.mode === 'ladder'
 
@@ -130,8 +168,23 @@ export default function OrderBookPanel({ book }: Props) {
     return [...side.asks, ...side.bids].reduce((s, l) => s + l.notional, 0)
   }, [side])
 
+  const hasDepth = Boolean(side)
+
+  // Keep the spread / last-price row centered when collapsed.
+  useEffect(() => {
+    if (expanded || !hasDepth) return
+    const body = bodyRef.current
+    const mid = midRef.current
+    if (!body || !mid) return
+    const frame = requestAnimationFrame(() => {
+      const top = mid.offsetTop - body.clientHeight / 2 + mid.offsetHeight / 2
+      body.scrollTop = Math.max(0, top)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [tab, expanded, hasDepth])
+
   return (
-    <section className="ob-panel">
+    <section className={`ob-panel${expanded ? ' ob-expanded' : ''}`}>
       <div className="ob-header">
         <div className="ob-title">
           Order Book
@@ -145,7 +198,19 @@ export default function OrderBookPanel({ book }: Props) {
             i
           </span>
         </div>
-        <div className="ob-vol">{formatVol(volUsd)}</div>
+        <div className="ob-header-right">
+          <div className="ob-vol">{formatVol(volUsd)}</div>
+          <button
+            type="button"
+            className="ob-expand"
+            aria-label={expanded ? 'Collapse order book' : 'Expand order book'}
+            aria-expanded={expanded}
+            title={expanded ? 'Collapse' : 'Expand'}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            <ExpandIcon expanded={expanded} />
+          </button>
+        </div>
       </div>
 
       <div className="ob-tabs">
@@ -166,43 +231,59 @@ export default function OrderBookPanel({ book }: Props) {
 
       {!side && <div className="ob-empty muted">No order book depth for this market</div>}
 
-      {side && askLevels.length === 0 && bidLevels.length === 0 && (
-        <div className="ob-empty muted">No depth at this price</div>
-      )}
-
-      {side && (askLevels.length > 0 || bidLevels.length > 0) && (
-        <>
+      {side && (
+        <div
+          ref={bodyRef}
+          className={`ob-body${expanded ? ' expanded' : ''}`}
+          style={
+            expanded
+              ? undefined
+              : ({ ['--ob-visible-rows' as string]: COLLAPSED_ROWS } as CSSProperties)
+          }
+        >
           <div className="ob-section asks">
-            {askLevels.map((level, i) => (
-              <DepthRow
-                key={`a-${level.suffix}`}
-                level={level}
-                kind="ask"
-                maxCum={maxCum}
-                showTag={i === askLevels.length - 1 ? 'Asks' : undefined}
-                ladder={ladder}
-              />
-            ))}
+            {askLevels.length === 0 ? (
+              <div className="ob-empty-side" aria-label="No asks">
+                <span className="ob-empty-side-label">No asks</span>
+              </div>
+            ) : (
+              askLevels.map((level, i) => (
+                <DepthRow
+                  key={`a-${level.suffix}`}
+                  level={level}
+                  kind="ask"
+                  maxCum={maxCum}
+                  showTag={i === askLevels.length - 1 ? 'Asks' : undefined}
+                  ladder={ladder}
+                />
+              ))
+            )}
           </div>
 
-          <div className="ob-mid">
+          <div className="ob-mid" ref={midRef}>
             <span>Last: {cents(side.traded_price)}</span>
             <span>Spread: {side.spread != null ? cents(side.spread) : '—'}</span>
           </div>
 
           <div className="ob-section bids">
-            {bidLevels.map((level, i) => (
-              <DepthRow
-                key={`b-${level.suffix}`}
-                level={level}
-                kind="bid"
-                maxCum={maxCum}
-                showTag={i === 0 ? 'Bids' : undefined}
-                ladder={ladder}
-              />
-            ))}
+            {bidLevels.length === 0 ? (
+              <div className="ob-empty-side" aria-label="No bids">
+                <span className="ob-empty-side-label">No bids</span>
+              </div>
+            ) : (
+              bidLevels.map((level, i) => (
+                <DepthRow
+                  key={`b-${level.suffix}`}
+                  level={level}
+                  kind="bid"
+                  maxCum={maxCum}
+                  showTag={i === 0 ? 'Bids' : undefined}
+                  ladder={ladder}
+                />
+              ))
+            )}
           </div>
-        </>
+        </div>
       )}
     </section>
   )

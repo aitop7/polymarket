@@ -100,6 +100,104 @@ class LiveClients:
             return market
         return None
 
+    async def get_btc_open_at(self, start_ms: int) -> float | None:
+        """Best-effort open proxy: first Binance agg trade at/after window start."""
+        for base in (BINANCE_URL, *BINANCE_FALLBACKS):
+            try:
+                resp = await self._binance.get(
+                    f"{base.rstrip('/')}/api/v3/aggTrades",
+                    params={
+                        "symbol": "BTCUSDT",
+                        "startTime": int(start_ms),
+                        "endTime": int(start_ms) + 15_000,
+                        "limit": 1,
+                    },
+                )
+                resp.raise_for_status()
+                rows = resp.json()
+                if isinstance(rows, list) and rows:
+                    return float(rows[0]["p"])
+            except Exception:
+                continue
+        return None
+
+    async def _agg_trades_range(
+        self, base: str, start_ms: int, end_ms: int
+    ) -> list[dict[str, Any]]:
+        """Fetch aggTrades covering [start_ms, end_ms], paginating if needed."""
+        out: list[dict[str, Any]] = []
+        cursor = int(start_ms)
+        end = int(end_ms)
+        for _ in range(20):
+            resp = await self._binance.get(
+                f"{base.rstrip('/')}/api/v3/aggTrades",
+                params={
+                    "symbol": "BTCUSDT",
+                    "startTime": cursor,
+                    "endTime": end,
+                    "limit": 1000,
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            if not isinstance(rows, list) or not rows:
+                break
+            out.extend(rows)
+            last_t = int(rows[-1]["T"])
+            if last_t >= end or len(rows) < 1000:
+                break
+            cursor = last_t + 1
+            if cursor > end:
+                break
+        return out
+
+    async def compute_twap_30s_ending_at(self, end_ms: int) -> float | None:
+        """
+        Time-weighted average of Binance BTCUSDT trades over [end-30s, end].
+
+        Used when RTDS missed the Chainlink 30s TWAP sample at market open.
+        """
+        end = int(end_ms)
+        start = end - 30_000
+        last_exc: Exception | None = None
+        for base in (BINANCE_URL, *BINANCE_FALLBACKS):
+            try:
+                rows = await self._agg_trades_range(base, start, end)
+                if not rows:
+                    continue
+                # Build (t_ms, price) series; TWAP = ∫ price dt / 30s
+                points: list[tuple[int, float]] = []
+                for row in rows:
+                    try:
+                        t = int(row["T"])
+                        p = float(row["p"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if t < start or t > end:
+                        continue
+                    points.append((t, p))
+                if not points:
+                    continue
+                points.sort(key=lambda x: x[0])
+                # Hold first trade price from window start if first trade is late.
+                if points[0][0] > start:
+                    points.insert(0, (start, points[0][1]))
+                weighted = 0.0
+                for i, (t, p) in enumerate(points):
+                    t_next = points[i + 1][0] if i + 1 < len(points) else end
+                    dt = max(0, t_next - t)
+                    weighted += p * dt
+                duration = end - start
+                if duration <= 0:
+                    return points[-1][1]
+                return weighted / duration
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if last_exc is not None:
+            return None
+        return None
+
     async def get_order_book(self, token_id: str) -> dict[str, Any]:
         resp = await self._clob.get("/book", params={"token_id": token_id})
         resp.raise_for_status()

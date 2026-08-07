@@ -82,7 +82,7 @@ export default function ControlSidebar(props: Props) {
           className={`sidebar-btn full ${liveActive ? 'primary live-on' : ''}`}
           onClick={onToggleLive}
         >
-          {liveActive ? 'Exit live' : 'Live trading'}
+          {liveActive ? 'Exit live' : 'Live market'}
         </button>
         {liveActive && (
           <div className="sidebar-badge live-badge">{liveLabel || 'LIVE · view only'}</div>

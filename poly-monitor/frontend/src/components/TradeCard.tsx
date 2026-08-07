@@ -10,6 +10,12 @@ type Props = {
   onSide: (s: 'UP' | 'DOWN') => void
   upPrice: number
   downPrice: number
+  /** False when that outcome has no ask liquidity (cannot buy). */
+  upHasAsk?: boolean
+  downHasAsk?: boolean
+  /** False when that outcome has no bid liquidity (cannot sell). */
+  upHasBid?: boolean
+  downHasBid?: boolean
   cash?: number
   heldShares?: number
   onTrade: (opts: { size_usd?: number; shares?: number }) => void
@@ -43,6 +49,10 @@ export default function TradeCard({
   onSide,
   upPrice,
   downPrice,
+  upHasAsk = true,
+  downHasAsk = true,
+  upHasBid = true,
+  downHasBid = true,
   heldShares = 0,
   onTrade,
   tradeDisabled,
@@ -61,11 +71,35 @@ export default function TradeCard({
   const downBuy = downPrice
   const upSell = Math.max(0.000001, upBuy - 0.01)
   const downSell = Math.max(0.000001, downBuy - 0.01)
-  const displayUp = tradeAction === 'SELL' ? upSell : upBuy
-  const displayDown = tradeAction === 'SELL' ? downSell : downBuy
+  const displayUp =
+    tradeAction === 'SELL'
+      ? upHasBid
+        ? cents(upSell)
+        : '--'
+      : upHasAsk
+        ? cents(upBuy)
+        : '--'
+  const displayDown =
+    tradeAction === 'SELL'
+      ? downHasBid
+        ? cents(downSell)
+        : '--'
+      : downHasAsk
+        ? cents(downBuy)
+        : '--'
   const limitPrice = Math.max(0, Math.min(100, limitCents)) / 100
   const quotePrice = tradeAction === 'SELL' ? (side === 'UP' ? upSell : downSell) : price
   const fillPrice = orderType === 'limit' && limitPrice > 0 ? limitPrice : quotePrice
+
+  const noLiquidity =
+    tradeAction === 'BUY'
+      ? side === 'UP'
+        ? !upHasAsk
+        : !downHasAsk
+      : side === 'UP'
+        ? !upHasBid
+        : !downHasBid
+  const disabled = tradeDisabled || noLiquidity
 
   const limitTotal = shares * fillPrice
   const limitToWin = tradeAction === 'BUY' ? shares * 1 : shares * fillPrice
@@ -119,7 +153,7 @@ export default function TradeCard({
   }
 
   const canSubmit =
-    !tradeDisabled &&
+    !disabled &&
     ((orderType === 'market' && marketAmount > 0) || (orderType === 'limit' && shares > 0))
 
   return (
@@ -193,20 +227,22 @@ export default function TradeCard({
         </div>
       </div>
 
-      <div className="trade-outcomes">
+      <div className={`trade-outcomes${disabled ? ' trade-outcomes-disabled' : ''}`}>
         <button
           type="button"
           className={`trade-outcome up ${side === 'UP' ? 'active' : ''}`}
           onClick={() => onSide('UP')}
+          disabled={disabled && side === 'UP'}
         >
-          Up {cents(displayUp)}
+          Up {displayUp}
         </button>
         <button
           type="button"
           className={`trade-outcome down ${side === 'DOWN' ? 'active' : ''}`}
           onClick={() => onSide('DOWN')}
+          disabled={disabled && side === 'DOWN'}
         >
-          Down {cents(displayDown)}
+          Down {displayDown}
         </button>
       </div>
 

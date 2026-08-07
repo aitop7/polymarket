@@ -11,13 +11,15 @@ import {
 } from 'recharts'
 import { formatCents } from '../api'
 
-type Point = { t: number; btc?: number | null; up?: number | null; down?: number | null }
+type Point = { t: number; btc?: number | null; twap?: number | null; up?: number | null; down?: number | null }
 
 type Props = {
   data: Point[]
   priceToBeat?: number | null
   /** btc = Bitcoin price; outcomes = Up/Down probabilities */
   mode?: 'btc' | 'outcomes'
+  /** Which BTC series to plot when mode=btc */
+  btcKey?: 'btc' | 'twap'
   title?: string
 }
 
@@ -73,7 +75,9 @@ function outcomeLabel(dataKey: string | number | undefined, name: string | undef
   const n = String(name ?? '')
   if (key === 'upPct' || key === 'up' || n === 'Up') return { label: 'Up', color: '#10b981' }
   if (key === 'downPct' || key === 'down' || n === 'Down') return { label: 'Down', color: '#ef4444' }
-  if (key === 'btc' || n === 'BTC') return { label: 'BTC', color: '#f7931a' }
+  if (key === 'btc' || key === 'btcPlot' || n === 'BTC' || n === 'TWAP') {
+    return { label: n === 'TWAP' || key === 'twap' ? 'TWAP' : 'BTC', color: '#f7931a' }
+  }
   return { label: n || key || '—', color: '#6b7280' }
 }
 
@@ -131,9 +135,16 @@ function ChartTooltip({
   )
 }
 
-export default function PriceChart({ data, priceToBeat, mode = 'btc', title }: Props) {
+export default function PriceChart({
+  data,
+  priceToBeat,
+  mode = 'btc',
+  btcKey = 'btc',
+  title,
+}: Props) {
   const chartData = data.map((d) => ({
     ...d,
+    btcPlot: btcKey === 'twap' ? d.twap : d.btc,
     upPct: d.up != null ? d.up * 100 : null,
     downPct: d.down != null ? d.down * 100 : null,
     label: new Date(d.t).toLocaleTimeString(undefined, {
@@ -143,7 +154,7 @@ export default function PriceChart({ data, priceToBeat, mode = 'btc', title }: P
     }),
   }))
 
-  const btcValues = chartData.map((d) => d.btc).filter((v): v is number => v != null)
+  const btcValues = chartData.map((d) => d.btcPlot).filter((v): v is number => v != null)
   const btcMin = btcValues.length ? Math.min(...btcValues) : 0
   const btcMax = btcValues.length ? Math.max(...btcValues) : 1
   const pad = Math.max((btcMax - btcMin) * 0.15, 5)
@@ -203,13 +214,14 @@ export default function PriceChart({ data, priceToBeat, mode = 'btc', title }: P
                 )}
                 <Line
                   type="monotone"
-                  dataKey="btc"
-                  name="BTC"
+                  dataKey="btcPlot"
+                  name={btcKey === 'twap' ? 'TWAP' : 'BTC'}
                   stroke="#f7931a"
                   dot={false}
                   activeDot={{ r: 4, fill: '#f7931a', stroke: '#fff', strokeWidth: 2 }}
                   strokeWidth={2.25}
                   isAnimationActive={false}
+                  connectNulls
                 />
               </>
             ) : (

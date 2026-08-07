@@ -1,12 +1,19 @@
 import { formatUsd } from '../api'
 
+export type BtcPriceTab = 'twap' | 'live'
+
 type Props = {
   title?: string
   marketId?: string
   windowLabel: string
   priceToBeat: number | null | undefined
-  currentPrice: number | null | undefined
+  /** Binance (or historical) spot */
+  livePrice: number | null | undefined
+  /** Chainlink 30s TWAP via Polymarket RTDS */
+  twapPrice: number | null | undefined
   remainingSeconds: number | null | undefined
+  tab: BtcPriceTab
+  onTab: (t: BtcPriceTab) => void
 }
 
 function pad2(n: number): string {
@@ -18,9 +25,14 @@ export default function BtcPricePanel({
   marketId,
   windowLabel,
   priceToBeat,
-  currentPrice,
+  livePrice,
+  twapPrice,
   remainingSeconds,
+  tab,
+  onTab,
 }: Props) {
+  // TWAP tab must never fall back to Binance spot.
+  const currentPrice = tab === 'twap' ? twapPrice ?? null : livePrice
   const delta =
     currentPrice != null && priceToBeat != null ? currentPrice - priceToBeat : null
   const above = delta != null && delta >= 0
@@ -45,6 +57,27 @@ export default function BtcPricePanel({
         </div>
       </div>
 
+      <div className="btc-price-tabs" role="tablist" aria-label="Bitcoin price source">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'twap'}
+          className={tab === 'twap' ? 'active' : ''}
+          onClick={() => onTab('twap')}
+        >
+          30s TWAP
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'live'}
+          className={tab === 'live' ? 'active' : ''}
+          onClick={() => onTab('live')}
+        >
+          Live
+        </button>
+      </div>
+
       <div className="btc-panel-stats">
         <div className="btc-stat">
           <div className="btc-stat-label">Price To Beat</div>
@@ -53,7 +86,9 @@ export default function BtcPricePanel({
 
         <div className="btc-stat">
           <div className="btc-stat-label-row">
-            <span className="btc-stat-label current-label">Current Price</span>
+            <span className="btc-stat-label current-label">
+              {tab === 'twap' ? 'Chainlink 30s TWAP' : 'Live BTC (Binance)'}
+            </span>
             {delta != null && (
               <span className={`btc-delta ${above ? 'up' : 'down'}`}>
                 {above ? '▲' : '▼'} ${formatUsd(Math.abs(delta), 0)}
@@ -61,7 +96,11 @@ export default function BtcPricePanel({
             )}
           </div>
           <div className={`btc-stat-value current ${above ? 'up' : 'down'}`}>
-            ${formatUsd(currentPrice, 2)}
+            {tab === 'twap' && currentPrice == null ? (
+              <span className="btc-waiting">Waiting for TWAP…</span>
+            ) : (
+              `$${formatUsd(currentPrice, 2)}`
+            )}
           </div>
         </div>
 

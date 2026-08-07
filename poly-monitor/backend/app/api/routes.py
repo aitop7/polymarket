@@ -323,22 +323,29 @@ async def ws_live(websocket: WebSocket) -> None:
 
         reader_task = asyncio.create_task(reader())
         try:
+            last_start: int | None = None
             while True:
                 t0 = time.perf_counter()
                 snap = await svc.snapshot()
                 mid = snap.get("market_id")
-                if mid and mid != last_market_id:
+                start = snap.get("start_time")
+                rolled = (mid and mid != last_market_id) or (
+                    start is not None and start != last_start and last_start is not None
+                )
+                if rolled or (last_market_id is None and mid):
                     await websocket.send_json(
                         {
                             "type": "market",
                             "live": True,
                             "market_id": mid,
                             "slug": snap.get("slug"),
-                            "start_time": snap.get("start_time"),
+                            "start_time": start,
                             "end_time": snap.get("end_time"),
+                            "price_to_beat": snap.get("price_to_beat"),
                         }
                     )
                     last_market_id = mid
+                    last_start = start if start is not None else last_start
                 snap["interval_s"] = interval_s
                 await websocket.send_json(snap)
                 # Target cadence = interval_s (don't add fetch time on top).

@@ -10,6 +10,8 @@ from typing import Any
 
 from app.core.pricing import quotes_from_up_buy
 from app.live.clients import MARKET_DURATION_S, LiveClients, parse_token_ids, window_start_unix
+from app.live import ptb_store
+from app.live.twap_feed import get_twap_feed
 
 _UPDOWN_SLUG_RE = re.compile(r"(?i)^btc-updown-5m-(\d+)$")
 
@@ -97,9 +99,11 @@ def _side_book(raw: dict[str, Any], traded: float) -> dict[str, Any]:
     }
 
 
+
 class LiveMarketService:
     def __init__(self) -> None:
         self.clients = LiveClients()
+        self.twap = get_twap_feed()
         self._market: dict[str, Any] | None = None
         self._market_id: str | None = None
         self._token_up: str | None = None
@@ -107,15 +111,130 @@ class LiveMarketService:
         self._window_start_ms: int | None = None
         self._window_end_ms: int | None = None
         self._price_to_beat: float | None = None
+        self._price_to_beat_source: str | None = None
         self._last_discover_s = 0.0
+        # Start RTDS early so we can capture the current market's open TWAP.
+        self.twap.ensure_started()
 
     async def close(self) -> None:
+        self.twap.stop()
         await self.clients.close()
+
+    def _with_twap(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.twap.ensure_started()
+        payload.update(self.twap.latest())
+        return payload
+
+    def _persist_open_twap_for_next(self, next_start_ms: int) -> None:
+        """
+        At a window boundary, save the open 30s TWAP for the market that starts
+        at next_start_ms (same instant as the prior market's end).
+        """
+        start = int(next_start_ms)
+        hit = self.twap.twap_at_open(start)
+        if hit is None and self.twap.price is not None and self.twap.timestamp_ms is not None:
+            if abs(int(self.twap.timestamp_ms) - start) <= 5_000:
+                hit = (float(self.twap.price), int(self.twap.timestamp_ms))
+        if hit is None:
+            return
+        price, obs_ts = hit
+        ptb_store.set_price_to_beat(
+            start, price, source="open_twap_30s", observed_ts=obs_ts
+        )
+
+    async def _maybe_capture_open_twap(self) -> None:
+        """Near / just after a window boundary, lock open TWAP for the new market."""
+        if self._window_end_ms is None:
+            return
+        # Next market opens when this one ends.
+        next_start = int(self._window_end_ms)
+        now_ms = int(time.time() * 1000)
+        if now_ms < next_start - 3_000 or now_ms > next_start + 15_000:
+            return
+        if ptb_store.get_price_to_beat(next_start) is not None:
+            return
+        self.twap.ensure_started()
+        hit = self.twap.twap_at_open(next_start)
+        if hit is None and now_ms <= next_start + 5_000:
+            hit = await self.twap.wait_for_open_twap(next_start, timeout_s=2.0)
+        if hit is not None:
+            price, obs_ts = hit
+            ptb_store.set_price_to_beat(
+                next_start, price, source="open_twap_30s", observed_ts=obs_ts
+            )
+            return
+        if now_ms >= next_start:
+            computed = await self.clients.compute_twap_30s_ending_at(next_start)
+            if computed is not None:
+                ptb_store.set_price_to_beat(
+                    next_start,
+                    computed,
+                    source="open_twap_30s_computed",
+                    observed_ts=next_start,
+                )
+
+    async def _resolve_price_to_beat(self, window_start_ms: int) -> None:
+        """
+        Price To Beat = current market's open Chainlink 30s TWAP (at window start).
+
+        Not live BTC spot, and not the TWAP value at page-load time.
+
+        Resolution order:
+          1) persisted open TWAP for this window
+          2) RTDS 30s TWAP sample nearest to / first at market open
+          3) briefly wait if we are still near open
+          4) compute 30s TWAP from Binance over [T0−30s, T0]
+        """
+        if self._price_to_beat is not None:
+            return
+        start = int(window_start_ms)
+        now_ms = int(time.time() * 1000)
+
+        stored = ptb_store.get_price_to_beat(start)
+        if stored is not None:
+            self._price_to_beat = float(stored["price"])
+            self._price_to_beat_source = str(stored.get("source") or "open_twap_30s")
+            return
+
+        self.twap.ensure_started()
+        hit = self.twap.twap_at_open(start)
+        if hit is None and now_ms - start < 25_000:
+            hit = await self.twap.wait_for_open_twap(start, timeout_s=4.0)
+
+        if hit is not None:
+            price, obs_ts = hit
+            self._price_to_beat = float(price)
+            self._price_to_beat_source = "open_twap_30s"
+            ptb_store.set_price_to_beat(
+                start, price, source="open_twap_30s", observed_ts=obs_ts
+            )
+            return
+
+        # Missed RTDS open sample: reconstruct open TWAP exactly.
+        computed = await self.clients.compute_twap_30s_ending_at(start)
+        if computed is not None:
+            self._price_to_beat = float(computed)
+            self._price_to_beat_source = "open_twap_30s_computed"
+            ptb_store.set_price_to_beat(
+                start, computed, source="open_twap_30s_computed", observed_ts=start
+            )
+
+    async def _lock_price_to_beat(self, *, btc: float | None) -> None:
+        # Kept for call sites; ignores live `btc` so reload cannot overwrite PTB.
+        del btc
+        await self._maybe_capture_open_twap()
+        if self._window_start_ms is None:
+            return
+        await self._resolve_price_to_beat(self._window_start_ms)
 
     async def _ensure_market(self, *, force: bool = False) -> dict[str, Any] | None:
         now = time.time()
-        need = force or self._market is None or (now - self._last_discover_s) > 20
+        wall_window_ms = window_start_unix(now) * 1000
+        need = force or self._market is None or (now - self._last_discover_s) > 15
         if self._window_end_ms is not None and now * 1000 >= self._window_end_ms:
+            need = True
+        # New 5m slot on the wall clock → force rediscovery even if Gamma lags.
+        if self._window_start_ms is not None and wall_window_ms != self._window_start_ms:
             need = True
         if not need:
             return self._market
@@ -123,7 +242,17 @@ class LiveMarketService:
         market = await self.clients.discover_active_updown()
         self._last_discover_s = now
         if not market:
-            self._market = None
+            # Wall clock moved on; clear beat for the new slot until Gamma catches up.
+            if self._window_start_ms is not None and wall_window_ms != self._window_start_ms:
+                self._market = None
+                self._market_id = None
+                self._token_up = None
+                self._token_down = None
+                self._window_start_ms = wall_window_ms
+                self._window_end_ms = wall_window_ms + MARKET_DURATION_S * 1000
+                self._price_to_beat = None
+            else:
+                self._market = None
             return None
 
         market_id = str(market.get("id") or market.get("conditionId") or "")
@@ -136,21 +265,34 @@ class LiveMarketService:
         else:
             start_s = window_start_unix(now)
         end_s = start_s + MARKET_DURATION_S
+        start_ms = start_s * 1000
 
-        rolled = market_id != self._market_id
+        rolled = market_id != self._market_id or start_ms != self._window_start_ms
+        if rolled and self._window_end_ms is not None:
+            # Boundary TWAP becomes the next market's open Price To Beat.
+            self._persist_open_twap_for_next(self._window_end_ms)
         self._market = market
         self._market_id = market_id
         self._token_up = token_up
         self._token_down = token_down
-        self._window_start_ms = start_s * 1000
+        self._window_start_ms = start_ms
         self._window_end_ms = end_s * 1000
         if rolled:
             self._price_to_beat = None
+            self._price_to_beat_source = None
+            # Prefer persisted open TWAP for this window immediately.
+            stored = ptb_store.get_price_to_beat(start_ms)
+            if stored is not None:
+                self._price_to_beat = float(stored["price"])
+                self._price_to_beat_source = str(
+                    stored.get("source") or "open_twap_30s"
+                )
         return market
 
     async def snapshot(self) -> dict[str, Any]:
         market = await self._ensure_market()
         now_ms = int(time.time() * 1000)
+        self.twap.ensure_started()
 
         async def _btc() -> float:
             return await self.clients.get_btc_price()
@@ -173,44 +315,54 @@ class LiveMarketService:
                     _book(self._token_down),
                 )
         except Exception as exc:
-            return {
-                "type": "error",
-                "message": f"BTC price unavailable: {exc}",
-                "timestamp": now_ms,
-            }
+            return self._with_twap(
+                {
+                    "type": "error",
+                    "message": f"BTC price unavailable: {exc}",
+                    "timestamp": now_ms,
+                }
+            )
+
+        await self._lock_price_to_beat(btc=btc)
 
         if market is None or not self._token_up:
-            return {
-                "type": "tick",
-                "live": True,
-                "timestamp": now_ms,
-                "market_id": None,
-                "slug": None,
-                "start_time": None,
-                "end_time": None,
-                "btc_price": btc,
-                "price_to_beat": self._price_to_beat,
-                "btc_open": self._price_to_beat,
-                "up_price": 0.5,
-                "down_price": 0.5,
-                "up_buy": 0.5,
-                "down_buy": 0.5,
-                "up_sell": 0.49,
-                "down_sell": 0.49,
-                "remaining_seconds": 0,
-                "elapsed_seconds": 0,
-                "book": {
+            return self._with_twap(
+                {
+                    "type": "tick",
+                    "live": True,
                     "timestamp": now_ms,
-                    "mode": "ladder",
-                    "note": "No active btc-updown-5m market found",
-                    "up": None,
-                    "down": None,
-                },
-                "error": "No active market",
-            }
-
-        if self._price_to_beat is None:
-            self._price_to_beat = btc
+                    "market_id": None,
+                    "slug": None,
+                    "start_time": self._window_start_ms,
+                    "end_time": self._window_end_ms,
+                    "btc_price": btc,
+                    "price_to_beat": self._price_to_beat,
+                    "price_to_beat_source": self._price_to_beat_source,
+                    "btc_open": self._price_to_beat,
+                    "up_price": 0.5,
+                    "down_price": 0.5,
+                    "up_buy": 0.5,
+                    "down_buy": 0.5,
+                    "up_sell": 0.49,
+                    "down_sell": 0.49,
+                    "remaining_seconds": max(
+                        0.0,
+                        ((self._window_end_ms or now_ms) - now_ms) / 1000.0,
+                    ),
+                    "elapsed_seconds": max(
+                        0.0,
+                        (now_ms - (self._window_start_ms or now_ms)) / 1000.0,
+                    ),
+                    "book": {
+                        "timestamp": now_ms,
+                        "mode": "ladder",
+                        "note": "No active btc-updown-5m market found",
+                        "up": None,
+                        "down": None,
+                    },
+                    "error": "No active market",
+                }
+            )
 
         up_buy = _up_buy_from_book(up_book)
         if up_buy is None:
@@ -243,29 +395,33 @@ class LiveMarketService:
             "down_sell": q["down_sell"],
         }
 
-        return {
-            "type": "tick",
-            "live": True,
-            "timestamp": now_ms,
-            "market_id": self._market_id,
-            "slug": str(market.get("slug") or ""),
-            "start_time": start_ms,
-            "end_time": end_ms,
-            "btc_price": btc,
-            "price_to_beat": self._price_to_beat,
-            "btc_open": self._price_to_beat,
-            "up_price": q["up_price"],
-            "down_price": q["down_price"],
-            "up_buy": q["up_buy"],
-            "down_buy": q["down_buy"],
-            "up_sell": q["up_sell"],
-            "down_sell": q["down_sell"],
-            "remaining_seconds": remaining,
-            "elapsed_seconds": elapsed,
-            "book": book,
-        }
+        return self._with_twap(
+            {
+                "type": "tick",
+                "live": True,
+                "timestamp": now_ms,
+                "market_id": self._market_id,
+                "slug": str(market.get("slug") or ""),
+                "start_time": start_ms,
+                "end_time": end_ms,
+                "btc_price": btc,
+                "price_to_beat": self._price_to_beat,
+                "price_to_beat_source": self._price_to_beat_source,
+                "btc_open": self._price_to_beat,
+                "up_price": q["up_price"],
+                "down_price": q["down_price"],
+                "up_buy": q["up_buy"],
+                "down_buy": q["down_buy"],
+                "up_sell": q["up_sell"],
+                "down_sell": q["down_sell"],
+                "remaining_seconds": remaining,
+                "elapsed_seconds": elapsed,
+                "book": book,
+            }
+        )
 
     async def market_meta(self) -> dict[str, Any] | None:
+        self.twap.ensure_started()
         market = await self._ensure_market(force=True)
         if not market:
             return None
@@ -278,6 +434,9 @@ class LiveMarketService:
             "end_time": self._window_end_ms,
             "token_up": self._token_up,
             "token_down": self._token_down,
+            "price_to_beat": self._price_to_beat,
+            "price_to_beat_source": self._price_to_beat_source,
+            **self.twap.latest(),
         }
 
 

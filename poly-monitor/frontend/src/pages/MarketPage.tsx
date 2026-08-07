@@ -7,7 +7,7 @@ import {
   type MarketSummary,
   wsUrl,
 } from '../api'
-import BtcPricePanel from '../components/BtcPricePanel'
+import BtcPricePanel, { type BtcPriceTab } from '../components/BtcPricePanel'
 import ControlSidebar from '../components/ControlSidebar'
 import OrderBookPanel, { type BookPayload } from '../components/OrderBookPanel'
 import PriceChart from '../components/PriceChart'
@@ -32,6 +32,9 @@ type Tick = {
   start_time?: number | null
   end_time?: number | null
   price_to_beat?: number | null
+  btc_twap_30s?: number | null
+  btc_twap_ts?: number | null
+  btc_twap_error?: string | null
   book?: BookPayload
   live?: boolean
   error?: string
@@ -86,7 +89,7 @@ export default function MarketPage({ mode }: Props) {
   const [strategy, setStrategy] = useState(mode === 'paper' ? 'lgbm_edge' : 'none')
   const [playing, setPlaying] = useState(false)
   const [tick, setTick] = useState<Tick | null>(null)
-  const [seriesLive, setSeriesLive] = useState<{ t: number; up: number; down: number; btc: number | null }[]>(
+  const [seriesLive, setSeriesLive] = useState<{ t: number; up: number; down: number; btc: number | null; twap: number | null }[]>(
     [],
   )
   const [activity, setActivity] = useState<FillRow[]>([])
@@ -98,9 +101,10 @@ export default function MarketPage({ mode }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [indexing, setIndexing] = useState(false)
   const [paused, setPaused] = useState(false)
-  const [liveActive, setLiveActive] = useState(false)
+  const [liveActive, setLiveActive] = useState(true)
   const [liveMarketId, setLiveMarketId] = useState<string>('')
   const [liveWindow, setLiveWindow] = useState<{ start: number; end: number } | null>(null)
+  const [btcTab, setBtcTab] = useState<BtcPriceTab>('twap')
   const [liveInterval, setLiveInterval] = useState(0.5)
   const wsRef = useRef<WebSocket | null>(null)
   const liveWsRef = useRef<WebSocket | null>(null)
@@ -193,7 +197,7 @@ export default function MarketPage({ mode }: Props) {
         setDetail(d)
         setNeighbors({ prev: n.prev, next: n.next })
         setBook(b as BookPayload)
-        setSeriesLive(d.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc })))
+        setSeriesLive(d.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc, twap: null })))
         setTick(null)
         setActivity([])
         setPlaying(false)
@@ -224,7 +228,7 @@ export default function MarketPage({ mode }: Props) {
     setPaused(false)
     if (detail && !liveActive) {
       setSeriesLive(
-        detail.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc })),
+        detail.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc, twap: null })),
       )
       setTick(null)
     }
@@ -309,7 +313,7 @@ export default function MarketPage({ mode }: Props) {
         setTick(t)
         setSeriesLive((prev) => [
           ...prev,
-          { t: t.timestamp, up: t.up_price, down: t.down_price, btc: t.btc_price },
+          { t: t.timestamp, up: t.up_price, down: t.down_price, btc: t.btc_price, twap: null },
         ])
         if (t.fills?.length) {
           setActivity((a) => [...t.fills!, ...a].slice(0, 100))
@@ -339,6 +343,7 @@ export default function MarketPage({ mode }: Props) {
     liveWsRef.current?.close()
     liveWsRef.current = null
     setLiveActive(true)
+    setBtcTab('twap')
     setSeriesLive([])
     setTick(null)
     setActivity([])
@@ -364,7 +369,10 @@ export default function MarketPage({ mode }: Props) {
         if (msg.start_time != null && msg.end_time != null) {
           setLiveWindow({ start: Number(msg.start_time), end: Number(msg.end_time) })
         }
+        // Clear prior window quotes so Price To Beat doesn't stick across markets.
+        setTick(null)
         setSeriesLive([])
+        setBook(null)
         return
       }
       if (msg.type === 'tick') {
@@ -382,6 +390,7 @@ export default function MarketPage({ mode }: Props) {
               up: msg.up_price!,
               down: msg.down_price!,
               btc: msg.btc_price ?? null,
+              twap: msg.btc_twap_30s ?? null,
             }
             const next = [...prev, point]
             return next.length > 600 ? next.slice(-600) : next
@@ -391,6 +400,16 @@ export default function MarketPage({ mode }: Props) {
     }
     ws.onerror = () => setError('Live WebSocket error')
   }
+
+  // Live market is the default: connect on mount.
+  useEffect(() => {
+    startLive()
+    return () => {
+      liveWsRef.current?.close()
+      liveWsRef.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const onLiveInterval = (s: number) => {
     const v = Math.max(0.1, Math.min(2, s))
@@ -408,9 +427,10 @@ export default function MarketPage({ mode }: Props) {
       setLiveActive(false)
       setLiveMarketId('')
       setLiveWindow(null)
+      setBtcTab('live')
       if (detail) {
         setSeriesLive(
-          detail.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc })),
+          detail.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc, twap: null })),
         )
         setTick(null)
         api.book(detail.market_id).then((b) => setBook(b as BookPayload)).catch(() => {})
@@ -440,6 +460,7 @@ export default function MarketPage({ mode }: Props) {
   const up = tick?.up_price ?? detail?.first.up_price ?? 0.5
   const down = tick?.down_price ?? detail?.first.down_price ?? 0.5
   const btc = tick?.btc_price ?? detail?.first.btc_price
+  const twap = liveActive ? tick?.btc_twap_30s ?? null : null
   const beat = liveActive
     ? tick?.price_to_beat ?? tick?.btc_open ?? null
     : tick?.btc_open ?? detail?.btc_open_price
@@ -527,7 +548,10 @@ export default function MarketPage({ mode }: Props) {
           marketId={displayMarketId}
           windowLabel={windowLabel}
           priceToBeat={beat}
-          currentPrice={btc}
+          livePrice={btc}
+          twapPrice={twap}
+          tab={btcTab}
+          onTab={setBtcTab}
           remainingSeconds={
             remaining ??
             (liveActive
@@ -539,7 +563,7 @@ export default function MarketPage({ mode }: Props) {
         />
 
         <div className="panel">
-          <PriceChart data={chartData} priceToBeat={beat} mode="btc" title="Bitcoin price" />
+          <PriceChart data={chartData} priceToBeat={beat} mode="btc" btcKey={btcTab === 'twap' ? 'twap' : 'btc'} title={btcTab === 'twap' ? 'Chainlink 30s TWAP' : 'Live BTC (Binance)'} />
           <PriceChart data={chartData} mode="outcomes" title="Up / Down price" />
         </div>
 
@@ -611,7 +635,7 @@ export default function MarketPage({ mode }: Props) {
                   : 'Order book depth uses share buckets mapped to absolute price ranges from distance-from-traded-price storage bands.'}
               </p>
               <p>
-                Historical replay and paper fills are simulated. Live trading view does not place orders.
+                Historical replay and paper fills are simulated. Live market view does not place orders.
               </p>
             </div>
           )}
