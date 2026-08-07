@@ -43,10 +43,17 @@ class MarketStore:
         self.meta_path = self.dir / "meta.json"
 
         self.buffers: dict[str, ParquetBuffer] = {
-            "btc_trades": ParquetBuffer(table_path(self.dir, "btc_trades"), "btc_trades"),
-            "btc_depth": ParquetBuffer(
-                table_path(self.dir, "btc_depth"),
-                "btc_depth",
+            "binance_trades": ParquetBuffer(
+                table_path(self.dir, "binance_trades"), "binance_trades"
+            ),
+            "binance_price_orderbook": ParquetBuffer(
+                table_path(self.dir, "binance_price_orderbook"),
+                "binance_price_orderbook",
+                dedupe=dedupe_by_timestamp,
+            ),
+            "chainlink_price": ParquetBuffer(
+                table_path(self.dir, "chainlink_price"),
+                "chainlink_price",
                 dedupe=dedupe_by_timestamp,
             ),
             "orderbooks": ParquetBuffer(
@@ -58,6 +65,9 @@ class MarketStore:
         }
         # Internal dedupe keys not written to parquet
         self._seen_agg_ids: set[int] = set()
+        # Polymarket trades keyed by transaction hash (Data API).
+        self._pm_trades: dict[str, dict[str, Any]] = {}
+        self._pm_trades_dirty = False
         self._lock = threading.Lock()
         self.write_meta()
         logger.info("Market store ready {}", self.dir)
@@ -98,7 +108,7 @@ class MarketStore:
         if len(self._seen_agg_ids) > 200_000:
             self._seen_agg_ids = set(list(self._seen_agg_ids)[-100_000:])
         self.append(
-            "btc_trades",
+            "binance_trades",
             {
                 "timestamp": int(timestamp),
                 "price": float(price),
@@ -107,11 +117,17 @@ class MarketStore:
             },
         )
 
-    def append_depth(self, row: dict[str, Any]) -> None:
+    def append_binance_price_orderbook(self, row: dict[str, Any]) -> None:
         ts = int(row["timestamp"])
         if not self.in_window(ts):
             return
-        self.append("btc_depth", row)
+        self.append("binance_price_orderbook", row)
+
+    def append_chainlink_price(self, row: dict[str, Any]) -> None:
+        ts = int(row["timestamp"])
+        if not self.in_window(ts):
+            return
+        self.append("chainlink_price", row)
 
     def append_orderbook(self, row: dict[str, Any]) -> None:
         ts = int(row["timestamp"])
@@ -119,11 +135,91 @@ class MarketStore:
             return
         self.append("orderbooks", row)
 
-    def append_pm_trade(self, row: dict[str, Any]) -> None:
+    def upsert_pm_trade(self, row: dict[str, Any], *, tx_hash: str = "") -> None:
+        """Insert/update Polymarket fill by transaction hash (RTDS / Data API)."""
         ts = int(row["timestamp"])
-        if not self.in_window(ts):
+        # Same conditionId may print before official open; reject only after end
+        # or more than one window early.
+        if ts >= self.end_ms:
             return
-        self.append("trades", row)
+        if ts < self.start_ms - 300_000:
+            return
+        key = (tx_hash or str(row.get("transaction_hash") or "")).strip().lower()
+        if not key:
+            key = (
+                f"notx:{ts}:{row.get('token')}:{row.get('side')}:"
+                f"{row.get('price')}:{row.get('shares')}"
+            )
+        with self._lock:
+            prev = self._pm_trades.get(key)
+            if prev is None:
+                self._pm_trades[key] = {
+                    "timestamp": ts,
+                    "wallet": str(row.get("wallet") or ""),
+                    "token": bool(row.get("token")),
+                    "side": bool(row.get("side")),
+                    "price": float(row["price"]),
+                    "shares": int(row["shares"]),
+                }
+                self._pm_trades_dirty = True
+                self.buffers["trades"]._since_flush += 1
+                return
+            changed = False
+            wallet = str(row.get("wallet") or "")
+            if wallet and wallet != prev.get("wallet"):
+                prev["wallet"] = wallet
+                changed = True
+            # Prefer latest API fields for this tx
+            if int(prev["timestamp"]) != ts:
+                prev["timestamp"] = ts
+                changed = True
+            price = float(row["price"])
+            shares = int(row["shares"])
+            token = bool(row.get("token"))
+            side = bool(row.get("side"))
+            if prev["price"] != price or prev["shares"] != shares:
+                prev["price"] = price
+                prev["shares"] = shares
+                changed = True
+            if prev["token"] != token or prev["side"] != side:
+                prev["token"] = token
+                prev["side"] = side
+                changed = True
+            if changed:
+                self._pm_trades_dirty = True
+
+    def upsert_pm_trades(self, rows: list[dict[str, Any]]) -> int:
+        before = len(self._pm_trades)
+        for row in rows:
+            self.upsert_pm_trade(row)
+        return max(0, len(self._pm_trades) - before)
+
+    def wallet_fill_rate(self) -> tuple[int, int]:
+        with self._lock:
+            n = len(self._pm_trades)
+            filled = sum(1 for r in self._pm_trades.values() if r.get("wallet"))
+            return filled, n
+
+    def _sync_pm_trades_buffer(self) -> None:
+        with self._lock:
+            if not self._pm_trades_dirty:
+                return
+            rows = sorted(self._pm_trades.values(), key=lambda r: int(r["timestamp"]))
+            self._pm_trades_dirty = False
+        buf = self.buffers["trades"]
+        with buf._lock:
+            buf._rows = [
+                {
+                    "timestamp": int(r["timestamp"]),
+                    "wallet": str(r.get("wallet") or ""),
+                    "token": bool(r["token"]),
+                    "side": bool(r["side"]),
+                    "price": float(r["price"]),
+                    "shares": int(r["shares"]),
+                }
+                for r in rows
+            ]
+            buf._dirty = True
 
     def pending_rows(self) -> int:
         return sum(b.pending for b in self.buffers.values())
@@ -132,6 +228,7 @@ class MarketStore:
         return sum(b.since_flush for b in self.buffers.values())
 
     def flush(self, *, force: bool = False) -> None:
+        self._sync_pm_trades_buffer()
         for name, buf in self.buffers.items():
             n = buf.flush(force=force)
             if n:

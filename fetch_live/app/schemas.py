@@ -6,6 +6,45 @@ import pyarrow as pa
 
 BUCKET_SUFFIXES = ("0_1", "1_3", "3_7", "7_15", "15_30", "30_plus")
 
+# Binance USD-distance bands from mid (widths 0.1…51.2 cumulative).
+# Edges in dollars: 0, 0.1, 0.3, 0.7, 1.5, 3.1, 6.3, 12.7, 25.5, 51.1, 102.3
+# Suffix = edge*10 integers: 0_1, 1_3, …
+BINANCE_BAND_WIDTHS_USD: tuple[float, ...] = (
+    0.1,
+    0.2,
+    0.4,
+    0.8,
+    1.6,
+    3.2,
+    6.4,
+    12.8,
+    25.6,
+    51.2,
+)
+
+
+def _binance_band_edges() -> list[float]:
+    edges = [0.0]
+    for w in BINANCE_BAND_WIDTHS_USD:
+        edges.append(round(edges[-1] + float(w), 10))
+    return edges
+
+
+BINANCE_BAND_EDGES_USD: tuple[float, ...] = tuple(_binance_band_edges())
+BINANCE_BAND_CLOSED_SUFFIXES: tuple[str, ...] = tuple(
+    f"{int(round(BINANCE_BAND_EDGES_USD[i] * 10))}_"
+    f"{int(round(BINANCE_BAND_EDGES_USD[i + 1] * 10))}"
+    for i in range(len(BINANCE_BAND_WIDTHS_USD))
+)
+# Out-of-range: distance >= last edge (102.3 USD from mid)
+BINANCE_BAND_PLUS_SUFFIX = (
+    f"{int(round(BINANCE_BAND_EDGES_USD[-1] * 10))}_"
+)
+BINANCE_BAND_SUFFIXES: tuple[str, ...] = (
+    *BINANCE_BAND_CLOSED_SUFFIXES,
+    BINANCE_BAND_PLUS_SUFFIX,
+)
+
 
 def _orderbook_fields() -> list[pa.Field]:
     fields: list[pa.Field] = [
@@ -28,19 +67,20 @@ def _orderbook_fields() -> list[pa.Field]:
     return fields
 
 
-def _btc_depth_fields() -> list[pa.Field]:
-    fields: list[pa.Field] = [pa.field("timestamp", pa.int64())]
-    for i in range(1, 11):
-        fields.append(pa.field(f"bid_price_{i}", pa.float32()))
-        fields.append(pa.field(f"bid_qty_{i}", pa.float32()))
-    for i in range(1, 11):
-        fields.append(pa.field(f"ask_price_{i}", pa.float32()))
-        fields.append(pa.field(f"ask_qty_{i}", pa.float32()))
+def _binance_price_orderbook_fields() -> list[pa.Field]:
+    """1s Binance mid + ask/bid USD-distance quantity bands."""
+    fields: list[pa.Field] = [
+        pa.field("timestamp", pa.int64()),
+        pa.field("Binance_BTC", pa.float32()),
+    ]
+    for kind in ("ask", "bid"):
+        for suffix in BINANCE_BAND_SUFFIXES:
+            fields.append(pa.field(f"{kind}_{suffix}", pa.float32()))
     return fields
 
 
 SCHEMAS: dict[str, pa.Schema] = {
-    "btc_trades": pa.schema(
+    "binance_trades": pa.schema(
         [
             pa.field("timestamp", pa.int64()),
             pa.field("price", pa.float32()),
@@ -48,7 +88,14 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("buyer_is_maker", pa.bool_()),
         ]
     ),
-    "btc_depth": pa.schema(_btc_depth_fields()),
+    "binance_price_orderbook": pa.schema(_binance_price_orderbook_fields()),
+    "chainlink_price": pa.schema(
+        [
+            pa.field("timestamp", pa.int64()),
+            pa.field("Chainlink_BTC", pa.float32()),
+            pa.field("twap", pa.float32()),
+        ]
+    ),
     "orderbooks": pa.schema(_orderbook_fields()),
     "trades": pa.schema(
         [
@@ -63,11 +110,15 @@ SCHEMAS: dict[str, pa.Schema] = {
 }
 
 TABLE_FILES = {
-    "btc_trades": "btc_trades.parquet",
-    "btc_depth": "btc_depth.parquet",
+    "binance_trades": "binance_trades.parquet",
+    "binance_price_orderbook": "binance_price_orderbook.parquet",
+    "chainlink_price": "chainlink_price.parquet",
     "orderbooks": "orderbooks.parquet",
     "trades": "trades.parquet",
 }
 
 ORDERBOOK_COLUMNS = [f.name for f in SCHEMAS["orderbooks"]]
-BTC_DEPTH_COLUMNS = [f.name for f in SCHEMAS["btc_depth"]]
+BINANCE_PRICE_ORDERBOOK_COLUMNS = [f.name for f in SCHEMAS["binance_price_orderbook"]]
+BINANCE_BAND_COLUMNS = [
+    c for c in BINANCE_PRICE_ORDERBOOK_COLUMNS if c not in {"timestamp", "Binance_BTC"}
+]

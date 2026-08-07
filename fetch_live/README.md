@@ -33,9 +33,16 @@ Binance streams default to `wss://data-stream.binance.vision` (geo-friendly). Ov
 data/
   YYYY-MM-DD/
     {market_id}/
-      btc_trades.parquet
-      btc_depth.parquet
-      orderbooks.parquet
-      trades.parquet
+      binance_trades.parquet           # Binance aggTrades
+      binance_price_orderbook.parquet  # 1s Binance_BTC mid + USD-distance qty bands
+      chainlink_price.parquet          # 1s Chainlink_BTC + twap (RTDS)
+      orderbooks.parquet               # Polymarket Up/Down books
+      trades.parquet                   # RTDS activity/trades (includes wallet)
       meta.json
 ```
+
+`chainlink_price.parquet`: Chainlink spot (`Chainlink_BTC`) and 30s TWAP from Polymarket RTDS.
+
+`binance_price_orderbook.parquet`: Binance mid (`Binance_BTC`) plus ask/bid BTC quantity in USD-distance bands from mid (widths 0.1, 0.2, …, 51.2 → `ask_0_1` … `ask_511_1023`, plus out-of-range `ask_1023_` / `bid_1023_`).
+
+`trades.parquet` is streamed from Polymarket RTDS (`activity` / `trades`) with `proxyWallet`. CLOB WS is used for live order books only. Data API `/trades` seeds on market start and gap-fills on market end.

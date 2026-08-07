@@ -1,4 +1,4 @@
-"""Previous-market close 30s TWAP for meta.btc_open_price."""
+"""RTDS Chainlink spot + 30s TWAP; also resolves meta.btc_open_price."""
 
 from __future__ import annotations
 
@@ -21,12 +21,15 @@ BINANCE_FALLBACKS = (
 
 
 class TwapOpenResolver:
-    """RTDS 30s TWAP buffer + Binance historical TWAP fallback."""
+    """RTDS Chainlink + 30s TWAP buffer; Binance historical TWAP fallback for open."""
 
     def __init__(self) -> None:
         self._twap_hist: deque[tuple[int, float]] = deque(maxlen=20_000)
-        self._price: float | None = None
-        self._ts: int | None = None
+        self._chainlink: deque[tuple[int, float]] = deque(maxlen=20_000)
+        self._twap_price: float | None = None
+        self._twap_ts: int | None = None
+        self._chainlink_price: float | None = None
+        self._chainlink_ts: int | None = None
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=4.0))
@@ -35,7 +38,7 @@ class TwapOpenResolver:
         if self._task is not None and not self._task.done():
             return
         self._running = True
-        self._task = asyncio.create_task(self._run(), name="rtds-twap")
+        self._task = asyncio.create_task(self._run(), name="rtds-btc-prices")
 
     async def close(self) -> None:
         self._running = False
@@ -43,6 +46,16 @@ class TwapOpenResolver:
             self._task.cancel()
             self._task = None
         await self._http.aclose()
+
+    def latest_chainlink(self) -> tuple[float, int] | None:
+        if self._chainlink_price is None or self._chainlink_ts is None:
+            return None
+        return float(self._chainlink_price), int(self._chainlink_ts)
+
+    def latest_twap(self) -> tuple[float, int] | None:
+        if self._twap_price is None or self._twap_ts is None:
+            return None
+        return float(self._twap_price), int(self._twap_ts)
 
     def twap_at_close(self, end_ms: int, *, grace_ms: int = 5_000) -> tuple[float, int] | None:
         end = int(end_ms)
@@ -64,7 +77,6 @@ class TwapOpenResolver:
         self.ensure_started()
         hit = self.twap_at_close(window_start_ms)
         if hit is None:
-            # brief wait if near open
             now = int(time.time() * 1000)
             if now - window_start_ms < 20_000:
                 deadline = time.monotonic() + 3.0
@@ -138,7 +150,7 @@ class TwapOpenResolver:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("RTDS TWAP error: {}", exc)
+                logger.warning("RTDS BTC prices error: {}", exc)
             if self._running:
                 await asyncio.sleep(2)
 
@@ -150,7 +162,12 @@ class TwapOpenResolver:
                     "topic": "crypto_prices_twap_thirty",
                     "type": "update",
                     "filters": '{"symbol":"btc/usd"}',
-                }
+                },
+                {
+                    "topic": "crypto_prices_chainlink",
+                    "type": "*",
+                    "filters": '{"symbol":"btc/usd"}',
+                },
             ],
         }
         async with websockets.connect(
@@ -160,6 +177,7 @@ class TwapOpenResolver:
             max_size=2**20,
         ) as ws:
             await ws.send(json.dumps(sub))
+            logger.info("RTDS subscribed Chainlink + 30s TWAP (btc/usd)")
             ping_at = time.monotonic()
             while self._running:
                 timeout = max(0.1, 5.0 - (time.monotonic() - ping_at))
@@ -183,16 +201,11 @@ class TwapOpenResolver:
         if not isinstance(msg, dict):
             return
         topic = str(msg.get("topic") or "")
-        if topic not in {"crypto_prices_twap_thirty", "prices.crypto.chainlink.twap"}:
-            return
         payload = msg.get("payload") or {}
         if not isinstance(payload, dict):
             return
         symbol = str(payload.get("symbol") or "").lower()
         if symbol and symbol not in {"btc/usd", "btcusdt"}:
-            return
-        window = payload.get("window_s") or payload.get("windowSeconds")
-        if window is not None and int(window) != 30:
             return
         value = payload.get("value")
         if value is None and payload.get("full_accuracy_value") is not None:
@@ -210,6 +223,21 @@ class TwapOpenResolver:
             ts_ms = int(payload.get("timestamp") or time.time() * 1000)
         except (TypeError, ValueError):
             ts_ms = int(time.time() * 1000)
-        self._price = price
-        self._ts = ts_ms
-        self._twap_hist.append((ts_ms, price))
+
+        if topic in {"crypto_prices_twap_thirty", "prices.crypto.chainlink.twap"}:
+            window = (
+                payload.get("window_s")
+                or payload.get("windowSeconds")
+                or payload.get("window_seconds")
+            )
+            if window is not None and int(window) != 30:
+                return
+            self._twap_price = price
+            self._twap_ts = ts_ms
+            self._twap_hist.append((ts_ms, price))
+            return
+
+        if topic in {"crypto_prices_chainlink", "prices.crypto.chainlink"}:
+            self._chainlink_price = price
+            self._chainlink_ts = ts_ms
+            self._chainlink.append((ts_ms, price))

@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     resolve_poll_interval_s: float = 10.0
     snapshot_interval_s: float = 1.0
 
+    data_api_url: str = "https://data-api.polymarket.com"
+    trades_poll_interval_s: float = 0.5
+
     gamma_url: str = "https://gamma-api.polymarket.com"
     clob_url: str = "https://clob.polymarket.com"
     polymarket_market_ws: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"

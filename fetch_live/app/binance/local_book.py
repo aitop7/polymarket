@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.schemas import BTC_DEPTH_COLUMNS
-
 
 class LocalOrderBook:
     def __init__(self) -> None:
@@ -59,25 +57,17 @@ class LocalOrderBook:
         self.last_update_id = final
         return True
 
-    def top_levels(self, n: int = 10) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
-        bids = sorted(self.bids.items(), key=lambda x: x[0], reverse=True)[:n]
-        asks = sorted(self.asks.items(), key=lambda x: x[0])[:n]
-        return bids, asks
+    def best_bid_ask(self) -> tuple[float | None, float | None]:
+        best_bid = max(self.bids.keys()) if self.bids else None
+        best_ask = min(self.asks.keys()) if self.asks else None
+        return best_bid, best_ask
 
-    def depth_row(self, timestamp_ms: int, n: int = 10) -> dict[str, Any]:
-        bids, asks = self.top_levels(n)
-        row: dict[str, Any] = {"timestamp": int(timestamp_ms)}
-        for i in range(1, n + 1):
-            if i <= len(bids):
-                row[f"bid_price_{i}"] = float(bids[i - 1][0])
-                row[f"bid_qty_{i}"] = float(bids[i - 1][1])
-            else:
-                row[f"bid_price_{i}"] = None
-                row[f"bid_qty_{i}"] = None
-            if i <= len(asks):
-                row[f"ask_price_{i}"] = float(asks[i - 1][0])
-                row[f"ask_qty_{i}"] = float(asks[i - 1][1])
-            else:
-                row[f"ask_price_{i}"] = None
-                row[f"ask_qty_{i}"] = None
-        return {c: row.get(c) for c in BTC_DEPTH_COLUMNS}
+    def mid_price(self) -> float | None:
+        bid, ask = self.best_bid_ask()
+        if bid is not None and ask is not None:
+            return (float(bid) + float(ask)) / 2.0
+        if bid is not None:
+            return float(bid)
+        if ask is not None:
+            return float(ask)
+        return None
