@@ -4,7 +4,9 @@ dataset/
 training/
 features/
 models/
-raw/
+poly-monitor/frontend/node_modules/
+poly-monitor/frontend/dist/
+
 venv/
 *.pyc
 *.pyo
