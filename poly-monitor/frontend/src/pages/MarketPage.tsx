@@ -660,9 +660,9 @@ export default function MarketPage({ mode }: Props) {
           {tab === 'rules' && (
             <div className="muted" style={{ fontSize: '0.9rem' }}>
               <p>
-                This market resolves to <strong>Up</strong> if the Chainlink BTC/USD price at the end of
-                the window is greater than or equal to the Price to Beat at the start; otherwise{' '}
-                <strong>Down</strong>.
+                This market resolves to <strong>Up</strong> if the Chainlink BTC/USD 30s TWAP at the end of
+                the window is greater than or equal to the Price to Beat (30s TWAP at window start, set when
+                the market opens); otherwise <strong>Down</strong>.
               </p>
               <p>
                 {liveActive

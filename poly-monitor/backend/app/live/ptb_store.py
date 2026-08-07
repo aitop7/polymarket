@@ -10,18 +10,22 @@ from typing import Any
 _STORE_PATH = Path(__file__).resolve().parents[2] / ".cache" / "price_to_beat.json"
 _MAX_AGE_MS = 36 * 3600 * 1000  # keep ~1.5 days
 
-# Price To Beat = previous market close 30s TWAP (not live spot / not TWAP-now).
+# Price To Beat = Chainlink 30s TWAP at window start, set when the market opens.
 VALID_SOURCES = frozenset(
     {
-        "prev_close_twap_30s",
-        "prev_close_twap_30s_computed",
-        # legacy aliases (same boundary timestamp)
         "open_twap_30s",
         "open_twap_30s_computed",
+        "fetch_live_meta",
+        # legacy aliases (same T0 boundary)
+        "prev_close_twap_30s",
+        "prev_close_twap_30s_computed",
         "twap_30s",
         "twap_30s_computed",
     }
 )
+
+# Sample farther than this from start_time is provisional (early lock).
+GOOD_SAMPLE_MAX_DELTA_MS = 1_500
 
 
 def _load() -> dict[str, Any]:
@@ -42,6 +46,20 @@ def _save(data: dict[str, Any]) -> None:
         if isinstance(v, dict) and now - int(v.get("saved_at") or 0) < _MAX_AGE_MS
     }
     _STORE_PATH.write_text(json.dumps(pruned, indent=2), encoding="utf-8")
+
+
+def sample_delta_ms(window_start_ms: int, observed_ts: int | None) -> int | None:
+    if observed_ts is None:
+        return None
+    try:
+        return abs(int(observed_ts) - int(window_start_ms))
+    except (TypeError, ValueError):
+        return None
+
+
+def is_good_sample(window_start_ms: int, observed_ts: int | None) -> bool:
+    delta = sample_delta_ms(window_start_ms, observed_ts)
+    return delta is not None and delta <= GOOD_SAMPLE_MAX_DELTA_MS
 
 
 def get_price_to_beat(window_start_ms: int) -> dict[str, Any] | None:
@@ -73,16 +91,31 @@ def set_price_to_beat(
     source: str,
     observed_ts: int | None = None,
     overwrite: bool = False,
-) -> None:
+) -> bool:
+    """
+    Persist PTB. Returns True if written.
+
+    Overwrites when:
+      - overwrite=True, or
+      - no existing row, or
+      - new sample is closer to window_start than the stored one
+    Never replaces a fetch_live_meta lock unless overwrite=True.
+    """
     data = _load()
     key = str(int(window_start_ms))
-    if (
-        not overwrite
-        and key in data
-        and isinstance(data[key], dict)
-        and data[key].get("price") is not None
-    ):
-        return  # never overwrite a locked open
+    start = int(window_start_ms)
+    existing = data.get(key) if isinstance(data.get(key), dict) else None
+
+    if existing is not None and existing.get("price") is not None and not overwrite:
+        if str(existing.get("source") or "") == "fetch_live_meta":
+            return False
+        old_ts = existing.get("observed_ts")
+        old_delta = sample_delta_ms(start, old_ts if old_ts is not None else None)
+        new_delta = sample_delta_ms(start, observed_ts)
+        # Keep existing if it is at least as close to T0.
+        if old_delta is not None and (new_delta is None or new_delta >= old_delta):
+            return False
+
     data[key] = {
         "price": float(price),
         "source": source,
@@ -90,6 +123,7 @@ def set_price_to_beat(
         "saved_at": int(time.time() * 1000),
     }
     _save(data)
+    return True
 
 
 def clear_price_to_beat(window_start_ms: int) -> None:

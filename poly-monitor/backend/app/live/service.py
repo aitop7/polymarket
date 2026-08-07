@@ -6,6 +6,7 @@ import json
 import re
 import time
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from app.core.pricing import quotes_from_up_buy
@@ -14,6 +15,10 @@ from app.live import ptb_store
 from app.live.twap_feed import get_twap_feed
 
 _UPDOWN_SLUG_RE = re.compile(r"(?i)^btc-updown-5m-(\d+)$")
+
+# Don't lock PTB before the open boundary; refine while near open.
+_PTB_REFINE_MS = 15_000
+_FETCH_LIVE_DATA = Path(__file__).resolve().parents[4] / "fetch_live" / "data"
 
 
 def _levels_from_book(raw: dict[str, Any], *, side: str, limit: int = 12) -> list[dict[str, Any]]:
@@ -112,8 +117,10 @@ class LiveMarketService:
         self._window_end_ms: int | None = None
         self._price_to_beat: float | None = None
         self._price_to_beat_source: str | None = None
+        self._fetch_live_open_px: float | None = None
+        self._fetch_live_open_for: int | None = None
         self._last_discover_s = 0.0
-        # Start RTDS early so we can capture previous-market close TWAP.
+        # Start RTDS early so open TWAP (Price to Beat) is ready at market open.
         self.twap.ensure_started()
 
     async def close(self) -> None:
@@ -125,112 +132,201 @@ class LiveMarketService:
         payload.update(self.twap.latest())
         return payload
 
-    def _persist_prev_close_twap(self, prev_close_ms: int) -> None:
+    def _lookup_fetch_live_open(
+        self, *, market_id: str | None, window_start_ms: int
+    ) -> float | None:
+        """Prefer fetch_live meta.json btc_open_price when that recorder has it."""
+        start = int(window_start_ms)
+        if self._fetch_live_open_for == start and self._fetch_live_open_px is not None:
+            return self._fetch_live_open_px
+
+        root = _FETCH_LIVE_DATA
+        if not root.is_dir():
+            return None
+
+        metas: list[Path] = []
+        if market_id:
+            for day in sorted(root.iterdir(), reverse=True)[:4]:
+                if day.is_dir():
+                    meta = day / str(market_id) / "meta.json"
+                    if meta.is_file():
+                        metas.append(meta)
+                        break
+        if not metas:
+            # Fallback: find meta by start_time in recent days (cheap: only meta.json).
+            for day in sorted(root.iterdir(), reverse=True)[:2]:
+                if not day.is_dir():
+                    continue
+                for market_dir in day.iterdir():
+                    meta = market_dir / "meta.json"
+                    if meta.is_file():
+                        metas.append(meta)
+
+        for meta in metas:
+            try:
+                row = json.loads(meta.read_text(encoding="utf-8"))
+                if int(row.get("start_time") or 0) != start:
+                    continue
+                open_px = row.get("btc_open_price")
+                if open_px is None:
+                    continue
+                px = float(open_px)
+                self._fetch_live_open_for = start
+                self._fetch_live_open_px = px
+                return px
+            except Exception:
+                continue
+        return None
+
+    def _apply_ptb(self, price: float, source: str, observed_ts: int | None) -> None:
+        self._price_to_beat = float(price)
+        self._price_to_beat_source = source
+        if self._window_start_ms is not None:
+            ptb_store.set_price_to_beat(
+                self._window_start_ms,
+                price,
+                source=source,
+                observed_ts=observed_ts,
+                overwrite=(source == "fetch_live_meta"),
+            )
+
+    def _persist_open_twap(self, window_start_ms: int) -> None:
         """
-        Save previous market's close 30s TWAP as Price To Beat for the market
-        that opens at prev_close_ms.
+        Persist RTDS sample only if it is already close to T0.
+        Early/pre-open samples must not hard-lock Price To Beat.
         """
-        end = int(prev_close_ms)
-        hit = self.twap.twap_at_close(end)
-        if hit is None and self.twap.price is not None and self.twap.timestamp_ms is not None:
-            if abs(int(self.twap.timestamp_ms) - end) <= 5_000:
-                hit = (float(self.twap.price), int(self.twap.timestamp_ms))
+        start = int(window_start_ms)
+        hit = self.twap.twap_at_close(start)
         if hit is None:
             return
         price, obs_ts = hit
+        if not ptb_store.is_good_sample(start, obs_ts):
+            return
         ptb_store.set_price_to_beat(
-            end, price, source="prev_close_twap_30s", observed_ts=obs_ts
+            start, price, source="open_twap_30s", observed_ts=obs_ts
         )
 
-    async def _maybe_capture_prev_close_twap(self) -> None:
-        """Near / just after current window end, lock close TWAP for the next market."""
-        if self._window_end_ms is None:
-            return
-        end = int(self._window_end_ms)
-        now_ms = int(time.time() * 1000)
-        if now_ms < end - 3_000 or now_ms > end + 15_000:
-            return
-        if ptb_store.get_price_to_beat(end) is not None:
-            return
-        self.twap.ensure_started()
-        hit = self.twap.twap_at_close(end)
-        if hit is None and now_ms <= end + 5_000:
-            hit = await self.twap.wait_for_close_twap(end, timeout_s=2.0)
+    async def _fetch_open_price(
+        self, window_start_ms: int, *, wait_s: float = 3.0
+    ) -> tuple[float, str, int] | None:
+        """
+        Price To Beat / btc_open = Polymarket Chainlink 30s TWAP at start_time.
+
+        Primary: RTDS wss://ws-live-data.polymarket.com
+                 topic crypto_prices_twap_thirty, filter btc/usd
+                 sample closest to market start_time (prefer at/before T0)
+        Fallback: Binance REST aggTrades BTCUSDT TWAP over [start−30s, start]
+        """
+        start_ms = int(window_start_ms)
+        hit = await self.twap.resolve_twap_at(start_ms, wait_s=wait_s)
         if hit is not None:
             price, obs_ts = hit
-            ptb_store.set_price_to_beat(
-                end, price, source="prev_close_twap_30s", observed_ts=obs_ts
-            )
+            return float(price), "open_twap_30s", int(obs_ts)
+
+        computed = await self.clients.compute_twap_30s_ending_at(start_ms)
+        if computed is not None:
+            return float(computed), "open_twap_30s_computed", start_ms
+        return None
+
+    async def _maybe_capture_open_twap_for_next(self) -> None:
+        """After current window end, capture open TWAP for the next market."""
+        if self._window_end_ms is None:
             return
-        if now_ms >= end:
-            computed = await self.clients.compute_twap_30s_ending_at(end)
-            if computed is not None:
-                ptb_store.set_price_to_beat(
-                    end,
-                    computed,
-                    source="prev_close_twap_30s_computed",
-                    observed_ts=end,
-                )
+        # Next market opens when this one closes (T1 → next T0).
+        start = int(self._window_end_ms)
+        now_ms = int(time.time() * 1000)
+        # Never lock before the open boundary — that caused early wrong PTBs.
+        if now_ms < start or now_ms > start + _PTB_REFINE_MS:
+            return
+        stored = ptb_store.get_price_to_beat(start)
+        if stored is not None and ptb_store.is_good_sample(start, stored.get("observed_ts")):
+            return
+        wait_s = 3.0 if now_ms <= start + 5_000 else 0.5
+        fetched = await self._fetch_open_price(start, wait_s=wait_s)
+        if fetched is None:
+            return
+        price, source, obs_ts = fetched
+        ptb_store.set_price_to_beat(
+            start, price, source=source, observed_ts=obs_ts
+        )
 
     async def _resolve_price_to_beat(self, window_start_ms: int) -> None:
         """
-        Price To Beat = previous 5m market's close Chainlink 30s TWAP.
+        Price To Beat = Chainlink 30s TWAP at window start (same as Polymarket).
 
-        Previous market ends at current window start (T0). Not live BTC / not
-        TWAP-at-reload.
-
-        Resolution order:
-          1) persisted previous-close TWAP for this window
-          2) RTDS 30s TWAP sample nearest to previous close (prefer at/before T0)
-          3) briefly wait if we are still near that boundary
-          4) compute 30s TWAP from Binance over [T0−30s, T0]
+        Prefer fetch_live meta when present. Otherwise RTDS sample nearest T0;
+        refine for a short window after open so early samples do not stick.
         """
-        if self._price_to_beat is not None:
-            return
-        prev_close_ms = int(window_start_ms)
+        start_ms = int(window_start_ms)
         now_ms = int(time.time() * 1000)
 
-        stored = ptb_store.get_price_to_beat(prev_close_ms)
-        if stored is not None:
+        # Authoritative: fetch_live recorder (matches Polymarket when captured live).
+        meta_open = self._lookup_fetch_live_open(
+            market_id=self._market_id, window_start_ms=start_ms
+        )
+        if meta_open is not None:
+            self._apply_ptb(meta_open, "fetch_live_meta", start_ms)
+            return
+
+        stored = ptb_store.get_price_to_beat(start_ms)
+        good = (
+            stored is not None
+            and ptb_store.is_good_sample(start_ms, stored.get("observed_ts"))
+        )
+        refining = 0 <= (now_ms - start_ms) <= _PTB_REFINE_MS
+
+        if stored is not None and good and not refining:
             self._price_to_beat = float(stored["price"])
             self._price_to_beat_source = str(
-                stored.get("source") or "prev_close_twap_30s"
+                stored.get("source") or "open_twap_30s"
             )
             return
 
-        self.twap.ensure_started()
-        hit = self.twap.twap_at_close(prev_close_ms)
-        if hit is None and now_ms - prev_close_ms < 25_000:
-            hit = await self.twap.wait_for_close_twap(prev_close_ms, timeout_s=4.0)
-
-        if hit is not None:
-            price, obs_ts = hit
-            self._price_to_beat = float(price)
-            self._price_to_beat_source = "prev_close_twap_30s"
-            ptb_store.set_price_to_beat(
-                prev_close_ms,
-                price,
-                source="prev_close_twap_30s",
-                observed_ts=obs_ts,
+        if stored is not None and not refining and not good:
+            # Too late to refine an early lock; still surface it.
+            self._price_to_beat = float(stored["price"])
+            self._price_to_beat_source = str(
+                stored.get("source") or "open_twap_30s"
             )
             return
 
-        # Missed RTDS close sample: reconstruct previous close TWAP exactly.
-        computed = await self.clients.compute_twap_30s_ending_at(prev_close_ms)
-        if computed is not None:
-            self._price_to_beat = float(computed)
-            self._price_to_beat_source = "prev_close_twap_30s_computed"
-            ptb_store.set_price_to_beat(
-                prev_close_ms,
-                computed,
-                source="prev_close_twap_30s_computed",
-                observed_ts=prev_close_ms,
+        # Near open (or no lock yet): wait for the sample closest to start_time.
+        if now_ms < start_ms:
+            # Not open yet — keep any provisional value but do not hard-lock early.
+            if stored is not None:
+                self._price_to_beat = float(stored["price"])
+                self._price_to_beat_source = str(
+                    stored.get("source") or "open_twap_30s"
+                )
+            return
+
+        wait_s = 4.0 if now_ms - start_ms < 8_000 else (1.0 if refining else 0.0)
+        fetched = await self._fetch_open_price(start_ms, wait_s=wait_s)
+        if fetched is None:
+            if stored is not None:
+                self._price_to_beat = float(stored["price"])
+                self._price_to_beat_source = str(
+                    stored.get("source") or "open_twap_30s"
+                )
+            return
+        price, source, obs_ts = fetched
+        wrote = ptb_store.set_price_to_beat(
+            start_ms, price, source=source, observed_ts=obs_ts
+        )
+        if wrote or self._price_to_beat is None:
+            self._price_to_beat = price
+            self._price_to_beat_source = source
+        elif stored is not None:
+            # Kept closer existing sample.
+            self._price_to_beat = float(stored["price"])
+            self._price_to_beat_source = str(
+                stored.get("source") or "open_twap_30s"
             )
 
     async def _lock_price_to_beat(self, *, btc: float | None) -> None:
         # Kept for call sites; ignores live `btc` so reload cannot overwrite PTB.
         del btc
-        await self._maybe_capture_prev_close_twap()
+        await self._maybe_capture_open_twap_for_next()
         if self._window_start_ms is None:
             return
         await self._resolve_price_to_beat(self._window_start_ms)
@@ -277,8 +373,8 @@ class LiveMarketService:
 
         rolled = market_id != self._market_id or start_ms != self._window_start_ms
         if rolled and self._window_end_ms is not None:
-            # Lock ending market's close TWAP as next market's Price To Beat.
-            self._persist_prev_close_twap(self._window_end_ms)
+            # Next window opens at this close — lock TWAP at that open as PTB.
+            self._persist_open_twap(self._window_end_ms)
         self._market = market
         self._market_id = market_id
         self._token_up = token_up
@@ -288,13 +384,29 @@ class LiveMarketService:
         if rolled:
             self._price_to_beat = None
             self._price_to_beat_source = None
-            # Prefer previous market's persisted close TWAP immediately.
-            stored = ptb_store.get_price_to_beat(start_ms)
-            if stored is not None:
-                self._price_to_beat = float(stored["price"])
-                self._price_to_beat_source = str(
-                    stored.get("source") or "prev_close_twap_30s"
-                )
+            self._fetch_live_open_px = None
+            self._fetch_live_open_for = None
+            # Prefer fetch_live / good persisted open TWAP immediately.
+            meta_open = self._lookup_fetch_live_open(
+                market_id=market_id, window_start_ms=start_ms
+            )
+            if meta_open is not None:
+                self._apply_ptb(meta_open, "fetch_live_meta", start_ms)
+            else:
+                stored = ptb_store.get_price_to_beat(start_ms)
+                if stored is not None and ptb_store.is_good_sample(
+                    start_ms, stored.get("observed_ts")
+                ):
+                    self._price_to_beat = float(stored["price"])
+                    self._price_to_beat_source = str(
+                        stored.get("source") or "open_twap_30s"
+                    )
+                elif stored is not None:
+                    # Provisional early lock — show it but keep refining.
+                    self._price_to_beat = float(stored["price"])
+                    self._price_to_beat_source = str(
+                        stored.get("source") or "open_twap_30s"
+                    )
         return market
 
     async def snapshot(self) -> dict[str, Any]:

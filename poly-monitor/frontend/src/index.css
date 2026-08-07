@@ -981,6 +981,14 @@ select {
   font-weight: 500;
 }
 
+.btc-stat-hint {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  margin-top: 0.1rem;
+  opacity: 0.85;
+}
+
 .btc-stat-label.current-label,
 .current-label {
   color: var(--btc);

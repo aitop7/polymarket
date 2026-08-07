@@ -188,6 +188,27 @@ class TwapFeed:
             await asyncio.sleep(0.1)
         return self.twap_at_open(window_start_ms, grace_ms=grace_ms)
 
+    async def resolve_twap_at(
+        self, at_ms: int, *, wait_s: float = 3.0, grace_ms: int = _BOUNDARY_GRACE_MS
+    ) -> tuple[float, int] | None:
+        """
+        Polymarket RTDS Chainlink 30s TWAP sample closest to at_ms.
+
+        Primary source for Price To Beat (open) and close TWAP:
+          wss://ws-live-data.polymarket.com
+          topic crypto_prices_twap_thirty, filter btc/usd
+        """
+        self.ensure_started()
+        hit = self.twap_at_close(at_ms, grace_ms=grace_ms)
+        if hit is None:
+            now = int(time.time() * 1000)
+            if abs(now - int(at_ms)) < 20_000 and wait_s > 0:
+                deadline = time.monotonic() + wait_s
+                while time.monotonic() < deadline and hit is None:
+                    await asyncio.sleep(0.15)
+                    hit = self.twap_at_close(at_ms, grace_ms=grace_ms)
+        return hit
+
     def stop(self) -> None:
         self._running = False
         if self._task is not None:

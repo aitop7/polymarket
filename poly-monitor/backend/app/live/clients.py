@@ -153,9 +153,10 @@ class LiveClients:
 
     async def compute_twap_30s_ending_at(self, end_ms: int) -> float | None:
         """
-        Time-weighted average of Binance BTCUSDT trades over [end-30s, end].
+        Fallback only: time-weighted average of Binance BTCUSDT aggTrades
+        over [end-30s, end] when RTDS missed the Chainlink 30s TWAP sample.
 
-        Used when RTDS missed the Chainlink 30s TWAP sample at market open.
+        Primary host: https://data-api.binance.vision/api/v3/aggTrades
         """
         end = int(end_ms)
         start = end - 30_000
