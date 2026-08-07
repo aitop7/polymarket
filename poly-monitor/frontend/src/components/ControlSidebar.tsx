@@ -1,9 +1,7 @@
-import { formatPct, formatUsd } from '../api'
 import type { MarketSummary } from '../api'
 
 type Props = {
   mode: 'monitor' | 'paper'
-  // data
   split: string
   onSplit: (s: string) => void
   indexing: boolean
@@ -15,7 +13,6 @@ type Props = {
   markets: MarketSummary[]
   onTime: (t: string) => void
   formatSlotLabel: (timeEt: string, startMs?: number, endMs?: number) => string
-  // playback
   speed: number
   onSpeed: (n: number) => void
   playing: boolean
@@ -29,22 +26,8 @@ type Props = {
   hasNext: boolean
   onPrev: () => void
   onNext: () => void
-  // strategy (paper)
   strategy: string
   onStrategy: (s: string) => void
-  // trade
-  tradeAction: 'BUY' | 'SELL'
-  onTradeAction: (a: 'BUY' | 'SELL') => void
-  side: 'UP' | 'DOWN'
-  onSide: (s: 'UP' | 'DOWN') => void
-  amount: number
-  onAmount: (n: number) => void
-  onTrade: () => void
-  upPrice: number
-  downPrice: number
-  cash?: number
-  modelPUp?: number | null
-  tradeDisabled: boolean
 }
 
 export default function ControlSidebar(props: Props) {
@@ -76,25 +59,10 @@ export default function ControlSidebar(props: Props) {
     onNext,
     strategy,
     onStrategy,
-    tradeAction,
-    onTradeAction,
-    side,
-    onSide,
-    amount,
-    onAmount,
-    onTrade,
-    upPrice,
-    downPrice,
-    cash,
-    modelPUp,
-    tradeDisabled,
   } = props
 
-  const price = side === 'UP' ? upPrice : downPrice
-  const shares = price > 0 ? amount / price : 0
-
   return (
-    <aside className="control-sidebar">
+    <aside className="control-sidebar control-sidebar-left">
       <div className="sidebar-section">
         <div className="sidebar-heading">Data</div>
         <label className="sidebar-label">Dataset</label>
@@ -142,13 +110,10 @@ export default function ControlSidebar(props: Props) {
         )}
       </div>
 
-      <div className="sidebar-section">
+      <div className="sidebar-section sidebar-section-last">
         <div className="sidebar-heading">Playback</div>
         <label className="sidebar-label">Speed</label>
-        <select
-          value={speed}
-          onChange={(e) => onSpeed(Number(e.target.value))}
-        >
+        <select value={speed} onChange={(e) => onSpeed(Number(e.target.value))}>
           <option value={1}>1x · Normal</option>
           <option value={5}>5x</option>
           <option value={10}>10x</option>
@@ -205,76 +170,6 @@ export default function ControlSidebar(props: Props) {
             Next →
           </button>
         </div>
-      </div>
-
-      <div className="sidebar-section">
-        <div className="sidebar-heading">Trade</div>
-        {mode === 'monitor' && (
-          <p className="sidebar-hint">Switch to Paper to place simulated orders.</p>
-        )}
-
-        <div className="sidebar-toggle">
-          <button
-            type="button"
-            className={tradeAction === 'BUY' ? 'active' : ''}
-            onClick={() => onTradeAction('BUY')}
-            disabled={mode !== 'paper'}
-          >
-            Buy
-          </button>
-          <button
-            type="button"
-            className={tradeAction === 'SELL' ? 'active' : ''}
-            onClick={() => onTradeAction('SELL')}
-            disabled={mode !== 'paper'}
-          >
-            Sell
-          </button>
-        </div>
-
-        <div className="sidebar-toggle">
-          <button
-            type="button"
-            className={`up ${side === 'UP' ? 'active' : ''}`}
-            onClick={() => onSide('UP')}
-            disabled={mode !== 'paper'}
-          >
-            Up {formatPct(upPrice)}
-          </button>
-          <button
-            type="button"
-            className={`down ${side === 'DOWN' ? 'active' : ''}`}
-            onClick={() => onSide('DOWN')}
-            disabled={mode !== 'paper'}
-          >
-            Down {formatPct(downPrice)}
-          </button>
-        </div>
-
-        <label className="sidebar-label">Amount (USD)</label>
-        <input
-          type="number"
-          min={1}
-          step={1}
-          value={amount}
-          disabled={mode !== 'paper'}
-          onChange={(e) => onAmount(Number(e.target.value))}
-        />
-
-        <div className="sidebar-meta">
-          ~{shares.toFixed(2)} shares @ {formatUsd(price, 3)}
-          {cash != null && <> · Cash {formatUsd(cash)}</>}
-          {modelPUp != null && <> · Model {formatPct(modelPUp)}</>}
-        </div>
-
-        <button
-          type="button"
-          className={`sidebar-btn primary full ${side === 'UP' ? 'up' : 'down'}`}
-          disabled={tradeDisabled}
-          onClick={onTrade}
-        >
-          {tradeAction} {side}
-        </button>
       </div>
     </aside>
   )

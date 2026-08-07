@@ -61,9 +61,18 @@ class Portfolio:
         timestamp: int,
         up_price: float,
         down_price: float,
+        up_sell: float | None = None,
+        down_sell: float | None = None,
         source: str = "strategy",
     ) -> Fill | None:
-        price = up_price if intent.side == Side.UP else down_price
+        # Buy at displayed buy price; sell 1¢ lower unless explicit sell quotes provided
+        if intent.action == Action.BUY:
+            price = up_price if intent.side == Side.UP else down_price
+        else:
+            if intent.side == Side.UP:
+                price = up_sell if up_sell is not None else max(1e-6, up_price - 0.01)
+            else:
+                price = down_sell if down_sell is not None else max(1e-6, down_price - 0.01)
         if price <= 0 or price >= 1:
             return None
 

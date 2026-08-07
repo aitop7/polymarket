@@ -9,6 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { formatCents } from '../api'
 
 type Point = { t: number; btc?: number | null; up?: number | null; down?: number | null }
 
@@ -20,11 +21,114 @@ type Props = {
   title?: string
 }
 
-const tooltipStyle = {
-  background: '#ffffff',
-  border: '1px solid #e4e6ed',
-  borderRadius: 8,
-  boxShadow: '0 4px 12px rgba(15,17,23,0.08)',
+type TargetLabelProps = {
+  viewBox?: { x?: number; y?: number; width?: number }
+  above: boolean | null
+}
+
+function TargetTagLabel({ viewBox, above }: TargetLabelProps) {
+  if (!viewBox || viewBox.x == null || viewBox.y == null || viewBox.width == null) return null
+  const w = above == null ? 62 : 78
+  const h = 22
+  const x = viewBox.x + viewBox.width - w + 2
+  const y = viewBox.y - h / 2
+  const arrows = above == null ? null : above ? '⇈' : '⇊'
+
+  return (
+    <g transform={`translate(${x}, ${y})`} className="chart-target-label">
+      <rect width={w} height={h} rx={11} ry={11} fill="#4b5563" />
+      <text x={12} y={15} fill="#ffffff" fontSize={11} fontWeight={650} fontFamily="inherit">
+        Target
+      </text>
+      {arrows && (
+        <text
+          x={w - 14}
+          y={15.5}
+          fill="#ffffff"
+          fontSize={12}
+          fontWeight={700}
+          textAnchor="middle"
+          fontFamily="inherit"
+        >
+          {arrows}
+        </text>
+      )}
+    </g>
+  )
+}
+
+type TipPayload = {
+  dataKey?: string | number
+  name?: string
+  value?: number | string | null
+  color?: string
+  payload?: Point & { label?: string; upPct?: number | null; downPct?: number | null }
+}
+
+function outcomeLabel(dataKey: string | number | undefined, name: string | undefined): {
+  label: string
+  color: string
+} {
+  const key = String(dataKey ?? '')
+  const n = String(name ?? '')
+  if (key === 'upPct' || key === 'up' || n === 'Up') return { label: 'Up', color: '#10b981' }
+  if (key === 'downPct' || key === 'down' || n === 'Down') return { label: 'Down', color: '#ef4444' }
+  if (key === 'btc' || n === 'BTC') return { label: 'BTC', color: '#f7931a' }
+  return { label: n || key || '—', color: '#6b7280' }
+}
+
+function ChartTooltip({
+  active,
+  payload,
+  label,
+  mode,
+}: {
+  active?: boolean
+  payload?: TipPayload[]
+  label?: string | number
+  mode: 'btc' | 'outcomes'
+}) {
+  if (!active || !payload?.length) return null
+  const items = payload
+  const time =
+    label != null
+      ? String(label)
+      : items[0]?.payload?.label ??
+        (items[0]?.payload?.t != null
+          ? new Date(items[0].payload!.t!).toLocaleTimeString(undefined, {
+              hour: 'numeric',
+              minute: '2-digit',
+              second: '2-digit',
+            })
+          : '')
+
+  return (
+    <div className="chart-tooltip">
+      <div className="chart-tooltip-time">{time}</div>
+      {items.map((item, i) => {
+        const { label: rowLabel, color } = outcomeLabel(item.dataKey, item.name)
+        const raw = item.value
+        const num = raw == null || raw === '' ? null : Number(raw)
+        let valueText = '—'
+        if (num != null && Number.isFinite(num)) {
+          valueText =
+            mode === 'btc'
+              ? `$${num.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}`
+              : formatCents(num / 100)
+        }
+        return (
+          <div key={`${rowLabel}-${i}`} className="chart-tooltip-row" style={{ color }}>
+            <span className="chart-tooltip-dot" style={{ background: color }} />
+            <span className="chart-tooltip-name">{rowLabel}</span>
+            <span className="chart-tooltip-value">{valueText}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 export default function PriceChart({ data, priceToBeat, mode = 'btc', title }: Props) {
@@ -45,12 +149,21 @@ export default function PriceChart({ data, priceToBeat, mode = 'btc', title }: P
   const pad = Math.max((btcMax - btcMin) * 0.15, 5)
   const showBtc = mode === 'btc'
 
+  const lastBtc = btcValues.length ? btcValues[btcValues.length - 1] : null
+  const aboveTarget =
+    lastBtc != null && priceToBeat != null ? lastBtc >= priceToBeat : null
+
+  const yMin =
+    priceToBeat != null ? Math.min(btcMin - pad, priceToBeat - pad * 0.35) : btcMin - pad
+  const yMax =
+    priceToBeat != null ? Math.max(btcMax + pad, priceToBeat + pad * 0.35) : btcMax + pad
+
   return (
     <div className="chart-block">
       {title && <div className="chart-title">{title}</div>}
       <div className="chart-wrap">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 8, right: 12, left: 4, bottom: 0 }}>
+          <LineChart data={chartData} margin={{ top: 10, right: 8, left: 4, bottom: 0 }}>
             <CartesianGrid stroke="#eef0f4" strokeDasharray="0" vertical={false} />
             <XAxis
               dataKey="label"
@@ -63,28 +176,29 @@ export default function PriceChart({ data, priceToBeat, mode = 'btc', title }: P
             {showBtc ? (
               <>
                 <YAxis
-                  domain={[btcMin - pad, btcMax + pad]}
+                  orientation="right"
+                  domain={[yMin, yMax]}
                   stroke="#9ca3af"
                   tick={{ fontSize: 11, fill: '#9ca3af' }}
-                  width={64}
+                  width={68}
                   axisLine={false}
                   tickLine={false}
                   tickFormatter={(v) =>
-                    Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })
+                    `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
                   }
                 />
                 <Tooltip
-                  contentStyle={tooltipStyle}
-                  labelStyle={{ color: '#6b6f7b' }}
-                  itemStyle={{ color: '#0f1117' }}
+                  cursor={{ stroke: '#d1d5db', strokeWidth: 1 }}
+                  content={<ChartTooltip mode="btc" />}
                 />
                 {priceToBeat != null && (
                   <ReferenceLine
                     y={priceToBeat}
-                    stroke="#f7931a"
-                    strokeDasharray="4 4"
+                    stroke="#9ca3af"
+                    strokeDasharray="5 5"
                     strokeWidth={1.5}
-                    label={{ value: 'Target', fill: '#f7931a', fontSize: 11, position: 'insideTopRight' }}
+                    ifOverflow="extendDomain"
+                    label={<TargetTagLabel above={aboveTarget} />}
                   />
                 )}
                 <Line
@@ -93,6 +207,7 @@ export default function PriceChart({ data, priceToBeat, mode = 'btc', title }: P
                   name="BTC"
                   stroke="#f7931a"
                   dot={false}
+                  activeDot={{ r: 4, fill: '#f7931a', stroke: '#fff', strokeWidth: 2 }}
                   strokeWidth={2.25}
                   isAnimationActive={false}
                 />
@@ -106,15 +221,11 @@ export default function PriceChart({ data, priceToBeat, mode = 'btc', title }: P
                   width={40}
                   axisLine={false}
                   tickLine={false}
-                  tickFormatter={(v) => `${v}¢`}
+                  tickFormatter={(v) => `${Number(v).toFixed(2)}¢`}
                 />
                 <Tooltip
-                  contentStyle={tooltipStyle}
-                  labelStyle={{ color: '#6b6f7b' }}
-                  formatter={(value, name) => [
-                    value != null ? `${Number(value).toFixed(1)}¢` : '—',
-                    name === 'upPct' ? 'Up' : 'Down',
-                  ]}
+                  cursor={{ stroke: '#d1d5db', strokeWidth: 1 }}
+                  content={<ChartTooltip mode="outcomes" />}
                 />
                 <Legend />
                 <Line
@@ -123,6 +234,7 @@ export default function PriceChart({ data, priceToBeat, mode = 'btc', title }: P
                   name="Up"
                   stroke="#10b981"
                   dot={false}
+                  activeDot={{ r: 4, fill: '#10b981', stroke: '#fff', strokeWidth: 2 }}
                   strokeWidth={2}
                   isAnimationActive={false}
                 />
@@ -132,6 +244,7 @@ export default function PriceChart({ data, priceToBeat, mode = 'btc', title }: P
                   name="Down"
                   stroke="#ef4444"
                   dot={false}
+                  activeDot={{ r: 4, fill: '#ef4444', stroke: '#fff', strokeWidth: 2 }}
                   strokeWidth={2}
                   isAnimationActive={false}
                 />

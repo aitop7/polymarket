@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { formatUsd } from '../api'
+import { formatCents, formatUsd } from '../api'
 
 export type BookLevel = {
   range: string
@@ -35,21 +35,24 @@ type Props = {
   book: BookPayload | null
 }
 
+type DepthLevel = BookLevel & { cumShares: number }
+
 function formatAbsRange(level: BookLevel): string {
   if (level.price_lo != null) {
-    let lo = Math.round(Math.max(0, Math.min(100, level.price_lo * 100)))
+    const lo = Math.round(Math.max(0, Math.min(100, level.price_lo * 100)))
     if (level.price_hi == null) return `${lo}¢+`
     let hi = Math.round(Math.max(0, Math.min(100, level.price_hi * 100)))
-    if (lo > hi) [lo, hi] = [hi, lo]
-    if (lo === hi) return `${lo}¢`
-    return `${lo}–${hi}¢`
+    let a = lo
+    let b = hi
+    if (a > b) [a, b] = [b, a]
+    if (a === b) return `${a}¢`
+    return `${a}–${b}¢`
   }
   return level.range
 }
 
 function cents(price: number | null | undefined): string {
-  if (price == null || Number.isNaN(price)) return '—'
-  return `${Math.round(price * 100)}¢`
+  return formatCents(price)
 }
 
 function formatVol(usd: number): string {
@@ -57,21 +60,42 @@ function formatVol(usd: number): string {
   return `$${usd.toFixed(0)} Vol.`
 }
 
+/** Asks are listed far→near (best ask last). Cumulate from mid outward. */
+function withAskCum(asks: BookLevel[]): DepthLevel[] {
+  const visible = asks.filter((l) => l.shares > 0)
+  let running = 0
+  const fromMid = [...visible].reverse().map((level) => {
+    running += level.shares
+    return { ...level, cumShares: running }
+  })
+  return fromMid.reverse()
+}
+
+/** Bids are listed near→far (best bid first). Cumulate from mid outward. */
+function withBidCum(bids: BookLevel[]): DepthLevel[] {
+  const visible = bids.filter((l) => l.shares > 0)
+  let running = 0
+  return visible.map((level) => {
+    running += level.shares
+    return { ...level, cumShares: running }
+  })
+}
+
 function DepthRow({
   level,
   kind,
-  maxShares,
+  maxCum,
   showTag,
 }: {
-  level: BookLevel
+  level: DepthLevel
   kind: 'ask' | 'bid'
-  maxShares: number
+  maxCum: number
   showTag?: 'Asks' | 'Bids'
 }) {
-  const width = maxShares > 0 ? Math.min(100, (level.shares / maxShares) * 100) : 0
+  const width = maxCum > 0 ? Math.min(100, (level.cumShares / maxCum) * 100) : 0
   return (
     <div className={`ob-row ${kind}`}>
-      <div className="ob-depth" style={{ width: `${width}%` }} />
+      <div className="ob-depth" style={{ width: `${Math.max(width, level.shares > 0 ? 2 : 0)}%` }} />
       <div className="ob-cell ob-tag">
         {showTag ? <span className={`ob-pill ${kind}`}>{showTag}</span> : null}
       </div>
@@ -88,11 +112,13 @@ export default function OrderBookPanel({ book }: Props) {
   const [tab, setTab] = useState<'up' | 'down'>('up')
   const side = tab === 'up' ? book?.up : book?.down
 
-  const maxShares = useMemo(() => {
-    if (!side) return 1
-    const vals = [...side.asks, ...side.bids].map((l) => l.shares)
-    return Math.max(1, ...vals)
-  }, [side])
+  const askLevels = useMemo(() => (side ? withAskCum(side.asks) : []), [side])
+  const bidLevels = useMemo(() => (side ? withBidCum(side.bids) : []), [side])
+
+  const maxCum = useMemo(() => {
+    const vals = [...askLevels, ...bidLevels].map((l) => l.cumShares)
+    return Math.max(1, ...vals, 0)
+  }, [askLevels, bidLevels])
 
   const volUsd = useMemo(() => {
     if (!side) return 0
@@ -118,28 +144,31 @@ export default function OrderBookPanel({ book }: Props) {
         <button type="button" className={tab === 'down' ? 'active' : ''} onClick={() => setTab('down')}>
           Trade Down
         </button>
-        <div className="ob-tabs-note muted">Absolute ¢ ranges (from traded price bands)</div>
       </div>
 
       <div className="ob-cols">
         <div className="ob-cell ob-tag">{tab === 'up' ? 'TRADE UP' : 'TRADE DOWN'}</div>
-        <div className="ob-cell">PRICE RANGE</div>
+        <div className="ob-cell">PRICE</div>
         <div className="ob-cell">SHARES</div>
         <div className="ob-cell">TOTAL</div>
       </div>
 
       {!side && <div className="ob-empty muted">No order book depth for this market</div>}
 
-      {side && (
+      {side && askLevels.length === 0 && bidLevels.length === 0 && (
+        <div className="ob-empty muted">No depth at this price</div>
+      )}
+
+      {side && (askLevels.length > 0 || bidLevels.length > 0) && (
         <>
           <div className="ob-section asks">
-            {side.asks.map((level, i) => (
+            {askLevels.map((level, i) => (
               <DepthRow
                 key={`a-${level.suffix}`}
                 level={level}
                 kind="ask"
-                maxShares={maxShares}
-                showTag={i === side.asks.length - 1 ? 'Asks' : undefined}
+                maxCum={maxCum}
+                showTag={i === askLevels.length - 1 ? 'Asks' : undefined}
               />
             ))}
           </div>
@@ -150,12 +179,12 @@ export default function OrderBookPanel({ book }: Props) {
           </div>
 
           <div className="ob-section bids">
-            {side.bids.map((level, i) => (
+            {bidLevels.map((level, i) => (
               <DepthRow
                 key={`b-${level.suffix}`}
                 level={level}
                 kind="bid"
-                maxShares={maxShares}
+                maxCum={maxCum}
                 showTag={i === 0 ? 'Bids' : undefined}
               />
             ))}

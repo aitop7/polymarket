@@ -11,6 +11,7 @@ import BtcPricePanel from '../components/BtcPricePanel'
 import ControlSidebar from '../components/ControlSidebar'
 import OrderBookPanel, { type BookPayload } from '../components/OrderBookPanel'
 import PriceChart from '../components/PriceChart'
+import TradeSidebar from '../components/TradeSidebar'
 
 type Tick = {
   type: string
@@ -86,7 +87,6 @@ export default function MarketPage({ mode }: Props) {
   const [book, setBook] = useState<BookPayload | null>(null)
   const [side, setSide] = useState<'UP' | 'DOWN'>('UP')
   const [tradeAction, setTradeAction] = useState<'BUY' | 'SELL'>('BUY')
-  const [amount, setAmount] = useState(10)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [indexing, setIndexing] = useState(false)
@@ -338,22 +338,65 @@ export default function MarketPage({ mode }: Props) {
     return detail?.series ?? []
   }, [seriesLive, detail])
 
-  const onTrade = () => {
+  const onTrade = (opts: { size_usd?: number; shares?: number }) => {
     if (mode !== 'paper') return
+    const payload = {
+      type: 'order',
+      side,
+      action: tradeAction,
+      size_usd: opts.shares != null ? null : (opts.size_usd ?? 10),
+      shares: opts.shares ?? null,
+    }
     const ws = wsRef.current
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'order', side, action: tradeAction, size_usd: amount }))
+      ws.send(JSON.stringify(payload))
       return
     }
     if (sessionId) {
       api
-        .paperOrder({ session_id: sessionId, side, action: tradeAction, size_usd: amount })
+        .paperOrder({
+          session_id: sessionId,
+          side,
+          action: tradeAction,
+          size_usd: opts.shares != null ? null : (opts.size_usd ?? 10),
+          shares: opts.shares ?? null,
+        })
         .catch((e) => setError(String(e)))
     }
   }
 
   return (
     <div className="workspace">
+      <ControlSidebar
+        mode={mode}
+        split={split}
+        onSplit={setSplit}
+        indexing={indexing}
+        dateMin={dateMin}
+        dateMax={dateMax}
+        selectedDate={selectedDate}
+        onDate={setSelectedDate}
+        selectedTime={selectedTime}
+        markets={markets}
+        onTime={onTimeChange}
+        formatSlotLabel={formatSlotLabel}
+        speed={speed}
+        onSpeed={setReplaySpeed}
+        playing={playing}
+        paused={paused}
+        onPlay={() => startReplay()}
+        onPause={pauseReplay}
+        onResume={resumeReplay}
+        onStop={stopWs}
+        marketId={marketId}
+        hasPrev={Boolean(neighbors.prev)}
+        hasNext={Boolean(neighbors.next)}
+        onPrev={() => neighbors.prev && setMarketId(neighbors.prev)}
+        onNext={() => neighbors.next && setMarketId(neighbors.next)}
+        strategy={strategy}
+        onStrategy={setStrategy}
+      />
+
       <div className="workspace-main">
         {error && <p className="error">{error}</p>}
 
@@ -445,45 +488,19 @@ export default function MarketPage({ mode }: Props) {
         </div>
       </div>
 
-      <ControlSidebar
+      <TradeSidebar
         mode={mode}
-        split={split}
-        onSplit={setSplit}
-        indexing={indexing}
-        dateMin={dateMin}
-        dateMax={dateMax}
-        selectedDate={selectedDate}
-        onDate={setSelectedDate}
-        selectedTime={selectedTime}
-        markets={markets}
-        onTime={onTimeChange}
-        formatSlotLabel={formatSlotLabel}
-        speed={speed}
-        onSpeed={setReplaySpeed}
-        playing={playing}
-        paused={paused}
-        onPlay={() => startReplay()}
-        onPause={pauseReplay}
-        onResume={resumeReplay}
-        onStop={stopWs}
-        marketId={marketId}
-        hasPrev={Boolean(neighbors.prev)}
-        hasNext={Boolean(neighbors.next)}
-        onPrev={() => neighbors.prev && setMarketId(neighbors.prev)}
-        onNext={() => neighbors.next && setMarketId(neighbors.next)}
-        strategy={strategy}
-        onStrategy={setStrategy}
         tradeAction={tradeAction}
         onTradeAction={setTradeAction}
         side={side}
         onSide={setSide}
-        amount={amount}
-        onAmount={setAmount}
         onTrade={onTrade}
         upPrice={up}
         downPrice={down}
         cash={tick?.portfolio?.cash}
-        modelPUp={tick?.model_p_up}
+        heldShares={
+          side === 'UP' ? tick?.portfolio?.up_shares ?? 0 : tick?.portfolio?.down_shares ?? 0
+        }
         tradeDisabled={mode !== 'paper' || (!playing && !sessionId)}
       />
     </div>

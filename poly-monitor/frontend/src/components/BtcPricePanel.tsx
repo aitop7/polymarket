@@ -30,7 +30,7 @@ export default function BtcPricePanel({
 
   return (
     <section className="btc-panel">
-      <div className="btc-panel-top">
+      <div className="btc-panel-sticky">
         <div className="btc-panel-identity">
           <div className="btc-logo" aria-hidden>
             ₿
@@ -67,18 +67,16 @@ export default function BtcPricePanel({
 
         <div className="btc-countdown" aria-label="Time remaining">
           {mins != null && secs != null ? (
-            <>
-              <div className="btc-countdown-digits">
-                <div className="btc-countdown-block">
-                  <span className="btc-countdown-num">{pad2(mins)}</span>
-                  <span className="btc-countdown-unit">MINS</span>
-                </div>
-                <div className="btc-countdown-block">
-                  <span className="btc-countdown-num">{pad2(secs)}</span>
-                  <span className="btc-countdown-unit">SECS</span>
-                </div>
+            <div className="btc-countdown-digits">
+              <div className="btc-countdown-block">
+                <span className="btc-countdown-num">{pad2(mins)}</span>
+                <span className="btc-countdown-unit">MINS</span>
               </div>
-            </>
+              <div className="btc-countdown-block">
+                <span className="btc-countdown-num">{pad2(secs)}</span>
+                <span className="btc-countdown-unit">SECS</span>
+              </div>
+            </div>
           ) : (
             <div className="btc-countdown-digits muted-countdown">
               <div className="btc-countdown-block">

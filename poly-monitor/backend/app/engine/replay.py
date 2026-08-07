@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 import pandas as pd
 
 from app.core.data import FEATURE_COLUMNS, load_market_frame
+from app.core.pricing import quotes_from_row
 from app.engine.portfolio import Portfolio
 from app.strategies.registry import create_strategy
 from strategies.base import Action, MarketEndContext, OrderIntent, Side, TickContext
@@ -36,13 +37,14 @@ def _tick_from_row(row: pd.Series, *, market_id: str, idx: int, portfolio: Portf
         elapsed = (ts - start) / 1000.0
         remaining = (end - ts) / 1000.0
 
+    q = quotes_from_row(row)
     return TickContext(
         market_id=str(market_id),
         timestamp=int(row["timestamp"]),
         btc_price=f("btc_price"),
         btc_open=f("btc_open_price"),
-        up_price=float(f("up_price", 0.5) or 0.5),
-        down_price=float(f("down_price", 0.5) or 0.5),
+        up_price=q["up_price"],
+        down_price=q["down_price"],
         elapsed_seconds=elapsed,
         remaining_seconds=remaining,
         winner=int(row["winner"]) if "winner" in row.index and pd.notna(row["winner"]) else None,
@@ -201,11 +203,18 @@ class ReplaySession:
             "btc_open": ctx.btc_open,
             "up_price": ctx.up_price,
             "down_price": ctx.down_price,
+            "up_buy": ctx.up_price,
+            "down_buy": ctx.down_price,
+            "up_sell": max(1e-6, ctx.up_price - 0.01),
+            "down_sell": max(1e-6, ctx.down_price - 0.01),
             "elapsed_seconds": ctx.elapsed_seconds,
             "remaining_seconds": ctx.remaining_seconds,
             "model_p_up": ctx.model_p_up,
             "portfolio": self.portfolio.snapshot().to_dict(),
-            "equity": self.portfolio.mark_to_market(ctx.up_price, ctx.down_price),
+            "equity": self.portfolio.mark_to_market(
+                max(1e-6, ctx.up_price - 0.01),
+                max(1e-6, ctx.down_price - 0.01),
+            ),
             "fills": fills_out,
             "winner": ctx.winner,
         }
@@ -240,7 +249,6 @@ class ReplaySession:
     async def stream(self) -> AsyncIterator[dict[str, Any]]:
         import asyncio
 
-        interval = 1.0 / self.speed
         while not self.done:
             if self.paused:
                 await asyncio.sleep(0.05)
@@ -249,4 +257,5 @@ class ReplaySession:
             if msg is None:
                 break
             yield msg
-            await asyncio.sleep(interval)
+            # Re-read speed each tick so WS speed updates apply immediately
+            await asyncio.sleep(1.0 / max(0.1, float(self.speed)))

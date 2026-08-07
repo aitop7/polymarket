@@ -215,16 +215,19 @@ def load_market_frame(market_id: str, *, split: str | None = None) -> pd.DataFra
 def series_for_chart(df: pd.DataFrame, *, max_points: int = 300) -> list[dict[str, Any]]:
     if df.empty:
         return []
+    from app.core.pricing import quotes_from_row
+
     step = max(1, len(df) // max_points)
     rows = df.iloc[::step]
     out: list[dict[str, Any]] = []
     for _, r in rows.iterrows():
+        q = quotes_from_row(r)
         out.append(
             {
                 "t": int(r["timestamp"]),
                 "btc": float(r["btc_price"]) if "btc_price" in df.columns and pd.notna(r.get("btc_price")) else None,
-                "up": float(r["up_price"]) if pd.notna(r.get("up_price")) else None,
-                "down": float(r["down_price"]) if pd.notna(r.get("down_price")) else None,
+                "up": q["up_price"],
+                "down": q["down_price"],
             }
         )
     return out
@@ -241,18 +244,17 @@ BUCKET_META = [
 
 
 def _fmt_abs_cents(lo: float, hi: float | None, *, open_high: bool = False, open_low: bool = False) -> str:
-    """Format absolute price band in cents, e.g. 49-50c or 80c+."""
-    lo_i = int(round(max(0.0, min(100.0, lo))))
+    """Format absolute price band in cents with 2-decimal fraction."""
+    lo_v = round(max(0.0, min(100.0, lo)), 2)
     if open_high or hi is None:
-        return f"{lo_i}c+"
-    hi_i = int(round(max(0.0, min(100.0, hi))))
+        return f"{lo_v:.2f}c+"
+    hi_v = round(max(0.0, min(100.0, hi)), 2)
     if open_low:
-        return f"0-{hi_i}c"
-    if lo_i > hi_i:
-        lo_i, hi_i = hi_i, lo_i
-    if lo_i == hi_i:
-        return f"{lo_i}c"
-    return f"{lo_i}-{hi_i}c"
+        return f"0.00-{hi_v:.2f}c"
+    a, b = (hi_v, lo_v) if lo_v > hi_v else (lo_v, hi_v)
+    if abs(a - b) < 1e-9:
+        return f"{a:.2f}c"
+    return f"{a:.2f}-{b:.2f}c"
 
 
 def book_at(df: pd.DataFrame, timestamp: int | None = None) -> dict[str, Any]:
@@ -272,10 +274,14 @@ def book_at(df: pd.DataFrame, timestamp: int | None = None) -> dict[str, Any]:
         row = df.loc[idx]
 
     def side_book(outcome: str) -> dict[str, Any]:
-        traded = float(row[f"{outcome}_price"]) if pd.notna(row.get(f"{outcome}_price")) else 0.5
+        from app.core.pricing import quotes_from_row
+
+        q = quotes_from_row(row)
+        traded = q["up_price"] if outcome == "up" else q["down_price"]
         traded_cents = traded * 100.0
-        best_bid = row.get(f"{outcome}_bid_price")
-        best_ask = row.get(f"{outcome}_ask_price")
+        best_bid = traded - 0.01
+        best_ask = traded
+        spread = 0.01
 
         asks: list[dict[str, Any]] = []
         bids: list[dict[str, Any]] = []
@@ -337,15 +343,12 @@ def book_at(df: pd.DataFrame, timestamp: int | None = None) -> dict[str, Any]:
 
         ask_total = sum(x["shares"] for x in asks)
         bid_total = sum(x["shares"] for x in bids)
-        spread = None
-        if pd.notna(best_bid) and pd.notna(best_ask):
-            spread = float(best_ask) - float(best_bid)
 
         return {
             "traded_price": traded,
-            "best_bid": float(best_bid) if pd.notna(best_bid) else None,
-            "best_ask": float(best_ask) if pd.notna(best_ask) else None,
-            "spread": spread,
+            "best_bid": float(best_bid),
+            "best_ask": float(best_ask),
+            "spread": float(spread),
             "asks": asks_view,
             "bids": bids_view,
             "ask_shares": ask_total,
@@ -353,12 +356,19 @@ def book_at(df: pd.DataFrame, timestamp: int | None = None) -> dict[str, Any]:
             "volume_shares": ask_total + bid_total,
         }
 
+    from app.core.pricing import quotes_from_row
+
+    q = quotes_from_row(row)
     return {
         "timestamp": int(row["timestamp"]),
         "mode": "absolute_ranges",
-        "note": "Share buckets stored by distance from traded price; labels show absolute ¢ ranges.",
+        "note": "Share buckets stored by distance from traded price; labels show absolute ¢ ranges. Down buy = 101¢ − Up buy; sell = buy − 1¢.",
         "up": side_book("up"),
         "down": side_book("down"),
-        "up_price": float(row["up_price"]) if pd.notna(row.get("up_price")) else None,
-        "down_price": float(row["down_price"]) if pd.notna(row.get("down_price")) else None,
+        "up_price": q["up_price"],
+        "down_price": q["down_price"],
+        "up_buy": q["up_buy"],
+        "down_buy": q["down_buy"],
+        "up_sell": q["up_sell"],
+        "down_sell": q["down_sell"],
     }

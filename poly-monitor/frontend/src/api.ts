@@ -84,9 +84,21 @@ export function formatUsd(n: number | null | undefined, digits = 2): string {
   return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
 
+/** Format probability/price as cents with 2 fractional digits (e.g. 51.48¢). */
+export function formatCents(p: number | null | undefined): string {
+  if (p == null || Number.isNaN(p)) return '—¢'
+  return `${(p * 100).toFixed(2)}¢`
+}
+
+/** Format probability/price as whole cents (e.g. 51¢). */
+export function formatCentsInt(p: number | null | undefined): string {
+  if (p == null || Number.isNaN(p)) return '—¢'
+  return `${Math.round(p * 100)}¢`
+}
+
 export function formatPct(p: number | null | undefined): string {
   if (p == null || Number.isNaN(p)) return '—'
-  return `${Math.round(p * 100)}%`
+  return `${(p * 100).toFixed(2)}%`
 }
 
 export function formatWindow(startMs: number, endMs: number): string {

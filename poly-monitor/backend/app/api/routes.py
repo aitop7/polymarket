@@ -133,20 +133,28 @@ def get_market(market_id: str, split: str | None = None) -> dict[str, Any]:
     if not meta:
         raise HTTPException(404, f"Market {market_id} not found")
     df = load_market_frame(market_id, split=meta["split"])
+    from app.core.pricing import quotes_from_row
+
+    first_q = quotes_from_row(df.iloc[0])
+    last_q = quotes_from_row(df.iloc[-1])
     return {
         **meta,
         "series": series_for_chart(df),
         "first": {
             "timestamp": int(df.iloc[0]["timestamp"]),
             "btc_price": float(df.iloc[0]["btc_price"]) if "btc_price" in df.columns else None,
-            "up_price": float(df.iloc[0]["up_price"]),
-            "down_price": float(df.iloc[0]["down_price"]),
+            "up_price": first_q["up_price"],
+            "down_price": first_q["down_price"],
+            "up_sell": first_q["up_sell"],
+            "down_sell": first_q["down_sell"],
         },
         "last": {
             "timestamp": int(df.iloc[-1]["timestamp"]),
             "btc_price": float(df.iloc[-1]["btc_price"]) if "btc_price" in df.columns else None,
-            "up_price": float(df.iloc[-1]["up_price"]),
-            "down_price": float(df.iloc[-1]["down_price"]),
+            "up_price": last_q["up_price"],
+            "down_price": last_q["down_price"],
+            "up_sell": last_q["up_sell"],
+            "down_sell": last_q["down_sell"],
         },
     }
 
