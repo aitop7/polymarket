@@ -1,4 +1,4 @@
-"""RTDS Chainlink spot + 30s TWAP; also resolves meta.btc_open_price."""
+"""RTDS Chainlink spot + 30s TWAP; resolves meta open/close TWAP prices."""
 
 from __future__ import annotations
 
@@ -72,20 +72,29 @@ class TwapOpenResolver:
                 best = (float(px), int(ts))
         return best
 
-    async def resolve_open_price(self, window_start_ms: int) -> float | None:
-        """btc_open_price = previous market close 30s TWAP at T0."""
+    async def resolve_twap_at(self, at_ms: int, *, wait_s: float = 3.0) -> float | None:
+        """30s Chainlink TWAP ending at at_ms (open=T0, close=T1)."""
         self.ensure_started()
-        hit = self.twap_at_close(window_start_ms)
+        hit = self.twap_at_close(at_ms)
         if hit is None:
             now = int(time.time() * 1000)
-            if now - window_start_ms < 20_000:
-                deadline = time.monotonic() + 3.0
+            # Wait briefly if we are near the target timestamp
+            if abs(now - at_ms) < 20_000 and wait_s > 0:
+                deadline = time.monotonic() + wait_s
                 while time.monotonic() < deadline and hit is None:
                     await asyncio.sleep(0.15)
-                    hit = self.twap_at_close(window_start_ms)
+                    hit = self.twap_at_close(at_ms)
         if hit is not None:
             return float(hit[0])
-        return await self.compute_twap_30s_ending_at(window_start_ms)
+        return await self.compute_twap_30s_ending_at(at_ms)
+
+    async def resolve_open_price(self, window_start_ms: int) -> float | None:
+        """btc_open_price = 30s TWAP ending at window start (Price to Beat)."""
+        return await self.resolve_twap_at(window_start_ms)
+
+    async def resolve_close_price(self, window_end_ms: int) -> float | None:
+        """btc_close_price = 30s TWAP ending at window end."""
+        return await self.resolve_twap_at(window_end_ms, wait_s=5.0)
 
     async def compute_twap_30s_ending_at(self, end_ms: int) -> float | None:
         end = int(end_ms)

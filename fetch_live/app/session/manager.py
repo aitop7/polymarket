@@ -48,8 +48,22 @@ class SessionManager:
                 logger.exception(
                     "Market-end trades fetch failed for {}: {}", store.market_id, exc
                 )
-        store.update_meta(active=False)
+        close_px = store.meta.get("btc_close_price")
+        if close_px is None:
+            try:
+                close_px = await self.twap.resolve_close_price(store.end_ms)
+            except Exception as exc:
+                logger.warning(
+                    "Close TWAP resolve failed for {}: {}", store.market_id, exc
+                )
+                close_px = None
+        store.update_meta(btc_close_price=close_px, active=False)
         store.flush(force=True)
+        logger.info(
+            "Finalized market {} close_twap={}",
+            store.market_id,
+            close_px,
+        )
 
     async def tick(self) -> MarketStore | None:
         market = await self.discovery.discover_active()
@@ -91,6 +105,7 @@ class SessionManager:
             "end_time": end_ms,
             "resolved_at": None,
             "btc_open_price": open_px,
+            "btc_close_price": None,
             "winner": None,
             "active": True,
             "closed": False,

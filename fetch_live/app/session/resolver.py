@@ -81,18 +81,23 @@ class Resolver:
             winner = _parse_winner(market)
             if winner is None and not closed:
                 continue
-            store.update_meta(
-                winner=winner,
-                resolved_at=int(time.time() * 1000) if winner is not None or closed else None,
-                active=False,
-                closed=closed or winner is not None,
-            )
+            patch: dict[str, Any] = {
+                "winner": winner,
+                "resolved_at": int(time.time() * 1000)
+                if winner is not None or closed
+                else None,
+                "active": False,
+                "closed": closed or winner is not None,
+            }
+            store.update_meta(**patch)
             store.flush(force=True)
             logger.info(
-                "Resolved market {} winner={} closed={}",
+                "Resolved market {} winner={} closed={} open={} close={}",
                 mid,
                 winner,
                 closed,
+                store.meta.get("btc_open_price"),
+                store.meta.get("btc_close_price"),
             )
             if closed or winner is not None:
                 done.append(mid)

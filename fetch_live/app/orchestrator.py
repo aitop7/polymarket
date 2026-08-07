@@ -282,20 +282,34 @@ class Orchestrator:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-        if self.sessions.current is not None:
-            try:
-                await self._on_market_end(self.sessions.current)
-            except Exception as exc:
-                logger.warning("Shutdown trades fetch failed: {}", exc)
-            self.sessions.current.flush(force=True)
-        for store in list(self.resolver._pending.values()):
+        now = int(time.time() * 1000)
+
+        async def _shutdown_store(store: MarketStore) -> None:
             try:
                 await self._on_market_end(store)
             except Exception as exc:
                 logger.warning(
                     "Shutdown trades fetch failed {}: {}", store.market_id, exc
                 )
+            if store.meta.get("btc_close_price") is None and now >= store.end_ms:
+                try:
+                    close_px = await self.twap.resolve_close_price(store.end_ms)
+                    store.update_meta(btc_close_price=close_px, active=False)
+                except Exception as exc:
+                    logger.warning(
+                        "Shutdown close TWAP failed {}: {}", store.market_id, exc
+                    )
+                    store.update_meta(active=False)
+            else:
+                store.update_meta(active=False)
             store.flush(force=True)
+
+        if self.sessions.current is not None:
+            await _shutdown_store(self.sessions.current)
+        for store in list(self.resolver._pending.values()):
+            if store is self.sessions.current:
+                continue
+            await _shutdown_store(store)
         await self.binance.close()
         await self.clob_rest.close()
         await self.data_trades.close()

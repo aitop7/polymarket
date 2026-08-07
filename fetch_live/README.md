@@ -38,8 +38,10 @@ data/
       chainlink_price.parquet          # 1s Chainlink_BTC + twap (RTDS)
       orderbooks.parquet               # Polymarket Up/Down books
       trades.parquet                   # RTDS activity/trades (includes wallet)
-      meta.json
+      meta.json                        # includes btc_open_price / btc_close_price (30s TWAP)
 ```
+
+`meta.json`: `btc_open_price` = Chainlink 30s TWAP at window start (Price to Beat); `btc_close_price` = Chainlink 30s TWAP at window end (set when the market rolls off).
 
 `chainlink_price.parquet`: Chainlink spot (`Chainlink_BTC`) and 30s TWAP from Polymarket RTDS.
 
