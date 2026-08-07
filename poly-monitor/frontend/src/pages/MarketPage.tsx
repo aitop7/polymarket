@@ -1,18 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
-  formatPct,
   formatUsd,
-  formatWindow,
+  formatWindowEt,
   type MarketDetail,
   type MarketSummary,
   wsUrl,
 } from '../api'
+import BtcPricePanel from '../components/BtcPricePanel'
+import ControlSidebar from '../components/ControlSidebar'
+import OrderBookPanel, { type BookPayload } from '../components/OrderBookPanel'
 import PriceChart from '../components/PriceChart'
-import TradePanel from '../components/TradePanel'
 
 type Tick = {
   type: string
+  index?: number
   timestamp: number
   btc_price: number | null
   btc_open: number | null
@@ -41,8 +43,30 @@ type Props = {
   mode: 'monitor' | 'paper'
 }
 
+function formatSlotLabel(timeEt: string, startMs?: number, endMs?: number): string {
+  // timeEt is HH:MM 24h ET — show 12h label when we have ms
+  if (startMs != null && endMs != null) {
+    const s = new Date(startMs)
+    const e = new Date(endMs)
+    const opts: Intl.DateTimeFormatOptions = {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    }
+    const a = new Intl.DateTimeFormat('en-US', opts).format(s)
+    const b = new Intl.DateTimeFormat('en-US', opts).format(e)
+    return `${a} – ${b} ET`
+  }
+  return `${timeEt} ET`
+}
+
 export default function MarketPage({ mode }: Props) {
   const [split, setSplit] = useState('validation')
+  const [dateMin, setDateMin] = useState('')
+  const [dateMax, setDateMax] = useState('')
+  const [selectedDate, setSelectedDate] = useState('')
+  const [selectedTime, setSelectedTime] = useState('')
   const [markets, setMarkets] = useState<MarketSummary[]>([])
   const [marketId, setMarketId] = useState<string>('')
   const [detail, setDetail] = useState<MarketDetail | null>(null)
@@ -50,7 +74,7 @@ export default function MarketPage({ mode }: Props) {
     prev: null,
     next: null,
   })
-  const [speed, setSpeed] = useState(30)
+  const [speed, setSpeed] = useState(1)
   const [strategy, setStrategy] = useState(mode === 'paper' ? 'lgbm_edge' : 'none')
   const [playing, setPlaying] = useState(false)
   const [tick, setTick] = useState<Tick | null>(null)
@@ -58,25 +82,98 @@ export default function MarketPage({ mode }: Props) {
     [],
   )
   const [activity, setActivity] = useState<FillRow[]>([])
-  const [tab, setTab] = useState<'book' | 'activity' | 'positions' | 'rules'>('activity')
-  const [book, setBook] = useState<Record<string, unknown> | null>(null)
+  const [tab, setTab] = useState<'activity' | 'positions' | 'rules'>('activity')
+  const [book, setBook] = useState<BookPayload | null>(null)
   const [side, setSide] = useState<'UP' | 'DOWN'>('UP')
+  const [tradeAction, setTradeAction] = useState<'BUY' | 'SELL'>('BUY')
   const [amount, setAmount] = useState(10)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [indexing, setIndexing] = useState(false)
+  const [paused, setPaused] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
 
-  const loadMarkets = useCallback(async (s: string) => {
-    const res = await api.markets(s, 40)
-    setMarkets(res.markets)
-    if (res.markets.length && !marketId) {
-      setMarketId(res.markets[0].market_id)
-    }
-  }, [marketId])
-
+  // Load available dates when split changes
   useEffect(() => {
-    loadMarkets(split).catch((e) => setError(String(e)))
-  }, [split, loadMarkets])
+    let cancelled = false
+    setIndexing(true)
+    setError(null)
+    setMarkets([])
+    setMarketId('')
+    setSelectedTime('')
+    // keep selectedDate visible until new range arrives (avoids empty disabled picker)
+    api
+      .marketDates(split)
+      .then((res) => {
+        if (cancelled) return
+        setDateMin(res.min || '')
+        setDateMax(res.max || '')
+        const next =
+          (selectedDate && res.dates.includes(selectedDate) && selectedDate) ||
+          res.max ||
+          res.dates[res.dates.length - 1] ||
+          ''
+        setSelectedDate(next)
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String(e))
+      })
+      .finally(() => {
+        if (!cancelled) setIndexing(false)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [split])
+
+  // Load 5m slots for selected date
+  useEffect(() => {
+    if (!selectedDate) return
+    let cancelled = false
+    api
+      .markets(split, { date: selectedDate })
+      .then((res) => {
+        if (cancelled) return
+        setMarkets(res.markets)
+        if (!res.markets.length) {
+          setSelectedTime('')
+          setMarketId('')
+          return
+        }
+        setMarketId((prev) => {
+          const keep = res.markets.find((m) => m.market_id === prev)
+          if (keep) {
+            setSelectedTime(keep.time_et || '')
+            return prev
+          }
+          const still = res.markets.find((m) => (m.time_et || '') === selectedTime)
+          const pick = still || res.markets[0]
+          setSelectedTime(pick.time_et || '')
+          return pick.market_id
+        })
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String(e))
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [split, selectedDate])
+
+  const onTimeChange = (timeEt: string) => {
+    setSelectedTime(timeEt)
+    const m = markets.find((x) => x.time_et === timeEt)
+    if (m) {
+      setMarketId(m.market_id)
+      return
+    }
+    api.marketAt(split, { date: selectedDate, time: timeEt }).then((hit) => {
+      setMarketId(hit.market_id)
+      setSelectedTime(hit.time_et || timeEt)
+    }).catch((e) => setError(String(e)))
+  }
 
   useEffect(() => {
     if (!marketId) return
@@ -85,11 +182,28 @@ export default function MarketPage({ mode }: Props) {
       .then(([d, n, b]) => {
         setDetail(d)
         setNeighbors({ prev: n.prev, next: n.next })
-        setBook(b)
+        setBook(b as BookPayload)
         setSeriesLive(d.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc })))
         setTick(null)
         setActivity([])
         setPlaying(false)
+        // sync pickers from loaded market
+        if (d.start_time) {
+          const etDate = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'America/New_York',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          }).format(new Date(d.start_time))
+          const etTime = new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'America/New_York',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          }).format(new Date(d.start_time))
+          setSelectedDate(etDate)
+          setSelectedTime(etTime)
+        }
       })
       .catch((e) => setError(String(e)))
   }, [marketId, split])
@@ -98,6 +212,37 @@ export default function MarketPage({ mode }: Props) {
     wsRef.current?.close()
     wsRef.current = null
     setPlaying(false)
+    setPaused(false)
+    if (detail) {
+      setSeriesLive(
+        detail.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc })),
+      )
+      setTick(null)
+    }
+  }
+
+  const pauseReplay = () => {
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'pause' }))
+      setPaused(true)
+    }
+  }
+
+  const resumeReplay = () => {
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resume' }))
+      setPaused(false)
+    }
+  }
+
+  const setReplaySpeed = (n: number) => {
+    setSpeed(n)
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'speed', speed: n }))
+    }
   }
 
   const startReplay = async () => {
@@ -106,6 +251,7 @@ export default function MarketPage({ mode }: Props) {
     setActivity([])
     setSeriesLive([])
     setError(null)
+    setPaused(false)
 
     let sid: string | null = null
     if (mode === 'paper') {
@@ -125,6 +271,7 @@ export default function MarketPage({ mode }: Props) {
     wsRef.current = ws
     ws.onopen = () => {
       setPlaying(true)
+      setPaused(false)
       ws.send(
         JSON.stringify({
           market_id: marketId,
@@ -158,16 +305,24 @@ export default function MarketPage({ mode }: Props) {
         if (t.fills?.length) {
           setActivity((a) => [...t.fills!, ...a].slice(0, 100))
         }
+        if (t.type === 'tick_end' || (t.index != null && t.index % 5 === 0)) {
+          api.book(marketId, t.timestamp).then((b) => setBook(b as BookPayload)).catch(() => {})
+        }
         if (t.type === 'tick_end') {
           setPlaying(false)
+          setPaused(false)
         }
       }
       if (msg.type === 'done') {
         setPlaying(false)
+        setPaused(false)
       }
     }
     ws.onerror = () => setError('WebSocket error')
-    ws.onclose = () => setPlaying(false)
+    ws.onclose = () => {
+      setPlaying(false)
+      setPaused(false)
+    }
   }
 
   useEffect(() => () => stopWs(), [])
@@ -187,223 +342,150 @@ export default function MarketPage({ mode }: Props) {
     if (mode !== 'paper') return
     const ws = wsRef.current
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'order', side, action: 'BUY', size_usd: amount }))
+      ws.send(JSON.stringify({ type: 'order', side, action: tradeAction, size_usd: amount }))
       return
     }
     if (sessionId) {
-      api.paperOrder({ session_id: sessionId, side, action: 'BUY', size_usd: amount }).catch((e) =>
-        setError(String(e)),
-      )
+      api
+        .paperOrder({ session_id: sessionId, side, action: tradeAction, size_usd: amount })
+        .catch((e) => setError(String(e)))
     }
   }
 
-  const upBook = (book?.up as { bids?: { price: number; size: number }[]; asks?: { price: number; size: number }[] }) || {}
-
   return (
-    <div>
-      <div className="controls">
-        <div>
-          <label className="muted">Split</label>
-          <select value={split} onChange={(e) => { setMarketId(''); setSplit(e.target.value) }}>
-            <option value="validation">validation</option>
-            <option value="test">test</option>
-            <option value="train">train</option>
-          </select>
-        </div>
-        <div style={{ minWidth: 180 }}>
-          <label className="muted">Market</label>
-          <select value={marketId} onChange={(e) => setMarketId(e.target.value)}>
-            {markets.map((m) => (
-              <option key={m.market_id} value={m.market_id}>
-                {m.market_id}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="muted">Speed</label>
-          <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
-            <option value={5}>5x</option>
-            <option value={10}>10x</option>
-            <option value={30}>30x</option>
-            <option value={60}>60x</option>
-            <option value={120}>120x</option>
-          </select>
-        </div>
-        {mode === 'paper' && (
-          <div>
-            <label className="muted">Strategy</label>
-            <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
-              <option value="none">none (manual)</option>
-              <option value="lgbm_edge">lgbm_edge</option>
-              <option value="edge_threshold">edge_threshold</option>
-            </select>
-          </div>
-        )}
-        <button type="button" onClick={() => startReplay()} disabled={!marketId || playing}>
-          {playing ? 'Replaying…' : mode === 'paper' ? 'Start paper' : 'Replay'}
-        </button>
-        <button type="button" onClick={stopWs} disabled={!playing}>
-          Stop
-        </button>
-      </div>
+    <div className="workspace">
+      <div className="workspace-main">
+        {error && <p className="error">{error}</p>}
 
-      {error && <p className="error">{error}</p>}
+        <BtcPricePanel
+          marketId={marketId || detail?.market_id}
+          windowLabel={detail ? formatWindowEt(detail.start_time, detail.end_time) : '—'}
+          priceToBeat={beat}
+          currentPrice={btc}
+          remainingSeconds={
+            remaining ?? (detail ? (detail.end_time - detail.start_time) / 1000 : null)
+          }
+        />
 
-      <div className="market-header">
-        <div className="market-title">
-          <h1>Bitcoin Up or Down</h1>
-          <div className="sub">
-            {detail ? formatWindow(detail.start_time, detail.end_time) : '—'} · 5 minutes
-            {remaining != null && (
-              <>
-                {' '}
-                · <span className="countdown">{Math.max(0, remaining).toFixed(0)}s left</span>
-              </>
-            )}
-          </div>
-        </div>
-        <div className="window-strip">
-          <button type="button" disabled={!neighbors.prev} onClick={() => neighbors.prev && setMarketId(neighbors.prev)}>
-            ← Prev
-          </button>
-          <span className="muted">{marketId || '—'}</span>
-          <button type="button" disabled={!neighbors.next} onClick={() => neighbors.next && setMarketId(neighbors.next)}>
-            Next →
-          </button>
-        </div>
-      </div>
-
-      <div className="price-beat-row">
-        <div className="stat-card">
-          <div className="label">Price to beat</div>
-          <div className="value">{formatUsd(beat, 2)}</div>
-        </div>
-        <div className="stat-card">
-          <div className="label">Bitcoin price</div>
-          <div className={`value ${btc != null && beat != null ? (btc >= beat ? 'up' : 'down') : ''}`}>
-            {formatUsd(btc, 2)}
-          </div>
-        </div>
-      </div>
-
-      <div className="layout-2">
         <div className="panel">
-          <div className="outcome-row">
-            <div className="outcome up">
-              <div className="name">Up</div>
-              <div className="pct">{formatPct(up)}</div>
-            </div>
-            <div className="outcome down">
-              <div className="name">Down</div>
-              <div className="pct">{formatPct(down)}</div>
-            </div>
-          </div>
-          <PriceChart data={chartData} />
+          <PriceChart data={chartData} priceToBeat={beat} mode="btc" title="Bitcoin price" />
+          <PriceChart data={chartData} mode="outcomes" title="Up / Down price" />
         </div>
 
-        <div>
-          <TradePanel
-            side={side}
-            onSide={setSide}
-            amount={amount}
-            onAmount={setAmount}
-            onTrade={onTrade}
-            disabled={mode !== 'paper' || (!playing && !sessionId)}
-            upPrice={up}
-            downPrice={down}
-            cash={tick?.portfolio?.cash}
-            modelPUp={tick?.model_p_up}
-          />
-          {mode === 'monitor' && (
-            <p className="muted" style={{ marginTop: '0.75rem', fontSize: '0.85rem' }}>
-              Monitor mode is view-only replay. Use Paper to place simulated trades.
-            </p>
+        <OrderBookPanel book={book} />
+
+        <div className="tabs">
+          {(['activity', 'positions', 'rules'] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              className={tab === t ? 'active' : ''}
+              onClick={() => setTab(t)}
+            >
+              {t[0].toUpperCase() + t.slice(1)}
+            </button>
+          ))}
+        </div>
+
+        <div className="panel">
+          {tab === 'activity' && (
+            <ul className="activity-list">
+              {activity.length === 0 && <li className="muted">No fills yet</li>}
+              {activity.map((f, i) => (
+                <li key={i}>
+                  <span>
+                    <strong>{f.source}</strong> {f.action} {f.side}
+                  </span>
+                  <span>
+                    {f.shares.toFixed(2)} @ {formatUsd(f.price, 3)} {f.reason ? `· ${f.reason}` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {tab === 'positions' && (
+            <div>
+              <p>
+                Cash: <strong>{formatUsd(tick?.portfolio?.cash ?? 1000)}</strong>
+              </p>
+              <p>
+                Up shares: <strong>{(tick?.portfolio?.up_shares ?? 0).toFixed(2)}</strong>
+              </p>
+              <p>
+                Down shares: <strong>{(tick?.portfolio?.down_shares ?? 0).toFixed(2)}</strong>
+              </p>
+              <p>
+                Equity: <strong>{formatUsd(tick?.equity)}</strong>
+              </p>
+              {tick?.settlement && (
+                <p className="success">
+                  Settled — winner {tick.settlement.winner === 1 ? 'UP' : 'DOWN'}, cash{' '}
+                  {formatUsd(tick.settlement.ending_cash)}
+                </p>
+              )}
+            </div>
+          )}
+          {tab === 'rules' && (
+            <div className="muted" style={{ fontSize: '0.9rem' }}>
+              <p>
+                This market resolves to <strong>Up</strong> if the Chainlink BTC/USD price at the end of
+                the window is greater than or equal to the Price to Beat at the start; otherwise{' '}
+                <strong>Down</strong>.
+              </p>
+              <p>
+                Order book depth uses share buckets mapped to <strong>absolute price ranges</strong>,
+                derived from distance-from-traded-price storage bands.
+              </p>
+              <p>
+                poly-monitor v1 replays historical data only. Paper fills are simulated; no live orders
+                are sent.
+              </p>
+            </div>
           )}
         </div>
       </div>
 
-      <div className="tabs">
-        {(['activity', 'book', 'positions', 'rules'] as const).map((t) => (
-          <button key={t} type="button" className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
-            {t[0].toUpperCase() + t.slice(1)}
-          </button>
-        ))}
-      </div>
-
-      <div className="panel">
-        {tab === 'activity' && (
-          <ul className="activity-list">
-            {activity.length === 0 && <li className="muted">No fills yet</li>}
-            {activity.map((f, i) => (
-              <li key={i}>
-                <span>
-                  <strong>{f.source}</strong> {f.action} {f.side}
-                </span>
-                <span>
-                  {f.shares.toFixed(2)} @ {formatUsd(f.price, 3)} {f.reason ? `· ${f.reason}` : ''}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {tab === 'book' && (
-          <div className="book-grid">
-            <div>
-              <div className="muted">Asks</div>
-              {(upBook.asks || []).slice(0, 8).map((l, i) => (
-                <div className="book-row ask" key={`a${i}`}>
-                  <span>{formatUsd(l.price, 3)}</span>
-                  <span>{l.size.toFixed(0)}</span>
-                </div>
-              ))}
-            </div>
-            <div>
-              <div className="muted">Bids</div>
-              {(upBook.bids || []).slice(0, 8).map((l, i) => (
-                <div className="book-row bid" key={`b${i}`}>
-                  <span>{formatUsd(l.price, 3)}</span>
-                  <span>{l.size.toFixed(0)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        {tab === 'positions' && (
-          <div>
-            <p>
-              Cash: <strong>{formatUsd(tick?.portfolio?.cash ?? 1000)}</strong>
-            </p>
-            <p>
-              Up shares: <strong>{(tick?.portfolio?.up_shares ?? 0).toFixed(2)}</strong>
-            </p>
-            <p>
-              Down shares: <strong>{(tick?.portfolio?.down_shares ?? 0).toFixed(2)}</strong>
-            </p>
-            <p>
-              Equity: <strong>{formatUsd(tick?.equity)}</strong>
-            </p>
-            {tick?.settlement && (
-              <p className="success">
-                Settled — winner {tick.settlement.winner === 1 ? 'UP' : 'DOWN'}, cash{' '}
-                {formatUsd(tick.settlement.ending_cash)}
-              </p>
-            )}
-          </div>
-        )}
-        {tab === 'rules' && (
-          <div className="muted" style={{ fontSize: '0.9rem' }}>
-            <p>
-              This market resolves to <strong>Up</strong> if the Chainlink BTC/USD price at the end of the
-              window is greater than or equal to the Price to Beat at the start; otherwise <strong>Down</strong>.
-            </p>
-            <p>
-              poly-monitor v1 replays historical `fetch_real` data only. Paper fills are simulated at the
-              displayed outcome price; no live orders are sent.
-            </p>
-          </div>
-        )}
-      </div>
+      <ControlSidebar
+        mode={mode}
+        split={split}
+        onSplit={setSplit}
+        indexing={indexing}
+        dateMin={dateMin}
+        dateMax={dateMax}
+        selectedDate={selectedDate}
+        onDate={setSelectedDate}
+        selectedTime={selectedTime}
+        markets={markets}
+        onTime={onTimeChange}
+        formatSlotLabel={formatSlotLabel}
+        speed={speed}
+        onSpeed={setReplaySpeed}
+        playing={playing}
+        paused={paused}
+        onPlay={() => startReplay()}
+        onPause={pauseReplay}
+        onResume={resumeReplay}
+        onStop={stopWs}
+        marketId={marketId}
+        hasPrev={Boolean(neighbors.prev)}
+        hasNext={Boolean(neighbors.next)}
+        onPrev={() => neighbors.prev && setMarketId(neighbors.prev)}
+        onNext={() => neighbors.next && setMarketId(neighbors.next)}
+        strategy={strategy}
+        onStrategy={setStrategy}
+        tradeAction={tradeAction}
+        onTradeAction={setTradeAction}
+        side={side}
+        onSide={setSide}
+        amount={amount}
+        onAmount={setAmount}
+        onTrade={onTrade}
+        upPrice={up}
+        downPrice={down}
+        cash={tick?.portfolio?.cash}
+        modelPUp={tick?.model_p_up}
+        tradeDisabled={mode !== 'paper' || (!playing && !sessionId)}
+      />
     </div>
   )
 }

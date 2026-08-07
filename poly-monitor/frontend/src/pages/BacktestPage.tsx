@@ -105,13 +105,18 @@ export default function BacktestPage() {
             <div className="chart-wrap">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={equity}>
-                  <CartesianGrid stroke="#2a2b36" strokeDasharray="3 3" />
+                  <CartesianGrid stroke="#eef0f4" vertical={false} />
                   <XAxis dataKey="market_id" hide />
-                  <YAxis stroke="#9a9baf" tick={{ fontSize: 11 }} width={48} />
+                  <YAxis stroke="#9ca3af" tick={{ fontSize: 11, fill: '#9ca3af' }} width={48} axisLine={false} tickLine={false} />
                   <Tooltip
-                    contentStyle={{ background: '#1a1b23', border: '1px solid #2a2b36', borderRadius: 8 }}
+                    contentStyle={{
+                      background: '#ffffff',
+                      border: '1px solid #e4e6ed',
+                      borderRadius: 8,
+                      boxShadow: '0 4px 12px rgba(15,17,23,0.08)',
+                    }}
                   />
-                  <Line type="monotone" dataKey="cum_pnl" stroke="#5b8def" dot={false} strokeWidth={2} />
+                  <Line type="monotone" dataKey="cum_pnl" stroke="#3b82f6" dot={false} strokeWidth={2} />
                 </LineChart>
               </ResponsiveContainer>
             </div>

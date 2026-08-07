@@ -11,6 +11,13 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.data import SPLITS, book_at, list_markets, load_market_frame, market_summary, series_for_chart
+from app.core.market_index import (
+    build_market_index,
+    find_market_at,
+    find_market_by_date_time,
+    list_dates,
+    list_markets_for_date,
+)
 from app.backtest.runner import run_backtest
 from app.engine.replay import ReplaySession
 from app.strategies.registry import list_strategies
@@ -63,13 +70,61 @@ def get_strategies() -> list[dict[str, Any]]:
     return list_strategies()
 
 
+@router.get("/markets/dates")
+def get_market_dates(
+    split: str = Query("validation", pattern="^(train|validation|test)$"),
+) -> dict[str, Any]:
+    dates = list_dates(split)
+    return {
+        "split": split,
+        "count": len(dates),
+        "dates": dates,
+        "min": dates[0] if dates else None,
+        "max": dates[-1] if dates else None,
+    }
+
+
+@router.get("/markets/at")
+def get_market_at(
+    split: str = Query("validation", pattern="^(train|validation|test)$"),
+    date: str | None = Query(None, description="YYYY-MM-DD in ET"),
+    time: str | None = Query(None, description="HH:MM in ET"),
+    t: int | None = Query(None, description="unix ms"),
+) -> dict[str, Any]:
+    if date and time:
+        m = find_market_by_date_time(split, date, time)
+    elif t is not None:
+        m = find_market_at(split, int(t))
+    elif date:
+        day = list_markets_for_date(split, date)
+        m = day[0] if day else None
+    else:
+        raise HTTPException(400, "Provide date+time, date, or t")
+    if not m:
+        raise HTTPException(404, "No market found for selection")
+    return m
+
+
 @router.get("/markets")
 def get_markets(
     split: str = Query("validation", pattern="^(train|validation|test)$"),
-    limit: int = Query(50, ge=1, le=2000),
+    limit: int = Query(50, ge=1, le=5000),
+    date: str | None = Query(None, description="Filter by ET date YYYY-MM-DD"),
+    rebuild_index: bool = Query(False),
 ) -> dict[str, Any]:
-    markets = list_markets(split, limit=limit)
-    return {"split": split, "count": len(markets), "markets": markets}
+    if rebuild_index:
+        build_market_index(split, force=True)
+    if date:
+        markets = list_markets_for_date(split, date)
+    else:
+        # Prefer indexed full list (fast); fall back to legacy limited scan
+        try:
+            markets = build_market_index(split)
+            if limit is not None:
+                markets = markets[: max(0, int(limit))]
+        except Exception:
+            markets = list_markets(split, limit=limit)
+    return {"split": split, "date": date, "count": len(markets), "markets": markets}
 
 
 @router.get("/markets/{market_id}")

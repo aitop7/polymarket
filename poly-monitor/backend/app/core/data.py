@@ -230,51 +230,135 @@ def series_for_chart(df: pd.DataFrame, *, max_points: int = 300) -> list[dict[st
     return out
 
 
+BUCKET_META = [
+    {"suffix": "0_1", "lo_cents": 0, "hi_cents": 1, "mid_cents": 0.5},
+    {"suffix": "1_3", "lo_cents": 1, "hi_cents": 3, "mid_cents": 2.0},
+    {"suffix": "3_7", "lo_cents": 3, "hi_cents": 7, "mid_cents": 5.0},
+    {"suffix": "7_15", "lo_cents": 7, "hi_cents": 15, "mid_cents": 11.0},
+    {"suffix": "15_30", "lo_cents": 15, "hi_cents": 30, "mid_cents": 22.5},
+    {"suffix": "30_plus", "lo_cents": 30, "hi_cents": None, "mid_cents": 40.0},
+]
+
+
+def _fmt_abs_cents(lo: float, hi: float | None, *, open_high: bool = False, open_low: bool = False) -> str:
+    """Format absolute price band in cents, e.g. 49-50c or 80c+."""
+    lo_i = int(round(max(0.0, min(100.0, lo))))
+    if open_high or hi is None:
+        return f"{lo_i}c+"
+    hi_i = int(round(max(0.0, min(100.0, hi))))
+    if open_low:
+        return f"0-{hi_i}c"
+    if lo_i > hi_i:
+        lo_i, hi_i = hi_i, lo_i
+    if lo_i == hi_i:
+        return f"{lo_i}c"
+    return f"{lo_i}-{hi_i}c"
+
+
 def book_at(df: pd.DataFrame, timestamp: int | None = None) -> dict[str, Any]:
+    """
+    Order book from distance-from-traded-price share buckets.
+
+    Levels are labeled with absolute price ranges (e.g. 49–50¢), mapped from
+    stored distance bands relative to the outcome traded price.
+    """
     if df.empty:
-        return {"bids": [], "asks": [], "timestamp": None}
+        return {"timestamp": None, "up": None, "down": None}
+
     if timestamp is None:
         row = df.iloc[-1]
     else:
         idx = (df["timestamp"] - timestamp).abs().idxmin()
         row = df.loc[idx]
 
-    def levels(side: str, kind: str) -> list[dict[str, float]]:
-        # Synthetic ladder from distance buckets when present
-        suffixes = ("0_1", "1_3", "3_7", "7_15", "15_30", "30_plus")
-        mid = float(row.get(f"{side}_price") or 0.5)
-        out: list[dict[str, float]] = []
-        # cents offsets midpoints for display
-        offsets = (0.5, 2.0, 5.0, 11.0, 22.5, 40.0)
-        for suf, off in zip(suffixes, offsets):
-            col = f"{side}_{kind}_{suf}"
-            if col not in df.columns:
-                continue
-            size = float(row[col]) if pd.notna(row[col]) else 0.0
-            if size <= 0:
-                continue
-            cents = off / 100.0
-            price = mid - cents if kind == "bid" else mid + cents
-            price = max(0.01, min(0.99, price))
-            out.append({"price": round(price, 3), "size": size})
-        return out
+    def side_book(outcome: str) -> dict[str, Any]:
+        traded = float(row[f"{outcome}_price"]) if pd.notna(row.get(f"{outcome}_price")) else 0.5
+        traded_cents = traded * 100.0
+        best_bid = row.get(f"{outcome}_bid_price")
+        best_ask = row.get(f"{outcome}_ask_price")
 
-    top_bid = row.get("up_bid_price")
-    top_ask = row.get("up_ask_price")
+        asks: list[dict[str, Any]] = []
+        bids: list[dict[str, Any]] = []
+        for meta in BUCKET_META:
+            ask_col = f"{outcome}_ask_{meta['suffix']}"
+            bid_col = f"{outcome}_bid_{meta['suffix']}"
+            ask_shares = float(row[ask_col]) if ask_col in df.columns and pd.notna(row.get(ask_col)) else 0.0
+            bid_shares = float(row[bid_col]) if bid_col in df.columns and pd.notna(row.get(bid_col)) else 0.0
+            mid_off = meta["mid_cents"] / 100.0
+            ask_px = max(0.01, min(0.99, traded + mid_off))
+            bid_px = max(0.01, min(0.99, traded - mid_off))
+
+            ask_lo_c = max(0.0, min(100.0, traded_cents + meta["lo_cents"]))
+            ask_hi_c = (
+                None
+                if meta["hi_cents"] is None
+                else max(0.0, min(100.0, traded_cents + meta["hi_cents"]))
+            )
+            ask_range = _fmt_abs_cents(ask_lo_c, ask_hi_c, open_high=meta["hi_cents"] is None)
+
+            if meta["hi_cents"] is None:
+                bid_hi_c = max(0.0, min(100.0, traded_cents - meta["lo_cents"]))
+                bid_lo_c = 0.0
+                bid_range = _fmt_abs_cents(bid_lo_c, bid_hi_c, open_low=True)
+            else:
+                bid_lo_c = max(0.0, min(100.0, traded_cents - meta["hi_cents"]))
+                bid_hi_c = max(0.0, min(100.0, traded_cents - meta["lo_cents"]))
+                bid_range = _fmt_abs_cents(bid_lo_c, bid_hi_c)
+
+            asks.append(
+                {
+                    "range": ask_range,
+                    "suffix": meta["suffix"],
+                    "lo_cents": meta["lo_cents"],
+                    "hi_cents": meta["hi_cents"],
+                    "price_lo": round(ask_lo_c / 100.0, 4),
+                    "price_hi": None if ask_hi_c is None else round(ask_hi_c / 100.0, 4),
+                    "shares": ask_shares,
+                    "approx_price": round(ask_px, 4),
+                    "notional": round(ask_shares * ask_px, 2),
+                }
+            )
+            bids.append(
+                {
+                    "range": bid_range,
+                    "suffix": meta["suffix"],
+                    "lo_cents": meta["lo_cents"],
+                    "hi_cents": meta["hi_cents"],
+                    "price_lo": round(bid_lo_c / 100.0, 4),
+                    "price_hi": round(bid_hi_c / 100.0, 4),
+                    "shares": bid_shares,
+                    "approx_price": round(bid_px, 4),
+                    "notional": round(bid_shares * bid_px, 2),
+                }
+            )
+
+        asks_view = list(reversed(asks))
+        bids_view = bids
+
+        ask_total = sum(x["shares"] for x in asks)
+        bid_total = sum(x["shares"] for x in bids)
+        spread = None
+        if pd.notna(best_bid) and pd.notna(best_ask):
+            spread = float(best_ask) - float(best_bid)
+
+        return {
+            "traded_price": traded,
+            "best_bid": float(best_bid) if pd.notna(best_bid) else None,
+            "best_ask": float(best_ask) if pd.notna(best_ask) else None,
+            "spread": spread,
+            "asks": asks_view,
+            "bids": bids_view,
+            "ask_shares": ask_total,
+            "bid_shares": bid_total,
+            "volume_shares": ask_total + bid_total,
+        }
+
     return {
         "timestamp": int(row["timestamp"]),
-        "up": {
-            "best_bid": float(top_bid) if pd.notna(top_bid) else None,
-            "best_ask": float(top_ask) if pd.notna(top_ask) else None,
-            "bids": levels("up", "bid"),
-            "asks": levels("up", "ask"),
-        },
-        "down": {
-            "best_bid": float(row["down_bid_price"]) if "down_bid_price" in df.columns and pd.notna(row.get("down_bid_price")) else None,
-            "best_ask": float(row["down_ask_price"]) if "down_ask_price" in df.columns and pd.notna(row.get("down_ask_price")) else None,
-            "bids": levels("down", "bid"),
-            "asks": levels("down", "ask"),
-        },
+        "mode": "absolute_ranges",
+        "note": "Share buckets stored by distance from traded price; labels show absolute ¢ ranges.",
+        "up": side_book("up"),
+        "down": side_book("down"),
         "up_price": float(row["up_price"]) if pd.notna(row.get("up_price")) else None,
         "down_price": float(row["down_price"]) if pd.notna(row.get("down_price")) else None,
     }

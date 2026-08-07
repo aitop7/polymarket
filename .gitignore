@@ -4,9 +4,10 @@ dataset/
 training/
 features/
 models/
+.cache/
+poly-monitor/.cache/
 poly-monitor/frontend/node_modules/
 poly-monitor/frontend/dist/
-
 venv/
 *.pyc
 *.pyo

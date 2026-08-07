@@ -1,0 +1,281 @@
+import { formatPct, formatUsd } from '../api'
+import type { MarketSummary } from '../api'
+
+type Props = {
+  mode: 'monitor' | 'paper'
+  // data
+  split: string
+  onSplit: (s: string) => void
+  indexing: boolean
+  dateMin: string
+  dateMax: string
+  selectedDate: string
+  onDate: (d: string) => void
+  selectedTime: string
+  markets: MarketSummary[]
+  onTime: (t: string) => void
+  formatSlotLabel: (timeEt: string, startMs?: number, endMs?: number) => string
+  // playback
+  speed: number
+  onSpeed: (n: number) => void
+  playing: boolean
+  paused: boolean
+  onPlay: () => void
+  onPause: () => void
+  onResume: () => void
+  onStop: () => void
+  marketId: string
+  hasPrev: boolean
+  hasNext: boolean
+  onPrev: () => void
+  onNext: () => void
+  // strategy (paper)
+  strategy: string
+  onStrategy: (s: string) => void
+  // trade
+  tradeAction: 'BUY' | 'SELL'
+  onTradeAction: (a: 'BUY' | 'SELL') => void
+  side: 'UP' | 'DOWN'
+  onSide: (s: 'UP' | 'DOWN') => void
+  amount: number
+  onAmount: (n: number) => void
+  onTrade: () => void
+  upPrice: number
+  downPrice: number
+  cash?: number
+  modelPUp?: number | null
+  tradeDisabled: boolean
+}
+
+export default function ControlSidebar(props: Props) {
+  const {
+    mode,
+    split,
+    onSplit,
+    indexing,
+    dateMin,
+    dateMax,
+    selectedDate,
+    onDate,
+    selectedTime,
+    markets,
+    onTime,
+    formatSlotLabel,
+    speed,
+    onSpeed,
+    playing,
+    paused,
+    onPlay,
+    onPause,
+    onResume,
+    onStop,
+    marketId,
+    hasPrev,
+    hasNext,
+    onPrev,
+    onNext,
+    strategy,
+    onStrategy,
+    tradeAction,
+    onTradeAction,
+    side,
+    onSide,
+    amount,
+    onAmount,
+    onTrade,
+    upPrice,
+    downPrice,
+    cash,
+    modelPUp,
+    tradeDisabled,
+  } = props
+
+  const price = side === 'UP' ? upPrice : downPrice
+  const shares = price > 0 ? amount / price : 0
+
+  return (
+    <aside className="control-sidebar">
+      <div className="sidebar-section">
+        <div className="sidebar-heading">Data</div>
+        <label className="sidebar-label">Dataset</label>
+        <select value={split} onChange={(e) => onSplit(e.target.value)} disabled={indexing}>
+          <option value="validation">Validation</option>
+          <option value="test">Test</option>
+          <option value="train">Train</option>
+        </select>
+
+        <label className="sidebar-label">Date (ET)</label>
+        <input
+          type="date"
+          value={selectedDate}
+          min={dateMin || undefined}
+          max={dateMax || undefined}
+          disabled={!dateMin}
+          onChange={(e) => onDate(e.target.value)}
+        />
+
+        <label className="sidebar-label">Time window (ET)</label>
+        <select
+          value={selectedTime}
+          disabled={!markets.length || indexing}
+          onChange={(e) => onTime(e.target.value)}
+        >
+          {markets.length === 0 && (
+            <option value="">{indexing ? 'Loading slots…' : 'No markets this day'}</option>
+          )}
+          {markets.map((m) => (
+            <option key={m.market_id} value={m.time_et || ''}>
+              {formatSlotLabel(m.time_et || '', m.start_time, m.end_time)}
+            </option>
+          ))}
+        </select>
+
+        {indexing ? (
+          <div className="sidebar-badge">Indexing calendar…</div>
+        ) : (
+          dateMin &&
+          dateMax && (
+            <div className="sidebar-meta">
+              {dateMin} → {dateMax}
+            </div>
+          )
+        )}
+      </div>
+
+      <div className="sidebar-section">
+        <div className="sidebar-heading">Playback</div>
+        <label className="sidebar-label">Speed</label>
+        <select
+          value={speed}
+          onChange={(e) => onSpeed(Number(e.target.value))}
+        >
+          <option value={1}>1x · Normal</option>
+          <option value={5}>5x</option>
+          <option value={10}>10x</option>
+          <option value={30}>30x</option>
+          <option value={60}>60x</option>
+          <option value={120}>120x</option>
+        </select>
+
+        {mode === 'paper' && (
+          <>
+            <label className="sidebar-label">Strategy</label>
+            <select value={strategy} onChange={(e) => onStrategy(e.target.value)}>
+              <option value="none">Manual only</option>
+              <option value="lgbm_edge">LightGBM edge</option>
+              <option value="edge_threshold">Edge threshold</option>
+            </select>
+          </>
+        )}
+
+        <div className="sidebar-btn-row">
+          {!playing ? (
+            <button
+              type="button"
+              className="sidebar-btn primary"
+              onClick={onPlay}
+              disabled={!marketId || indexing}
+            >
+              Play
+            </button>
+          ) : paused ? (
+            <button type="button" className="sidebar-btn primary" onClick={onResume}>
+              Resume
+            </button>
+          ) : (
+            <button type="button" className="sidebar-btn" onClick={onPause}>
+              Pause
+            </button>
+          )}
+          <button
+            type="button"
+            className="sidebar-btn danger"
+            onClick={onStop}
+            disabled={!playing && !paused}
+          >
+            Stop
+          </button>
+        </div>
+
+        <div className="sidebar-btn-row">
+          <button type="button" className="sidebar-btn" onClick={onPrev} disabled={!hasPrev || indexing}>
+            ← Prev
+          </button>
+          <button type="button" className="sidebar-btn" onClick={onNext} disabled={!hasNext || indexing}>
+            Next →
+          </button>
+        </div>
+      </div>
+
+      <div className="sidebar-section">
+        <div className="sidebar-heading">Trade</div>
+        {mode === 'monitor' && (
+          <p className="sidebar-hint">Switch to Paper to place simulated orders.</p>
+        )}
+
+        <div className="sidebar-toggle">
+          <button
+            type="button"
+            className={tradeAction === 'BUY' ? 'active' : ''}
+            onClick={() => onTradeAction('BUY')}
+            disabled={mode !== 'paper'}
+          >
+            Buy
+          </button>
+          <button
+            type="button"
+            className={tradeAction === 'SELL' ? 'active' : ''}
+            onClick={() => onTradeAction('SELL')}
+            disabled={mode !== 'paper'}
+          >
+            Sell
+          </button>
+        </div>
+
+        <div className="sidebar-toggle">
+          <button
+            type="button"
+            className={`up ${side === 'UP' ? 'active' : ''}`}
+            onClick={() => onSide('UP')}
+            disabled={mode !== 'paper'}
+          >
+            Up {formatPct(upPrice)}
+          </button>
+          <button
+            type="button"
+            className={`down ${side === 'DOWN' ? 'active' : ''}`}
+            onClick={() => onSide('DOWN')}
+            disabled={mode !== 'paper'}
+          >
+            Down {formatPct(downPrice)}
+          </button>
+        </div>
+
+        <label className="sidebar-label">Amount (USD)</label>
+        <input
+          type="number"
+          min={1}
+          step={1}
+          value={amount}
+          disabled={mode !== 'paper'}
+          onChange={(e) => onAmount(Number(e.target.value))}
+        />
+
+        <div className="sidebar-meta">
+          ~{shares.toFixed(2)} shares @ {formatUsd(price, 3)}
+          {cash != null && <> · Cash {formatUsd(cash)}</>}
+          {modelPUp != null && <> · Model {formatPct(modelPUp)}</>}
+        </div>
+
+        <button
+          type="button"
+          className={`sidebar-btn primary full ${side === 'UP' ? 'up' : 'down'}`}
+          disabled={tradeDisabled}
+          onClick={onTrade}
+        >
+          {tradeAction} {side}
+        </button>
+      </div>
+    </aside>
+  )
+}

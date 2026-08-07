@@ -10,6 +10,8 @@ export type MarketSummary = {
   btc_open_price: number | null
   has_features: boolean
   has_training: boolean
+  date_et?: string
+  time_et?: string
 }
 
 export type MarketDetail = MarketSummary & {
@@ -33,8 +35,23 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => json<{ ok: boolean }>('/api/health'),
   strategies: () => json<{ name: string; description: string; params: Record<string, unknown> }[]>('/api/strategies'),
-  markets: (split: string, limit = 50) =>
-    json<{ split: string; count: number; markets: MarketSummary[] }>(`/api/markets?split=${split}&limit=${limit}`),
+  marketDates: (split: string) =>
+    json<{ split: string; count: number; dates: string[]; min: string | null; max: string | null }>(
+      `/api/markets/dates?split=${split}`,
+    ),
+  markets: (split: string, opts?: { limit?: number; date?: string }) => {
+    const q = new URLSearchParams({ split })
+    if (opts?.limit != null) q.set('limit', String(opts.limit))
+    if (opts?.date) q.set('date', opts.date)
+    return json<{ split: string; count: number; markets: MarketSummary[]; date?: string }>(`/api/markets?${q}`)
+  },
+  marketAt: (split: string, opts: { date?: string; time?: string; t?: number }) => {
+    const q = new URLSearchParams({ split })
+    if (opts.date) q.set('date', opts.date)
+    if (opts.time) q.set('time', opts.time)
+    if (opts.t != null) q.set('t', String(opts.t))
+    return json<MarketSummary>(`/api/markets/at?${q}`)
+  },
   market: (id: string, split?: string) =>
     json<MarketDetail>(`/api/markets/${id}${split ? `?split=${split}` : ''}`),
   neighbors: (id: string, split?: string) =>
@@ -75,6 +92,53 @@ export function formatPct(p: number | null | undefined): string {
 export function formatWindow(startMs: number, endMs: number): string {
   const s = new Date(startMs)
   const e = new Date(endMs)
-  const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
+  const opts: Intl.DateTimeFormatOptions = {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }
   return `${s.toLocaleString(undefined, opts)} – ${e.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
+}
+
+/** Polymarket-style window: "August 7, 12:50-12:55AM ET" */
+export function formatWindowEt(startMs: number, endMs: number): string {
+  const optsDate: Intl.DateTimeFormatOptions = {
+    timeZone: 'America/New_York',
+    month: 'long',
+    day: 'numeric',
+  }
+  const optsTime: Intl.DateTimeFormatOptions = {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }
+  const s = new Date(startMs)
+  const e = new Date(endMs)
+  const date = new Intl.DateTimeFormat('en-US', optsDate).format(s)
+  const t0 = new Intl.DateTimeFormat('en-US', optsTime).format(s).replace(' ', '')
+  const t1 = new Intl.DateTimeFormat('en-US', optsTime).format(e).replace(' ', '')
+  // Collapse duplicate AM/PM when same meridian
+  const ampm = (t: string) => (t.toUpperCase().includes('PM') ? 'PM' : 'AM')
+  let range: string
+  if (ampm(t0) === ampm(t1)) {
+    const startNoMer = t0.replace(/\s?(AM|PM)/i, '')
+    range = `${startNoMer}-${t1}`
+  } else {
+    range = `${t0}-${t1}`
+  }
+  return `${date}, ${range} ET`
+}
+
+/** Compact label for selects: "Jul 8, 2026, 8:00–8:05 PM" */
+export function formatMarketLabel(startMs: number, endMs: number, marketId?: string): string {
+  const s = new Date(startMs)
+  const e = new Date(endMs)
+  const date = s.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  const t0 = s.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  const t1 = e.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  const window = `${date}, ${t0} – ${t1}`
+  return marketId ? `${window} · ${marketId}` : window
 }

@@ -1,0 +1,186 @@
+"""Cached lightweight market time index for calendar/time picking."""
+
+from __future__ import annotations
+
+import json
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import pyarrow.parquet as pq
+
+from app.core.config import settings
+
+SPLITS = ("train", "validation", "test")
+ET = ZoneInfo("America/New_York")
+
+_CACHE: dict[str, list[dict[str, Any]]] = {}
+
+
+def _cache_dir() -> Path:
+    d = Path(__file__).resolve().parents[3] / ".cache"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _cache_path(split: str) -> Path:
+    return _cache_dir() / f"market_index_{split}.json"
+
+
+def ms_to_et_date(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000.0, tz=ET).strftime("%Y-%m-%d")
+
+
+def ms_to_et_time(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000.0, tz=ET).strftime("%H:%M")
+
+
+def _split_dirs(split: str) -> tuple[Path, Path]:
+    return settings.features_dir / split, settings.training_dir / split
+
+
+def _list_ids(feat_dir: Path, train_dir: Path) -> list[str]:
+    if feat_dir.is_dir():
+        return sorted(p.stem for p in feat_dir.glob("*.parquet"))
+    if train_dir.is_dir():
+        return sorted(p.stem for p in train_dir.glob("*.parquet"))
+    return []
+
+
+def _fingerprint(feat_dir: Path, train_dir: Path, n_ids: int) -> dict[str, Any]:
+    stamp = 0.0
+    for d in (feat_dir, train_dir):
+        if d.is_dir():
+            stamp = max(stamp, d.stat().st_mtime)
+    return {"n": n_ids, "stamp": stamp}
+
+
+def _read_one(args: tuple[str, str, str, bool, bool]) -> dict[str, Any] | None:
+    path_s, mid, split, feat_exists, train_exists = args
+    path = Path(path_s)
+    try:
+        # Prefer start/end only — avoids full-column scan
+        try:
+            table = pq.read_table(path, columns=["start_time", "end_time"])
+            start = int(table.column("start_time")[0].as_py())
+            end = int(table.column("end_time")[0].as_py())
+            nrows = int(table.num_rows)
+        except Exception:
+            table = pq.read_table(path, columns=["timestamp"])
+            if table.num_rows == 0:
+                return None
+            start = int(table.column("timestamp")[0].as_py())
+            end = int(table.column("timestamp")[-1].as_py())
+            nrows = int(table.num_rows)
+        return {
+            "market_id": mid,
+            "split": split,
+            "start_time": start,
+            "end_time": end,
+            "date_et": ms_to_et_date(start),
+            "time_et": ms_to_et_time(start),
+            "has_features": feat_exists,
+            "has_training": train_exists,
+            "rows": nrows,
+            "winner": None,
+            "btc_open_price": None,
+        }
+    except Exception:
+        return None
+
+
+def build_market_index(split: str, *, force: bool = False) -> list[dict[str, Any]]:
+    if split not in SPLITS:
+        raise ValueError(f"Invalid split: {split}")
+
+    if not force and split in _CACHE:
+        return _CACHE[split]
+
+    cache_file = _cache_path(split)
+    feat_dir, train_dir = _split_dirs(split)
+    ids = _list_ids(feat_dir, train_dir)
+    fp = _fingerprint(feat_dir, train_dir, len(ids))
+
+    if not force and cache_file.is_file():
+        try:
+            payload = json.loads(cache_file.read_text(encoding="utf-8"))
+            # Accept cache if market count matches (mtime of dirs is noisy on Windows)
+            if int(payload.get("n", -1)) == fp["n"] and isinstance(payload.get("markets"), list):
+                rows = payload["markets"]
+                _CACHE[split] = rows
+                return rows
+        except Exception:
+            pass
+
+    jobs: list[tuple[str, str, str, bool, bool]] = []
+    for mid in ids:
+        train_path = train_dir / f"{mid}.parquet"
+        feat_path = feat_dir / f"{mid}.parquet"
+        path = train_path if train_path.is_file() else feat_path
+        if not path.is_file():
+            continue
+        jobs.append((str(path), mid, split, feat_path.is_file(), train_path.is_file()))
+
+    out: list[dict[str, Any]] = []
+    workers = min(32, max(4, (len(jobs) // 200) or 8))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(_read_one, job) for job in jobs]
+        for fut in as_completed(futs):
+            row = fut.result()
+            if row:
+                out.append(row)
+
+    out.sort(key=lambda r: r["start_time"])
+    try:
+        cache_file.write_text(
+            json.dumps({"n": fp["n"], "stamp": fp["stamp"], "markets": out}, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+    _CACHE[split] = out
+    return out
+
+
+def list_dates(split: str) -> list[str]:
+    idx = build_market_index(split)
+    return sorted({r["date_et"] for r in idx})
+
+
+def list_markets_for_date(split: str, date_et: str) -> list[dict[str, Any]]:
+    idx = build_market_index(split)
+    return [r for r in idx if r["date_et"] == date_et]
+
+
+def find_market_at(split: str, timestamp_ms: int) -> dict[str, Any] | None:
+    idx = build_market_index(split)
+    if not idx:
+        return None
+    for r in idx:
+        if r["start_time"] <= timestamp_ms < r["end_time"]:
+            return r
+    return min(idx, key=lambda r: abs(r["start_time"] - timestamp_ms))
+
+
+def find_market_by_date_time(split: str, date_et: str, time_et: str) -> dict[str, Any] | None:
+    day = list_markets_for_date(split, date_et)
+    if not day:
+        return None
+    for r in day:
+        if r["time_et"] == time_et:
+            return r
+    try:
+        hh, mm = map(int, time_et.split(":"))
+        target_min = hh * 60 + mm
+    except Exception:
+        return day[0]
+
+    def mins(r: dict[str, Any]) -> int:
+        h, m = map(int, r["time_et"].split(":"))
+        return h * 60 + m
+
+    return min(day, key=lambda r: abs(mins(r) - target_min))
