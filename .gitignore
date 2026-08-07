@@ -1,5 +1,6 @@
 .env
 data/
+dataset/
 raw/
 venv/
 *.pyc
