@@ -1,8 +1,9 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Area,
   CartesianGrid,
-  Legend,
+  ComposedChart,
   Line,
-  LineChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -11,17 +12,59 @@ import {
 } from 'recharts'
 import { formatCents } from '../api'
 
-type Point = { t: number; btc?: number | null; twap?: number | null; up?: number | null; down?: number | null }
+export type BtcSeriesKey = 'twap' | 'chainlink' | 'binance'
+
+export type BtcSeriesVisibility = Record<BtcSeriesKey, boolean>
+
+export type TimeDomain = [number, number]
+
+type Point = {
+  t: number
+  btc?: number | null
+  twap?: number | null
+  chainlink?: number | null
+  up?: number | null
+  down?: number | null
+}
 
 type Props = {
   data: Point[]
   priceToBeat?: number | null
-  /** btc = Bitcoin price; outcomes = Up/Down probabilities */
+  /** btc = Bitcoin prices; outcomes = Up/Down probabilities */
   mode?: 'btc' | 'outcomes'
-  /** Which BTC series to plot when mode=btc */
-  btcKey?: 'btc' | 'twap'
   title?: string
+  /** Shared numeric time domain (ms) so BTC and Up/Down charts align */
+  xDomain: TimeDomain
+  onXDomainChange: (next: TimeDomain) => void
+  onXDomainReset?: () => void
+  /** Full data time range — used for clamp / max zoom-out */
+  xFullDomain: TimeDomain
+  /** Default view (trailing window) — used for reset */
+  xDefaultDomain: TimeDomain
+  /** Which BTC series to draw (mode=btc) */
+  seriesVisible?: BtcSeriesVisibility
+  onSeriesVisibleChange?: (next: BtcSeriesVisibility) => void
+  /** Shared hover timestamp (ms) — keeps BTC / Up-Down tooltips aligned */
+  hoverTime?: number | null
+  onHoverTimeChange?: (t: number | null) => void
 }
+
+const SERIES_META: {
+  key: BtcSeriesKey
+  dataKey: 'twap' | 'chainlink' | 'btc'
+  label: string
+  color: string
+}[] = [
+  { key: 'twap', dataKey: 'twap', label: 'Chainlink 30s TWAP', color: '#eab308' },
+  { key: 'chainlink', dataKey: 'chainlink', label: 'Chainlink BTC', color: '#22c55e' },
+  { key: 'binance', dataKey: 'btc', label: 'Binance BTC', color: '#2563eb' },
+]
+
+/** Keep plot areas aligned across BTC / Up-Down charts */
+const Y_AXIS_WIDTH = 72
+const CHART_MARGIN = { top: 10, right: 8, left: 4, bottom: 36 }
+const TWAP_COLOR = '#eab308'
+const FLOAT_TIP_ORANGE = TWAP_COLOR
 
 type TargetLabelProps = {
   viewBox?: { x?: number; y?: number; width?: number }
@@ -59,139 +102,542 @@ function TargetTagLabel({ viewBox, above }: TargetLabelProps) {
   )
 }
 
-type TipPayload = {
-  dataKey?: string | number
-  name?: string
-  value?: number | string | null
-  color?: string
-  payload?: Point & { label?: string; upPct?: number | null; downPct?: number | null }
+function formatTimeTick(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  })
 }
 
-function outcomeLabel(dataKey: string | number | undefined, name: string | undefined): {
-  label: string
-  color: string
-} {
-  const key = String(dataKey ?? '')
-  const n = String(name ?? '')
-  if (key === 'upPct' || key === 'up' || n === 'Up') return { label: 'Up', color: '#10b981' }
-  if (key === 'downPct' || key === 'down' || n === 'Down') return { label: 'Down', color: '#ef4444' }
-  if (key === 'btc' || key === 'btcPlot' || n === 'BTC' || n === 'TWAP') {
-    return { label: n === 'TWAP' || key === 'twap' ? 'TWAP' : 'BTC', color: '#f7931a' }
+/** Absolute clock-aligned ticks so labels scroll with the data (not fixed slots). */
+function buildTimeTicks(domain: TimeDomain, targetCount = 5): number[] {
+  const [x0, x1] = domain
+  const span = Math.max(1, x1 - x0)
+  const steps = [5_000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000]
+  let step = steps[steps.length - 1]
+  for (const candidate of steps) {
+    if (span / candidate <= targetCount) {
+      step = candidate
+      break
+    }
   }
-  return { label: n || key || '—', color: '#6b7280' }
+  const first = Math.ceil(x0 / step) * step
+  const ticks: number[] = []
+  for (let t = first; t <= x1 + 1; t += step) {
+    if (t >= x0 && t <= x1) ticks.push(t)
+  }
+  return ticks
 }
 
-function ChartTooltip({
-  active,
-  payload,
-  label,
-  mode,
-}: {
-  active?: boolean
-  payload?: TipPayload[]
-  label?: string | number
-  mode: 'btc' | 'outcomes'
-}) {
-  if (!active || !payload?.length) return null
-  const items = payload
-  const time =
-    label != null
-      ? String(label)
-      : items[0]?.payload?.label ??
-        (items[0]?.payload?.t != null
-          ? new Date(items[0].payload!.t!).toLocaleTimeString(undefined, {
-              hour: 'numeric',
-              minute: '2-digit',
-              second: '2-digit',
-            })
-          : '')
+type TipRow = { label: string; color: string; valueText: string; dataKey: string }
+
+type HoverTip = {
+  time: string
+  rows: TipRow[]
+}
+
+function formatTipValue(mode: 'btc' | 'outcomes', raw: unknown): string {
+  const num = raw == null || raw === '' ? null : Number(raw)
+  if (num == null || !Number.isFinite(num)) return '—'
+  if (mode === 'btc') {
+    return `$${num.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`
+  }
+  return formatCents(num / 100)
+}
+
+function formatTipDateTime(ms: number): string {
+  return new Date(ms).toLocaleString(undefined, {
+    month: 'short',
+    day: '2-digit',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+type ChartDatum = Point & { upPct?: number | null; downPct?: number | null }
+
+function findNearestPoint(data: ChartDatum[], t: number): ChartDatum | null {
+  if (!data.length) return null
+  let best = data[0]
+  let bestDist = Math.abs(data[0].t - t)
+  for (let i = 1; i < data.length; i++) {
+    const d = Math.abs(data[i].t - t)
+    if (d < bestDist) {
+      best = data[i]
+      bestDist = d
+    }
+  }
+  return best
+}
+
+function tipFromDataAtTime(
+  mode: 'btc' | 'outcomes',
+  data: ChartDatum[],
+  t: number,
+  seriesVisible: BtcSeriesVisibility,
+): HoverTip | null {
+  const point = findNearestPoint(data, t)
+  if (!point) return null
+  const rows: TipRow[] = []
+  if (mode === 'btc') {
+    for (const s of SERIES_META) {
+      if (!seriesVisible[s.key]) continue
+      const v = point[s.dataKey]
+      if (v == null || !Number.isFinite(Number(v))) continue
+      rows.push({
+        label: s.label,
+        color: s.color,
+        dataKey: s.dataKey,
+        valueText: formatTipValue('btc', v),
+      })
+    }
+  } else {
+    if (point.upPct != null && Number.isFinite(point.upPct)) {
+      rows.push({
+        label: 'Up',
+        color: '#10b981',
+        dataKey: 'upPct',
+        valueText: formatTipValue('outcomes', point.upPct),
+      })
+    }
+    if (point.downPct != null && Number.isFinite(point.downPct)) {
+      rows.push({
+        label: 'Down',
+        color: '#ef4444',
+        dataKey: 'downPct',
+        valueText: formatTipValue('outcomes', point.downPct),
+      })
+    }
+  }
+  return {
+    time: formatTipDateTime(point.t),
+    rows,
+  }
+}
+
+/** Fixed header tip (above plot) — prices + timestamp. */
+function ChartHeaderTip({ tip }: { tip: HoverTip | null }) {
+  if (!tip?.rows.length) {
+    return <div className="chart-header-tip chart-header-tip-empty">Hover chart for values</div>
+  }
 
   return (
-    <div className="chart-tooltip">
-      <div className="chart-tooltip-time">{time}</div>
-      {items.map((item, i) => {
-        const { label: rowLabel, color } = outcomeLabel(item.dataKey, item.name)
-        const raw = item.value
-        const num = raw == null || raw === '' ? null : Number(raw)
-        let valueText = '—'
-        if (num != null && Number.isFinite(num)) {
-          valueText =
-            mode === 'btc'
-              ? `$${num.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}`
-              : formatCents(num / 100)
-        }
-        return (
-          <div key={`${rowLabel}-${i}`} className="chart-tooltip-row" style={{ color }}>
-            <span className="chart-tooltip-dot" style={{ background: color }} />
-            <span className="chart-tooltip-name">{rowLabel}</span>
-            <span className="chart-tooltip-value">{valueText}</span>
+    <div className="chart-header-tip">
+      <div className="chart-header-tip-prices">
+        {tip.rows.map((row) => (
+          <div key={row.label} className="chart-header-tip-price" style={{ color: row.color }}>
+            {row.valueText}
           </div>
-        )
-      })}
+        ))}
+      </div>
+      <div className="chart-float-tip-time">{tip.time}</div>
     </div>
   )
+}
+
+function HaloDot({
+  cx,
+  cy,
+  fill,
+}: {
+  cx?: number
+  cy?: number
+  fill?: string
+}) {
+  if (cx == null || cy == null) return null
+  const color = fill ?? FLOAT_TIP_ORANGE
+  return (
+    <circle cx={cx} cy={cy} r={3.5} fill={color} stroke="#fff" strokeWidth={1.5} />
+  )
+}
+
+/** Vertical grey crosshair only (no horizontal hover line). */
+function ChartCrosshair(props: {
+  points?: { x: number; y: number }[]
+  height?: number
+  top?: number
+}) {
+  const { points, height, top } = props
+  const x = points?.[0]?.x
+  if (x == null || height == null || top == null) return null
+
+  return (
+    <g className="recharts-tooltip-cursor" pointerEvents="none">
+      <line x1={x} y1={top} x2={x} y2={top + height} stroke="#d1d5db" strokeWidth={1} />
+    </g>
+  )
+}
+
+const DEFAULT_VISIBLE: BtcSeriesVisibility = {
+  twap: true,
+  chainlink: false,
+  binance: false,
+}
+
+function clampDomain(domain: TimeDomain, full: TimeDomain): TimeDomain {
+  const [f0, f1] = full
+  const span = Math.max(1, f1 - f0)
+  let [a, b] = domain
+  if (b < a) [a, b] = [b, a]
+  const width = Math.max(span * 0.02, b - a)
+  let mid = (a + b) / 2
+  if (mid - width / 2 < f0) mid = f0 + width / 2
+  if (mid + width / 2 > f1) mid = f1 - width / 2
+  return [mid - width / 2, mid + width / 2]
+}
+
+function domainEqual(a: TimeDomain, b: TimeDomain): boolean {
+  return Math.abs(a[0] - b[0]) < 1 && Math.abs(a[1] - b[1]) < 1
 }
 
 export default function PriceChart({
   data,
   priceToBeat,
   mode = 'btc',
-  btcKey = 'btc',
   title,
+  xDomain,
+  onXDomainChange,
+  onXDomainReset,
+  xFullDomain,
+  xDefaultDomain,
+  seriesVisible = DEFAULT_VISIBLE,
+  onSeriesVisibleChange,
+  hoverTime: hoverTimeProp,
+  onHoverTimeChange,
 }: Props) {
-  const chartData = data.map((d) => ({
-    ...d,
-    btcPlot: btcKey === 'twap' ? d.twap : d.btc,
-    upPct: d.up != null ? d.up * 100 : null,
-    downPct: d.down != null ? d.down * 100 : null,
-    label: new Date(d.t).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-      second: '2-digit',
-    }),
-  }))
-
-  const btcValues = chartData.map((d) => d.btcPlot).filter((v): v is number => v != null)
-  const btcMin = btcValues.length ? Math.min(...btcValues) : 0
-  const btcMax = btcValues.length ? Math.max(...btcValues) : 1
-  const pad = Math.max((btcMax - btcMin) * 0.15, 5)
   const showBtc = mode === 'btc'
+  const twapFillId = `twapAreaFill-${mode}`
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const dragRef = useRef<{
+    x: number
+    y: number
+    xDomain: TimeDomain
+    yDomain: [number, number]
+    zone: 'price' | 'time' | 'plot'
+  } | null>(null)
+  const [hoverZone, setHoverZone] = useState<'price' | 'time' | 'plot'>('plot')
+  const [localHoverTime, setLocalHoverTime] = useState<number | null>(null)
+  const hoverTime = onHoverTimeChange ? (hoverTimeProp ?? null) : localHoverTime
+  const setHoverTime = onHoverTimeChange ?? setLocalHoverTime
 
-  const lastBtc = btcValues.length ? btcValues[btcValues.length - 1] : null
+  const chartData = useMemo(
+    () =>
+      data.map((d) => ({
+        ...d,
+        upPct: d.up != null ? d.up * 100 : null,
+        downPct: d.down != null ? d.down * 100 : null,
+      })),
+    [data],
+  )
+
+  const hoverTip = useMemo(
+    () =>
+      hoverTime == null
+        ? null
+        : tipFromDataAtTime(mode, chartData, hoverTime, seriesVisible),
+    [
+      hoverTime,
+      mode,
+      chartData,
+      seriesVisible.twap,
+      seriesVisible.chainlink,
+      seriesVisible.binance,
+    ],
+  )
+
+  const onChartMouseMove = (state: {
+    activeLabel?: string | number
+    isTooltipActive?: boolean
+  }) => {
+    if (!state?.isTooltipActive || state.activeLabel == null) return
+    const t = Number(state.activeLabel)
+    if (!Number.isFinite(t)) return
+    setHoverTime(t)
+  }
+
+  const clearHover = () => setHoverTime(null)
+
+  const timeTicks = useMemo(() => buildTimeTicks(xDomain), [xDomain])
+
+  const autoY = useMemo((): [number, number] => {
+    if (!showBtc) return [0, 100]
+    const values = chartData.flatMap((d) =>
+      SERIES_META.filter((s) => seriesVisible[s.key])
+        .map((s) => d[s.dataKey])
+        .filter((v): v is number => v != null && Number.isFinite(v)),
+    )
+    const lo = values.length ? Math.min(...values) : 0
+    const hi = values.length ? Math.max(...values) : 1
+    const pad = Math.max((hi - lo) * 0.15, 5)
+    const y0 = priceToBeat != null ? Math.min(lo - pad, priceToBeat - pad * 0.35) : lo - pad
+    const y1 = priceToBeat != null ? Math.max(hi + pad, priceToBeat + pad * 0.35) : hi + pad
+    return [y0, y1]
+  }, [
+    chartData,
+    priceToBeat,
+    showBtc,
+    seriesVisible.twap,
+    seriesVisible.chainlink,
+    seriesVisible.binance,
+  ])
+
+  // null = follow autoY; set when user zooms/pans vertically
+  const [yZoom, setYZoom] = useState<[number, number] | null>(null)
+  const yDomain = yZoom ?? autoY
+
+  const lastTwap = [...chartData].reverse().find((d) => d.twap != null)?.twap ?? null
   const aboveTarget =
-    lastBtc != null && priceToBeat != null ? lastBtc >= priceToBeat : null
+    lastTwap != null && priceToBeat != null ? lastTwap >= priceToBeat : null
 
-  const yMin =
-    priceToBeat != null ? Math.min(btcMin - pad, priceToBeat - pad * 0.35) : btcMin - pad
-  const yMax =
-    priceToBeat != null ? Math.max(btcMax + pad, priceToBeat + pad * 0.35) : btcMax + pad
+  const xZoomed = !domainEqual(xDomain, xDefaultDomain)
+  const yZoomed = yZoom != null
+  const canReset = xZoomed || yZoomed
+
+  const resetZoom = () => {
+    if (onXDomainReset) onXDomainReset()
+    else onXDomainChange(xDefaultDomain)
+    setYZoom(null)
+  }
+
+  const toggle = (key: BtcSeriesKey) => {
+    if (!onSeriesVisibleChange) return
+    const next = { ...seriesVisible, [key]: !seriesVisible[key] }
+    if (!next.twap && !next.chainlink && !next.binance) return
+    onSeriesVisibleChange(next)
+  }
+
+  const zoomAt = (clientX: number, clientY: number, deltaY: number) => {
+    const el = wrapRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const plotRight = rect.right - CHART_MARGIN.right - Y_AXIS_WIDTH
+    const plotTop = rect.top + CHART_MARGIN.top
+    const plotBottom = rect.bottom - CHART_MARGIN.bottom
+    const plotH = Math.max(1, plotBottom - plotTop)
+
+    // Bottom strip = time zoom; right strip = price zoom; corner = reset (no zoom).
+    const onPriceScale = clientX >= plotRight && clientY < plotBottom
+    const onTimeScale = clientY >= plotBottom && clientX < plotRight
+    const zoomX = onTimeScale
+    const zoomY = onPriceScale
+    // Main plot: wheel pans time only.
+    const panX = clientX < plotRight && clientY < plotBottom
+
+    const py = Math.min(1, Math.max(0, (clientY - plotTop) / plotH))
+    const zoomIn = deltaY < 0
+    const factor = zoomIn ? 0.85 : 1.18
+
+    if (zoomX) {
+      const [x0, x1] = xDomain
+      const xSpan = Math.max(1, x1 - x0)
+      const nextSpan = Math.min(
+        xFullDomain[1] - xFullDomain[0],
+        Math.max((xFullDomain[1] - xFullDomain[0]) * 0.02, xSpan * factor),
+      )
+      const anchorPx = 0.5
+      const anchor = x0 + xSpan * anchorPx
+      const next: TimeDomain = [
+        anchor - nextSpan * anchorPx,
+        anchor + nextSpan * (1 - anchorPx),
+      ]
+      onXDomainChange(clampDomain(next, xFullDomain))
+    }
+
+    if (panX) {
+      const [x0, x1] = xDomain
+      const xSpan = x1 - x0
+      const shift = (deltaY > 0 ? 1 : -1) * xSpan * 0.08
+      onXDomainChange(clampDomain([x0 + shift, x1 + shift], xFullDomain))
+    }
+
+    if (zoomY) {
+      const [y0, y1] = yDomain
+      const ySpan = Math.max(showBtc ? 1 : 0.5, y1 - y0)
+      const nextSpan = Math.max(showBtc ? 1 : 0.5, ySpan * factor)
+      const anchor = y0 + ySpan * (1 - py)
+      const next0 = anchor - nextSpan * (1 - py)
+      const next1 = anchor + nextSpan * py
+      if (showBtc) {
+        setYZoom([next0, next1])
+      } else {
+        setYZoom([Math.max(0, next0), Math.min(100, next1)])
+      }
+    }
+  }
+
+  // Native non-passive wheel so page scroll doesn't fight chart zoom.
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const handler = (ev: WheelEvent) => {
+      ev.preventDefault()
+      zoomAt(ev.clientX, ev.clientY, ev.deltaY)
+    }
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [xDomain, yDomain, xFullDomain, showBtc])
+
+  const hitZone = (clientX: number, clientY: number): 'price' | 'time' | 'plot' => {
+    const el = wrapRef.current
+    if (!el) return 'plot'
+    const rect = el.getBoundingClientRect()
+    const plotRight = rect.right - CHART_MARGIN.right - Y_AXIS_WIDTH
+    const plotBottom = rect.bottom - CHART_MARGIN.bottom
+    // Bottom-right corner is the reset control — treat as plot for cursor.
+    if (clientX >= plotRight && clientY >= plotBottom) return 'plot'
+    if (clientX >= plotRight) return 'price'
+    if (clientY >= plotBottom) return 'time'
+    return 'plot'
+  }
+
+  const onPointerDown = (ev: React.PointerEvent) => {
+    if (ev.button !== 0) return
+    const zone = hitZone(ev.clientX, ev.clientY)
+    setHoverZone(zone)
+    ;(ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId)
+    dragRef.current = {
+      x: ev.clientX,
+      y: ev.clientY,
+      xDomain: [...xDomain] as TimeDomain,
+      yDomain: [...yDomain] as [number, number],
+      zone,
+    }
+  }
+
+  const onPointerMove = (ev: React.PointerEvent) => {
+    const zone = hitZone(ev.clientX, ev.clientY)
+    if (!dragRef.current) {
+      setHoverZone((z) => (z === zone ? z : zone))
+    }
+    const drag = dragRef.current
+    const el = wrapRef.current
+    if (!drag || !el) return
+    const rect = el.getBoundingClientRect()
+    const plotW = Math.max(1, rect.width - CHART_MARGIN.left - CHART_MARGIN.right - Y_AXIS_WIDTH)
+    const plotH = Math.max(1, rect.height - CHART_MARGIN.top - CHART_MARGIN.bottom)
+    const dx = ev.clientX - drag.x
+    const dy = ev.clientY - drag.y
+    const dragZone = drag.zone
+
+    if (dragZone === 'time' || dragZone === 'plot') {
+      const [x0, x1] = drag.xDomain
+      const xSpan = x1 - x0
+      const xShift = (-dx / plotW) * xSpan
+      onXDomainChange(clampDomain([x0 + xShift, x1 + xShift], xFullDomain))
+    }
+
+    if (dragZone === 'price' || dragZone === 'plot') {
+      const [y0, y1] = drag.yDomain
+      const ySpan = y1 - y0
+      const yShift = (dy / plotH) * ySpan
+      if (showBtc) {
+        setYZoom([y0 + yShift, y1 + yShift])
+      } else {
+        setYZoom([Math.max(0, y0 + yShift), Math.min(100, y1 + yShift)])
+      }
+    }
+  }
+
+  const onPointerUp = (ev: React.PointerEvent) => {
+    dragRef.current = null
+    try {
+      ;(ev.currentTarget as HTMLElement).releasePointerCapture(ev.pointerId)
+    } catch {
+      /* ignore */
+    }
+  }
 
   return (
     <div className="chart-block">
-      {title && <div className="chart-title">{title}</div>}
-      <div className="chart-wrap">
+      <div className="chart-header">
+        <div className="chart-header-left">
+          {title && <div className="chart-title">{title}</div>}
+          <ChartHeaderTip tip={hoverTip} />
+        </div>
+        <div className="chart-header-right">
+          {showBtc && onSeriesVisibleChange ? (
+            <div className="chart-series-toggles" role="group" aria-label="BTC series visibility">
+              {SERIES_META.map((s) => (
+                <label
+                  key={s.key}
+                  className={`chart-series-toggle ${seriesVisible[s.key] ? 'on' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={seriesVisible[s.key]}
+                    onChange={() => toggle(s.key)}
+                  />
+                  <span className="chart-series-swatch" style={{ background: s.color }} />
+                  {s.label}
+                </label>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div
+        className={`chart-wrap chart-wrap-zoom chart-cursor-${hoverZone}`}
+        ref={wrapRef}
+        tabIndex={-1}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onPointerLeave={() => {
+          if (!dragRef.current) setHoverZone('plot')
+          clearHover()
+        }}
+        onDoubleClick={resetZoom}
+        title="Scroll bottom time axis to zoom time · scroll right price axis to zoom price · scroll plot to pan time · drag to pan · double-click / Reset to restore"
+      >
+        <div className="chart-zoom-zone chart-zoom-zone-time" aria-hidden />
+        <div className="chart-zoom-zone chart-zoom-zone-price" aria-hidden />
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 10, right: 8, left: 4, bottom: 0 }}>
-            <CartesianGrid stroke="#eef0f4" strokeDasharray="0" vertical={false} />
+          <ComposedChart
+            data={chartData}
+            margin={CHART_MARGIN}
+            syncId="market-price-charts"
+            syncMethod="value"
+            onMouseMove={onChartMouseMove}
+            onMouseLeave={clearHover}
+          >
+            <CartesianGrid stroke="#eef0f4" strokeDasharray="0" horizontal vertical />
             <XAxis
-              dataKey="label"
+              type="number"
+              dataKey="t"
+              domain={[xDomain[0], xDomain[1]]}
+              ticks={timeTicks}
+              interval={0}
+              allowDataOverflow
               stroke="#9ca3af"
               tick={{ fontSize: 11, fill: '#9ca3af' }}
-              minTickGap={48}
               axisLine={false}
               tickLine={false}
+              tickFormatter={(v) => formatTimeTick(Number(v))}
             />
             {showBtc ? (
               <>
+                <defs>
+                  <linearGradient id={twapFillId} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={TWAP_COLOR} stopOpacity={0.1} />
+                    <stop offset="70%" stopColor={TWAP_COLOR} stopOpacity={0.03} />
+                    <stop offset="100%" stopColor={TWAP_COLOR} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
                 <YAxis
                   orientation="right"
-                  domain={[yMin, yMax]}
+                  domain={yDomain}
+                  allowDataOverflow
                   stroke="#9ca3af"
                   tick={{ fontSize: 11, fill: '#9ca3af' }}
-                  width={68}
+                  width={Y_AXIS_WIDTH}
                   axisLine={false}
                   tickLine={false}
                   tickFormatter={(v) =>
@@ -199,8 +645,9 @@ export default function PriceChart({
                   }
                 />
                 <Tooltip
-                  cursor={{ stroke: '#d1d5db', strokeWidth: 1 }}
-                  content={<ChartTooltip mode="btc" />}
+                  content={() => null}
+                  cursor={<ChartCrosshair />}
+                  isAnimationActive={false}
                 />
                 {priceToBeat != null && (
                   <ReferenceLine
@@ -212,41 +659,84 @@ export default function PriceChart({
                     label={<TargetTagLabel above={aboveTarget} />}
                   />
                 )}
-                <Line
-                  type="monotone"
-                  dataKey="btcPlot"
-                  name={btcKey === 'twap' ? 'TWAP' : 'BTC'}
-                  stroke="#f7931a"
-                  dot={false}
-                  activeDot={{ r: 4, fill: '#f7931a', stroke: '#fff', strokeWidth: 2 }}
-                  strokeWidth={2.25}
-                  isAnimationActive={false}
-                  connectNulls
-                />
+                {seriesVisible.twap && (
+                  <>
+                    <Area
+                      type="monotone"
+                      dataKey="twap"
+                      name="Chainlink 30s TWAP"
+                      stroke="none"
+                      fill={`url(#${twapFillId})`}
+                      fillOpacity={1}
+                      dot={false}
+                      activeDot={false}
+                      isAnimationActive={false}
+                      connectNulls
+                      baseValue={yDomain[0]}
+                      legendType="none"
+                      tooltipType="none"
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="twap"
+                      name="Chainlink 30s TWAP"
+                      stroke={TWAP_COLOR}
+                      strokeWidth={2.35}
+                      dot={false}
+                      activeDot={(dotProps) => (
+                        <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill={TWAP_COLOR} />
+                      )}
+                      isAnimationActive={false}
+                      connectNulls
+                    />
+                  </>
+                )}
+                {SERIES_META.filter((s) => s.key !== 'twap').map((s) =>
+                  seriesVisible[s.key] ? (
+                    <Line
+                      key={s.key}
+                      type="monotone"
+                      dataKey={s.dataKey}
+                      name={s.label}
+                      stroke={s.color}
+                      dot={false}
+                      activeDot={(dotProps) => (
+                        <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill={s.color} />
+                      )}
+                      strokeWidth={1.85}
+                      isAnimationActive={false}
+                      connectNulls
+                    />
+                  ) : null,
+                )}
               </>
             ) : (
               <>
                 <YAxis
-                  domain={[0, 100]}
+                  orientation="right"
+                  domain={yDomain}
+                  allowDataOverflow
                   stroke="#9ca3af"
                   tick={{ fontSize: 11, fill: '#9ca3af' }}
-                  width={40}
+                  width={Y_AXIS_WIDTH}
                   axisLine={false}
                   tickLine={false}
                   tickFormatter={(v) => `${Number(v).toFixed(2)}¢`}
                 />
                 <Tooltip
-                  cursor={{ stroke: '#d1d5db', strokeWidth: 1 }}
-                  content={<ChartTooltip mode="outcomes" />}
+                  content={() => null}
+                  cursor={<ChartCrosshair />}
+                  isAnimationActive={false}
                 />
-                <Legend />
                 <Line
                   type="monotone"
                   dataKey="upPct"
                   name="Up"
                   stroke="#10b981"
                   dot={false}
-                  activeDot={{ r: 4, fill: '#10b981', stroke: '#fff', strokeWidth: 2 }}
+                  activeDot={(dotProps) => (
+                    <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#10b981" />
+                  )}
                   strokeWidth={2}
                   isAnimationActive={false}
                 />
@@ -256,14 +746,47 @@ export default function PriceChart({
                   name="Down"
                   stroke="#ef4444"
                   dot={false}
-                  activeDot={{ r: 4, fill: '#ef4444', stroke: '#fff', strokeWidth: 2 }}
+                  activeDot={(dotProps) => (
+                    <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#ef4444" />
+                  )}
                   strokeWidth={2}
                   isAnimationActive={false}
                 />
               </>
             )}
-          </LineChart>
+          </ComposedChart>
         </ResponsiveContainer>
+        {canReset && (
+          <button
+            type="button"
+            className="chart-reset-corner"
+            onClick={(e) => {
+              e.stopPropagation()
+              resetZoom()
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            aria-label="Reset zoom"
+            title="Reset zoom"
+          >
+            <svg
+              className="chart-reset-icon"
+              viewBox="0 0 24 24"
+              width="15"
+              height="15"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+              <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+              <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+              <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+            </svg>
+          </button>
+        )}
       </div>
     </div>
   )

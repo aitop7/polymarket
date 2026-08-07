@@ -65,6 +65,14 @@ class TwapFeed:
             "btc_chainlink_ts": self._chainlink[-1][0] if self._chainlink else None,
         }
 
+    def history_since(self, start_ms: int) -> dict[str, list[tuple[int, float]]]:
+        """TWAP + Chainlink samples with timestamp >= start_ms."""
+        start = int(start_ms)
+        return {
+            "twap": [(int(ts), float(px)) for ts, px in self._twap_hist if ts >= start],
+            "chainlink": [(int(ts), float(px)) for ts, px in self._chainlink if ts >= start],
+        }
+
     def chainlink_at_or_after(self, window_start_ms: int) -> tuple[float, int] | None:
         """First Chainlink spot tick with timestamp >= window open."""
         start = int(window_start_ms)

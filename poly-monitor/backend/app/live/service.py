@@ -6,12 +6,14 @@ import json
 import re
 import time
 import asyncio
+from collections import deque
 from pathlib import Path
 from typing import Any
 
 from app.core.pricing import quotes_from_up_buy
 from app.live.clients import MARKET_DURATION_S, LiveClients, parse_token_ids, window_start_unix
 from app.live import ptb_store
+from app.live.fetch_live_series import load_fetch_live_series, merge_series
 from app.live.twap_feed import get_twap_feed
 
 _UPDOWN_SLUG_RE = re.compile(r"(?i)^btc-updown-5m-(\d+)$")
@@ -19,6 +21,7 @@ _UPDOWN_SLUG_RE = re.compile(r"(?i)^btc-updown-5m-(\d+)$")
 # Don't lock PTB before the open boundary; refine while near open.
 _PTB_REFINE_MS = 15_000
 _FETCH_LIVE_DATA = Path(__file__).resolve().parents[4] / "fetch_live" / "data"
+_SERIES_MAX = 900
 
 
 def _levels_from_book(raw: dict[str, Any], *, side: str, limit: int = 12) -> list[dict[str, Any]]:
@@ -120,6 +123,8 @@ class LiveMarketService:
         self._fetch_live_open_px: float | None = None
         self._fetch_live_open_for: int | None = None
         self._last_discover_s = 0.0
+        self._series: deque[dict[str, Any]] = deque(maxlen=_SERIES_MAX)
+        self._series_market_id: str | None = None
         # Start RTDS early so open TWAP (Price to Beat) is ready at market open.
         self.twap.ensure_started()
 
@@ -382,6 +387,8 @@ class LiveMarketService:
         self._window_start_ms = start_ms
         self._window_end_ms = end_s * 1000
         if rolled:
+            self._series.clear()
+            self._series_market_id = market_id
             self._price_to_beat = None
             self._price_to_beat_source = None
             self._fetch_live_open_px = None
@@ -408,6 +415,79 @@ class LiveMarketService:
                         stored.get("source") or "open_twap_30s"
                     )
         return market
+
+    def _record_series_point(self, snap: dict[str, Any]) -> None:
+        if snap.get("type") != "tick":
+            return
+        mid = snap.get("market_id")
+        if not mid:
+            return
+        mid_s = str(mid)
+        if self._series_market_id != mid_s:
+            self._series.clear()
+            self._series_market_id = mid_s
+        up = snap.get("up_price")
+        down = snap.get("down_price")
+        if up is None and down is None and snap.get("btc_price") is None:
+            return
+        point = {
+            "t": int(snap.get("timestamp") or time.time() * 1000),
+            "up": float(up) if up is not None else None,
+            "down": float(down) if down is not None else None,
+            "btc": float(snap["btc_price"]) if snap.get("btc_price") is not None else None,
+            "twap": float(snap["btc_twap_30s"])
+            if snap.get("btc_twap_30s") is not None
+            else None,
+            "chainlink": float(snap["btc_chainlink"])
+            if snap.get("btc_chainlink") is not None
+            else None,
+        }
+        if self._series and int(self._series[-1]["t"]) == point["t"]:
+            self._series[-1] = point
+        else:
+            self._series.append(point)
+
+    def _twap_feed_series(self, start_ms: int | None) -> list[dict[str, Any]]:
+        if start_ms is None:
+            return []
+        hist = self.twap.history_since(start_ms)
+        by_t: dict[int, dict[str, Any]] = {}
+        for ts, px in hist.get("twap") or []:
+            by_t[int(ts)] = {"t": int(ts), "twap": float(px)}
+        for ts, px in hist.get("chainlink") or []:
+            cur = by_t.setdefault(int(ts), {"t": int(ts)})
+            cur["chainlink"] = float(px)
+        return [by_t[t] for t in sorted(by_t)]
+
+    def series(
+        self, market_id: str | None = None, *, lookback_ms: int = 180_000
+    ) -> dict[str, Any]:
+        """Chart backfill: fetch_live parquet + in-process buffer (+ RTDS hist)."""
+        mid = str(market_id or self._market_id or "") or None
+        start_ms = self._window_start_ms
+        now_ms = int(time.time() * 1000)
+        lookback = max(30_000, min(int(lookback_ms), 600_000))
+        cutoff = now_ms - lookback
+        if start_ms is not None:
+            cutoff = max(int(start_ms) - 2_000, cutoff)
+
+        parquet = load_fetch_live_series(mid) if mid else []
+        feed = self._twap_feed_series(cutoff)
+        buf = list(self._series) if (mid is None or mid == self._series_market_id) else []
+        merged = merge_series(merge_series(parquet, feed), buf)
+        merged = [p for p in merged if int(p["t"]) >= cutoff]
+        return {
+            "market_id": mid,
+            "start_time": start_ms,
+            "end_time": self._window_end_ms,
+            "lookback_ms": lookback,
+            "series": merged,
+            "source": {
+                "parquet": len(parquet),
+                "twap_feed": len(feed),
+                "buffer": len(buf),
+            },
+        }
 
     async def snapshot(self) -> dict[str, Any]:
         market = await self._ensure_market()
@@ -515,7 +595,7 @@ class LiveMarketService:
             "down_sell": q["down_sell"],
         }
 
-        return self._with_twap(
+        snap = self._with_twap(
             {
                 "type": "tick",
                 "live": True,
@@ -539,6 +619,8 @@ class LiveMarketService:
                 "book": book,
             }
         )
+        self._record_series_point(snap)
+        return snap
 
     async def market_meta(self) -> dict[str, Any] | None:
         self.twap.ensure_started()

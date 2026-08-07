@@ -3,15 +3,18 @@ import {
   api,
   formatUsd,
   formatWindowEt,
+  type LiveSeriesPoint,
   type MarketDetail,
   type MarketSummary,
   wsUrl,
 } from '../api'
-import BtcPricePanel, { type BtcPriceTab } from '../components/BtcPricePanel'
+import BtcPricePanel from '../components/BtcPricePanel'
 import ControlSidebar from '../components/ControlSidebar'
 import OrderBookPanel, { type BookPayload } from '../components/OrderBookPanel'
-import PriceChart from '../components/PriceChart'
+import PriceChart, { type BtcSeriesVisibility, type TimeDomain } from '../components/PriceChart'
 import TradeSidebar from '../components/TradeSidebar'
+
+const DEFAULT_X_SPAN_MS = 180_000
 
 type Tick = {
   type: string
@@ -35,6 +38,8 @@ type Tick = {
   btc_twap_30s?: number | null
   btc_twap_ts?: number | null
   btc_twap_error?: string | null
+  btc_chainlink?: number | null
+  btc_chainlink_ts?: number | null
   book?: BookPayload
   live?: boolean
   error?: string
@@ -89,9 +94,7 @@ export default function MarketPage({ mode }: Props) {
   const [strategy, setStrategy] = useState(mode === 'paper' ? 'lgbm_edge' : 'none')
   const [playing, setPlaying] = useState(false)
   const [tick, setTick] = useState<Tick | null>(null)
-  const [seriesLive, setSeriesLive] = useState<{ t: number; up: number; down: number; btc: number | null; twap: number | null }[]>(
-    [],
-  )
+  const [seriesLive, setSeriesLive] = useState<LiveSeriesPoint[]>([])
   const [activity, setActivity] = useState<FillRow[]>([])
   const [tab, setTab] = useState<'activity' | 'positions' | 'rules'>('activity')
   const [book, setBook] = useState<BookPayload | null>(null)
@@ -104,7 +107,15 @@ export default function MarketPage({ mode }: Props) {
   const [liveActive, setLiveActive] = useState(true)
   const [liveMarketId, setLiveMarketId] = useState<string>('')
   const [liveWindow, setLiveWindow] = useState<{ start: number; end: number } | null>(null)
-  const [btcTab, setBtcTab] = useState<BtcPriceTab>('twap')
+  const [btcSeriesVisible, setBtcSeriesVisible] = useState<BtcSeriesVisibility>({
+    twap: true,
+    chainlink: false,
+    binance: false,
+  })
+  const [sharedHoverTime, setSharedHoverTime] = useState<number | null>(null)
+  const [chartXDomain, setChartXDomain] = useState<TimeDomain | null>(null)
+  const [followLiveX, setFollowLiveX] = useState(true)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const [liveInterval, setLiveInterval] = useState(0.5)
   const wsRef = useRef<WebSocket | null>(null)
   const liveWsRef = useRef<WebSocket | null>(null)
@@ -197,7 +208,16 @@ export default function MarketPage({ mode }: Props) {
         setDetail(d)
         setNeighbors({ prev: n.prev, next: n.next })
         setBook(b as BookPayload)
-        setSeriesLive(d.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc, twap: null })))
+        setSeriesLive(
+          d.series.map((p) => ({
+            t: p.t,
+            up: p.up ?? 0,
+            down: p.down ?? 0,
+            btc: p.btc,
+            twap: null,
+            chainlink: null,
+          })),
+        )
         setTick(null)
         setActivity([])
         setPlaying(false)
@@ -228,7 +248,14 @@ export default function MarketPage({ mode }: Props) {
     setPaused(false)
     if (detail && !liveActive) {
       setSeriesLive(
-        detail.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc, twap: null })),
+        detail.series.map((p) => ({
+          t: p.t,
+          up: p.up ?? 0,
+          down: p.down ?? 0,
+          btc: p.btc,
+          twap: null,
+          chainlink: null,
+        })),
       )
       setTick(null)
     }
@@ -313,7 +340,14 @@ export default function MarketPage({ mode }: Props) {
         setTick(t)
         setSeriesLive((prev) => [
           ...prev,
-          { t: t.timestamp, up: t.up_price, down: t.down_price, btc: t.btc_price, twap: null },
+          {
+            t: t.timestamp,
+            up: t.up_price,
+            down: t.down_price,
+            btc: t.btc_price,
+            twap: null,
+            chainlink: null,
+          },
         ])
         if (t.fills?.length) {
           setActivity((a) => [...t.fills!, ...a].slice(0, 100))
@@ -349,7 +383,6 @@ export default function MarketPage({ mode }: Props) {
       prev.close()
     }
     setLiveActive(true)
-    setBtcTab('twap')
     setSeriesLive([])
     setTick(null)
     setActivity([])
@@ -361,10 +394,47 @@ export default function MarketPage({ mode }: Props) {
     const interval = Math.max(0.1, Math.min(2, liveInterval))
     const ws = new WebSocket(wsUrl('/api/ws/live'))
     liveWsRef.current = ws
+
+    const seedSeries = (marketId?: string | null) => {
+      const reqId = marketId ? String(marketId) : ''
+      api
+        .liveSeries(reqId || undefined, 180_000)
+        .then((res) => {
+          if (liveWsRef.current !== ws) return
+          if (reqId && res.market_id && String(res.market_id) !== reqId) return
+          const points = (res.series ?? [])
+            .filter((p) => p.t != null && Number.isFinite(Number(p.t)))
+            .map((p) => ({
+              t: Number(p.t),
+              up: p.up ?? null,
+              down: p.down ?? null,
+              btc: p.btc ?? null,
+              twap: p.twap ?? null,
+              chainlink: p.chainlink ?? null,
+            }))
+          if (!points.length) return
+          setSeriesLive((prev) => {
+            // Prefer longer history; keep any newer live ticks past the seed.
+            if (!prev.length) return points
+            const seedLast = points[points.length - 1].t
+            const newer = prev.filter((p) => p.t > seedLast)
+            const byT = new Map<number, LiveSeriesPoint>()
+            for (const p of points) byT.set(p.t, p)
+            for (const p of newer) byT.set(p.t, p)
+            return [...byT.values()].sort((a, b) => a.t - b.t)
+          })
+        })
+        .catch(() => {
+          /* backfill is best-effort */
+        })
+    }
+
     ws.onopen = () => {
       if (liveWsRef.current !== ws) return
       setError(null)
       ws.send(JSON.stringify({ interval_s: interval }))
+      // Seed immediately (buffer/parquet) before ticks accumulate.
+      seedSeries()
     }
     ws.onmessage = (ev) => {
       if (liveWsRef.current !== ws) return
@@ -382,6 +452,7 @@ export default function MarketPage({ mode }: Props) {
         setTick(null)
         setSeriesLive([])
         setBook(null)
+        seedSeries(msg.market_id)
         return
       }
       if (msg.type === 'tick') {
@@ -396,15 +467,27 @@ export default function MarketPage({ mode }: Props) {
         if (msg.book) setBook(msg.book as BookPayload)
         if (msg.up_price != null && msg.down_price != null) {
           setSeriesLive((prev) => {
-            const point = {
+            const point: LiveSeriesPoint = {
               t: msg.timestamp,
               up: msg.up_price!,
               down: msg.down_price!,
               btc: msg.btc_price ?? null,
               twap: msg.btc_twap_30s ?? null,
+              chainlink: msg.btc_chainlink ?? null,
+            }
+            if (!prev.length) return [point]
+            const last = prev[prev.length - 1]
+            if (last.t === point.t) {
+              const next = prev.slice(0, -1)
+              next.push({ ...last, ...point })
+              return next
+            }
+            if (point.t < last.t) {
+              // Rare clock skew / late seed overlap — ignore older live tick.
+              return prev
             }
             const next = [...prev, point]
-            return next.length > 600 ? next.slice(-600) : next
+            return next.length > 900 ? next.slice(-900) : next
           })
         }
       }
@@ -462,10 +545,16 @@ export default function MarketPage({ mode }: Props) {
       setLiveMarketId('')
       setLiveWindow(null)
       setError(null)
-      setBtcTab('live')
       if (detail) {
         setSeriesLive(
-          detail.series.map((p) => ({ t: p.t, up: p.up ?? 0, down: p.down ?? 0, btc: p.btc, twap: null })),
+          detail.series.map((p) => ({
+            t: p.t,
+            up: p.up ?? 0,
+            down: p.down ?? 0,
+            btc: p.btc,
+            twap: null,
+            chainlink: null,
+          })),
         )
         setTick(null)
         api.book(detail.market_id).then((b) => setBook(b as BookPayload)).catch(() => {})
@@ -494,17 +583,91 @@ export default function MarketPage({ mode }: Props) {
 
   const up = tick?.up_price ?? detail?.first.up_price ?? 0.5
   const down = tick?.down_price ?? detail?.first.down_price ?? 0.5
-  const btc = tick?.btc_price ?? detail?.first.btc_price
   const twap = liveActive ? tick?.btc_twap_30s ?? null : null
   const beat = liveActive
     ? tick?.price_to_beat ?? tick?.btc_open ?? null
     : tick?.btc_open ?? detail?.btc_open_price
   const remaining = tick?.remaining_seconds
 
+  // Wall-clock tick so the live timeline scrolls smoothly between WS updates.
+  useEffect(() => {
+    if (!liveActive) return
+    const id = window.setInterval(() => setNowMs(Date.now()), 100)
+    return () => window.clearInterval(id)
+  }, [liveActive])
+
   const chartData = useMemo(() => {
     if (seriesLive.length) return seriesLive
-    return detail?.series ?? []
+    return (detail?.series ?? []).map((p) => ({
+      t: p.t,
+      up: p.up ?? 0,
+      down: p.down ?? 0,
+      btc: p.btc,
+      twap: null as number | null,
+      chainlink: null as number | null,
+    }))
   }, [seriesLive, detail])
+
+  const xFullDomain = useMemo((): TimeDomain => {
+    if (liveActive && liveWindow) {
+      return [liveWindow.start, liveWindow.end]
+    }
+    if (detail?.start_time != null && detail?.end_time != null) {
+      return [detail.start_time, detail.end_time]
+    }
+    if (chartData.length >= 2) {
+      return [chartData[0].t, chartData[chartData.length - 1].t]
+    }
+    if (chartData.length === 1) {
+      return [chartData[0].t, chartData[0].t + DEFAULT_X_SPAN_MS]
+    }
+    return [nowMs - DEFAULT_X_SPAN_MS, nowMs]
+  }, [liveActive, liveWindow, detail, chartData, nowMs])
+
+  // Trailing fixed-span window ending at "now" / latest point — scrolls left as time flows.
+  const xDefaultDomain = useMemo((): TimeDomain => {
+    const [f0, f1] = xFullDomain
+    const latestData = chartData.length > 0 ? chartData[chartData.length - 1].t : f0
+    const end = liveActive
+      ? Math.min(f1, Math.max(latestData, nowMs))
+      : Math.min(f1, Math.max(f0 + 1, latestData))
+    // Keep span fixed so the strip scrolls (don't pin left to market open).
+    const start = end - DEFAULT_X_SPAN_MS
+    return [start, end]
+  }, [xFullDomain, chartData, liveActive, nowMs])
+
+  // When following live, always use the sliding default window.
+  useEffect(() => {
+    if (!followLiveX) return
+    setChartXDomain((prev) => {
+      if (
+        prev != null &&
+        Math.abs(prev[0] - xDefaultDomain[0]) < 1 &&
+        Math.abs(prev[1] - xDefaultDomain[1]) < 1
+      ) {
+        return prev
+      }
+      return xDefaultDomain
+    })
+  }, [followLiveX, xDefaultDomain])
+
+  // Re-arm live follow on market / mode changes.
+  useEffect(() => {
+    setFollowLiveX(true)
+    setChartXDomain(null)
+  }, [liveActive, liveWindow?.start, liveMarketId, marketId])
+
+  const sharedXDomain = followLiveX ? xDefaultDomain : (chartXDomain ?? xDefaultDomain)
+
+  const onChartXDomainChange = (next: TimeDomain) => {
+    setFollowLiveX(false)
+    setChartXDomain(next)
+  }
+
+  const onChartXDomainReset = () => {
+    setFollowLiveX(true)
+    setChartXDomain(xDefaultDomain)
+  }
 
   const liveLabel = liveActive
     ? liveMarketId
@@ -583,10 +746,7 @@ export default function MarketPage({ mode }: Props) {
           marketId={displayMarketId}
           windowLabel={windowLabel}
           priceToBeat={beat}
-          livePrice={btc}
           twapPrice={twap}
-          tab={btcTab}
-          onTab={setBtcTab}
           remainingSeconds={
             remaining ??
             (liveActive
@@ -598,8 +758,33 @@ export default function MarketPage({ mode }: Props) {
         />
 
         <div className="panel">
-          <PriceChart data={chartData} priceToBeat={beat} mode="btc" btcKey={btcTab === 'twap' ? 'twap' : 'btc'} title={btcTab === 'twap' ? 'Chainlink 30s TWAP' : 'Live BTC (Binance)'} />
-          <PriceChart data={chartData} mode="outcomes" title="Up / Down price" />
+          <PriceChart
+            data={chartData}
+            priceToBeat={beat}
+            mode="btc"
+            title="BTC price"
+            seriesVisible={btcSeriesVisible}
+            onSeriesVisibleChange={setBtcSeriesVisible}
+            xDomain={sharedXDomain}
+            onXDomainChange={onChartXDomainChange}
+            onXDomainReset={onChartXDomainReset}
+            xFullDomain={xFullDomain}
+            xDefaultDomain={xDefaultDomain}
+            hoverTime={sharedHoverTime}
+            onHoverTimeChange={setSharedHoverTime}
+          />
+          <PriceChart
+            data={chartData}
+            mode="outcomes"
+            title="Up / Down price"
+            xDomain={sharedXDomain}
+            onXDomainChange={onChartXDomainChange}
+            onXDomainReset={onChartXDomainReset}
+            xFullDomain={xFullDomain}
+            xDefaultDomain={xDefaultDomain}
+            hoverTime={sharedHoverTime}
+            onHoverTimeChange={setSharedHoverTime}
+          />
         </div>
 
         <OrderBookPanel book={book} />

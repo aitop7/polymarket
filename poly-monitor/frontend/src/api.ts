@@ -71,6 +71,30 @@ export const api = {
     json<{ ok: boolean }>('/api/paper/order', { method: 'POST', body: JSON.stringify(body) }),
   paperStatus: (sessionId: string) => json<Record<string, unknown>>(`/api/paper/${sessionId}`),
   liveState: () => json<LiveTick>('/api/live/state'),
+  liveSeries: (marketId?: string | null, lookbackMs = 180_000) => {
+    const q = new URLSearchParams()
+    if (marketId) q.set('market_id', marketId)
+    q.set('lookback_ms', String(lookbackMs))
+    const qs = q.toString()
+    return json<LiveSeriesResponse>(`/api/live/series${qs ? `?${qs}` : ''}`)
+  },
+}
+
+export type LiveSeriesPoint = {
+  t: number
+  up?: number | null
+  down?: number | null
+  btc?: number | null
+  twap?: number | null
+  chainlink?: number | null
+}
+
+export type LiveSeriesResponse = {
+  market_id?: string | null
+  start_time?: number | null
+  end_time?: number | null
+  series: LiveSeriesPoint[]
+  source?: { parquet?: number; twap_feed?: number; buffer?: number }
 }
 
 export type LiveTick = {
@@ -84,6 +108,8 @@ export type LiveTick = {
   btc_price?: number | null
   price_to_beat?: number | null
   btc_open?: number | null
+  btc_twap_30s?: number | null
+  btc_chainlink?: number | null
   up_price?: number
   down_price?: number
   remaining_seconds?: number

@@ -277,6 +277,20 @@ async def live_state() -> dict[str, Any]:
     return await get_live_service().snapshot()
 
 
+@router.get("/live/series")
+async def live_series(
+    market_id: str | None = None,
+    lookback_ms: int = 180_000,
+) -> dict[str, Any]:
+    """Historical chart points for the active (or requested) live market window."""
+    from app.live import get_live_service
+
+    svc = get_live_service()
+    # Ensure market discovery so window bounds / id are current.
+    await svc.market_meta()
+    return svc.series(market_id, lookback_ms=lookback_ms)
+
+
 @router.websocket("/ws/live")
 async def ws_live(websocket: WebSocket) -> None:
     """Stream live market state. View-only; no order placement.
