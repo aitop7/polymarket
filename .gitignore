@@ -1,5 +1,6 @@
 .env
 data/
+fetch_live/data/
 dataset/
 training/
 features/
