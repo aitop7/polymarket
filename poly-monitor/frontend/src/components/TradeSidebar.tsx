@@ -1,3 +1,4 @@
+import HoldersPanel from './HoldersPanel'
 import TradeCard from './TradeCard'
 
 type Props = {
@@ -17,6 +18,8 @@ type Props = {
   heldShares?: number
   tradeDisabled: boolean
   monitorHint?: boolean
+  liveHolders?: boolean
+  liveMarketId?: string | null
 }
 
 export default function TradeSidebar(props: Props) {
@@ -37,6 +40,8 @@ export default function TradeSidebar(props: Props) {
     heldShares,
     tradeDisabled,
     monitorHint,
+    liveHolders = false,
+    liveMarketId = null,
   } = props
 
   return (
@@ -58,6 +63,7 @@ export default function TradeSidebar(props: Props) {
         onTrade={onTrade}
         tradeDisabled={tradeDisabled}
       />
+      <HoldersPanel enabled={liveHolders} marketId={liveMarketId} />
     </aside>
   )
 }

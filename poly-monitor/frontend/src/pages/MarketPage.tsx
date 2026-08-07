@@ -467,10 +467,20 @@ export default function MarketPage({ mode }: Props) {
         if (msg.book) setBook(msg.book as BookPayload)
         if (msg.up_price != null && msg.down_price != null) {
           setSeriesLive((prev) => {
+            let up: number | null = msg.up_price!
+            let down: number | null = msg.down_price!
+            // Until we have a real mid-market quote, ignore 1¢/99¢ open stubs.
+            const hasRealOutcome = prev.some(
+              (p) => p.up != null && p.up > 0.02 && p.up < 0.98,
+            )
+            if (!hasRealOutcome && (up <= 0.02 || up >= 0.98 || down <= 0.02 || down >= 0.98)) {
+              up = null
+              down = null
+            }
             const point: LiveSeriesPoint = {
               t: msg.timestamp,
-              up: msg.up_price!,
-              down: msg.down_price!,
+              up,
+              down,
               btc: msg.btc_price ?? null,
               twap: msg.btc_twap_30s ?? null,
               chainlink: msg.btc_chainlink ?? null,
@@ -881,6 +891,8 @@ export default function MarketPage({ mode }: Props) {
         }
         tradeDisabled={liveActive || mode !== 'paper' || (!playing && !sessionId)}
         monitorHint={liveActive || mode === 'monitor'}
+        liveHolders={liveActive}
+        liveMarketId={liveMarketId || null}
       />
     </div>
   )

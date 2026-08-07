@@ -13,7 +13,12 @@ from typing import Any
 from app.core.pricing import quotes_from_up_buy
 from app.live.clients import MARKET_DURATION_S, LiveClients, parse_token_ids, window_start_unix
 from app.live import ptb_store
-from app.live.fetch_live_series import load_fetch_live_series, merge_series
+from app.live.fetch_live_series import (
+    break_outcome_jumps,
+    load_fetch_live_series,
+    merge_series,
+    scrub_leading_outcome_extremes,
+)
 from app.live.twap_feed import get_twap_feed
 
 _UPDOWN_SLUG_RE = re.compile(r"(?i)^btc-updown-5m-(\d+)$")
@@ -114,6 +119,7 @@ class LiveMarketService:
         self.twap = get_twap_feed()
         self._market: dict[str, Any] | None = None
         self._market_id: str | None = None
+        self._condition_id: str | None = None
         self._token_up: str | None = None
         self._token_down: str | None = None
         self._window_start_ms: int | None = None
@@ -125,6 +131,8 @@ class LiveMarketService:
         self._last_discover_s = 0.0
         self._series: deque[dict[str, Any]] = deque(maxlen=_SERIES_MAX)
         self._series_market_id: str | None = None
+        self._holders_cache: dict[str, Any] | None = None
+        self._holders_cache_at = 0.0
         # Start RTDS early so open TWAP (Price to Beat) is ready at market open.
         self.twap.ensure_started()
 
@@ -355,16 +363,19 @@ class LiveMarketService:
             if self._window_start_ms is not None and wall_window_ms != self._window_start_ms:
                 self._market = None
                 self._market_id = None
+                self._condition_id = None
                 self._token_up = None
                 self._token_down = None
                 self._window_start_ms = wall_window_ms
                 self._window_end_ms = wall_window_ms + MARKET_DURATION_S * 1000
                 self._price_to_beat = None
+                self._holders_cache = None
             else:
                 self._market = None
             return None
 
         market_id = str(market.get("id") or market.get("conditionId") or "")
+        condition_id = str(market.get("conditionId") or "") or None
         slug = str(market.get("slug") or "")
         token_up, token_down = parse_token_ids(market)
 
@@ -382,6 +393,7 @@ class LiveMarketService:
             self._persist_open_twap(self._window_end_ms)
         self._market = market
         self._market_id = market_id
+        self._condition_id = condition_id
         self._token_up = token_up
         self._token_down = token_down
         self._window_start_ms = start_ms
@@ -389,6 +401,7 @@ class LiveMarketService:
         if rolled:
             self._series.clear()
             self._series_market_id = market_id
+            self._holders_cache = None
             self._price_to_beat = None
             self._price_to_beat_source = None
             self._fetch_live_open_px = None
@@ -476,6 +489,9 @@ class LiveMarketService:
         buf = list(self._series) if (mid is None or mid == self._series_market_id) else []
         merged = merge_series(merge_series(parquet, feed), buf)
         merged = [p for p in merged if int(p["t"]) >= cutoff]
+        # Drop open-book 1¢/99¢ stubs and break absurd one-tick flips.
+        merged = scrub_leading_outcome_extremes(merged)
+        merged = break_outcome_jumps(merged)
         return {
             "market_id": mid,
             "start_time": start_ms,
@@ -622,6 +638,100 @@ class LiveMarketService:
         self._record_series_point(snap)
         return snap
 
+    async def holders(self, *, limit: int = 20) -> dict[str, Any]:
+        """Top Up/Down holders for the active market (cached ~2.5s)."""
+        await self._ensure_market()
+        now = time.time()
+        if (
+            self._holders_cache is not None
+            and self._holders_cache.get("condition_id") == self._condition_id
+            and now - self._holders_cache_at < 2.5
+        ):
+            return self._holders_cache
+
+        cid = self._condition_id
+        if not cid:
+            empty = {
+                "market_id": self._market_id,
+                "condition_id": None,
+                "updated_at": int(now * 1000),
+                "live": True,
+                "up": [],
+                "down": [],
+            }
+            self._holders_cache = empty
+            self._holders_cache_at = now
+            return empty
+
+        rows = await self.clients.get_holders(cid, limit=limit)
+        up_token = str(self._token_up or "")
+        down_token = str(self._token_down or "")
+
+        def _norm(h: dict[str, Any]) -> dict[str, Any]:
+            wallet = str(h.get("proxyWallet") or "")
+            name = str(h.get("name") or "").strip()
+            pseudo = str(h.get("pseudonym") or "").strip()
+            public = bool(h.get("displayUsernamePublic"))
+            if public and name:
+                display = name
+            elif pseudo:
+                display = pseudo
+            elif name:
+                display = name
+            elif wallet:
+                display = f"{wallet[:6]}...{wallet[-4:]}"
+            else:
+                display = "—"
+            amount = h.get("amount")
+            try:
+                shares = float(amount) if amount is not None else 0.0
+            except (TypeError, ValueError):
+                shares = 0.0
+            return {
+                "proxy_wallet": wallet,
+                "display_name": display,
+                "amount": shares,
+                "profile_image": str(
+                    h.get("profileImageOptimized") or h.get("profileImage") or ""
+                ),
+                "verified": bool(h.get("verified")),
+                "outcome_index": h.get("outcomeIndex"),
+            }
+
+        up: list[dict[str, Any]] = []
+        down: list[dict[str, Any]] = []
+        for block in rows:
+            token = str(block.get("token") or "")
+            holders = [_norm(h) for h in (block.get("holders") or [])]
+            holders.sort(key=lambda x: x["amount"], reverse=True)
+            if token and token == up_token:
+                up = holders
+            elif token and token == down_token:
+                down = holders
+            else:
+                # Fallback by outcomeIndex when token ids drift.
+                idxs = {
+                    h.get("outcomeIndex")
+                    for h in (block.get("holders") or [])
+                    if h.get("outcomeIndex") is not None
+                }
+                if idxs == {0} or (0 in idxs and 1 not in idxs and not up):
+                    up = holders
+                elif idxs == {1} or (1 in idxs and not down):
+                    down = holders
+
+        payload = {
+            "market_id": self._market_id,
+            "condition_id": cid,
+            "updated_at": int(now * 1000),
+            "live": True,
+            "up": up,
+            "down": down,
+        }
+        self._holders_cache = payload
+        self._holders_cache_at = now
+        return payload
+
     async def market_meta(self) -> dict[str, Any] | None:
         self.twap.ensure_started()
         market = await self._ensure_market(force=True)
@@ -631,6 +741,7 @@ class LiveMarketService:
             "type": "market",
             "live": True,
             "market_id": self._market_id,
+            "condition_id": self._condition_id,
             "slug": str(market.get("slug") or ""),
             "start_time": self._window_start_ms,
             "end_time": self._window_end_ms,

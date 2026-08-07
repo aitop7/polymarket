@@ -128,3 +128,67 @@ def merge_series(
             if v is not None:
                 cur[k] = v
     return [by_t[t] for t in sorted(by_t)]
+
+
+def scrub_leading_outcome_extremes(
+    points: list[dict[str, Any]],
+    *,
+    lo: float = 0.02,
+    hi: float = 0.98,
+) -> list[dict[str, Any]]:
+    """
+    At market open the CLOB often prints 1¢/99¢ placeholders before a real book
+    forms. Null those leading extremes so Up/Down charts don't spike 0↔100.
+    """
+    if not points:
+        return points
+    out = [dict(p) for p in points]
+
+    def _extreme(p: dict[str, Any]) -> bool:
+        u, d = p.get("up"), p.get("down")
+        if u is None and d is None:
+            return True
+        if u is not None and (u <= lo or u >= hi):
+            return True
+        if d is not None and (d <= lo or d >= hi):
+            return True
+        return False
+
+    i = 0
+    while i < len(out) and _extreme(out[i]):
+        out[i]["up"] = None
+        out[i]["down"] = None
+        i += 1
+    return out
+
+
+def break_outcome_jumps(
+    points: list[dict[str, Any]], *, max_jump: float = 0.45
+) -> list[dict[str, Any]]:
+    """Break Up/Down continuity across huge one-step jumps (prior-window bleed)."""
+    if len(points) < 2:
+        return points
+    out = [dict(p) for p in points]
+    prev_u = out[0].get("up")
+    prev_d = out[0].get("down")
+    for i in range(1, len(out)):
+        u, d = out[i].get("up"), out[i].get("down")
+        if (
+            prev_u is not None
+            and u is not None
+            and abs(float(u) - float(prev_u)) > max_jump
+        ):
+            out[i]["up"] = None
+            u = None
+        if (
+            prev_d is not None
+            and d is not None
+            and abs(float(d) - float(prev_d)) > max_jump
+        ):
+            out[i]["down"] = None
+            d = None
+        if u is not None:
+            prev_u = u
+        if d is not None:
+            prev_d = d
+    return out

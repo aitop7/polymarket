@@ -9,6 +9,7 @@ import httpx
 
 GAMMA_URL = "https://gamma-api.polymarket.com"
 CLOB_URL = "https://clob.polymarket.com"
+DATA_API_URL = "https://data-api.polymarket.com"
 BINANCE_URL = "https://data-api.binance.vision"
 BINANCE_FALLBACKS = (
     "https://api.binance.com",
@@ -46,11 +47,13 @@ class LiveClients:
         timeout = httpx.Timeout(5.0, connect=3.0)
         self._gamma = httpx.AsyncClient(base_url=GAMMA_URL, timeout=timeout)
         self._clob = httpx.AsyncClient(base_url=CLOB_URL, timeout=timeout)
+        self._data = httpx.AsyncClient(base_url=DATA_API_URL, timeout=timeout)
         self._binance = httpx.AsyncClient(timeout=timeout)
 
     async def close(self) -> None:
         await self._gamma.aclose()
         await self._clob.aclose()
+        await self._data.aclose()
         await self._binance.aclose()
 
     async def get_btc_price(self) -> float:
@@ -99,6 +102,28 @@ class LiveClients:
                 continue
             return market
         return None
+
+    async def get_holders(
+        self, condition_id: str, *, limit: int = 20, min_balance: int = 1
+    ) -> list[dict[str, Any]]:
+        """Top holders per outcome token from Polymarket Data API."""
+        cid = str(condition_id or "").strip()
+        if not cid:
+            return []
+        try:
+            resp = await self._data.get(
+                "/holders",
+                params={
+                    "market": cid,
+                    "limit": max(1, min(20, int(limit))),
+                    "minBalance": max(0, int(min_balance)),
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
 
     async def get_btc_open_at(self, start_ms: int) -> float | None:
         """Best-effort open proxy: first Binance agg trade at/after window start."""

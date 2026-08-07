@@ -78,6 +78,8 @@ export const api = {
     const qs = q.toString()
     return json<LiveSeriesResponse>(`/api/live/series${qs ? `?${qs}` : ''}`)
   },
+  liveHolders: (limit = 20) =>
+    json<LiveHoldersResponse>(`/api/live/holders?limit=${Math.max(1, Math.min(20, limit))}`),
 }
 
 export type LiveSeriesPoint = {
@@ -95,6 +97,24 @@ export type LiveSeriesResponse = {
   end_time?: number | null
   series: LiveSeriesPoint[]
   source?: { parquet?: number; twap_feed?: number; buffer?: number }
+}
+
+export type HolderRow = {
+  proxy_wallet: string
+  display_name: string
+  amount: number
+  profile_image?: string
+  verified?: boolean
+  outcome_index?: number | null
+}
+
+export type LiveHoldersResponse = {
+  market_id?: string | null
+  condition_id?: string | null
+  updated_at?: number
+  live?: boolean
+  up: HolderRow[]
+  down: HolderRow[]
 }
 
 export type LiveTick = {

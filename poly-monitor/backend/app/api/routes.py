@@ -291,6 +291,14 @@ async def live_series(
     return svc.series(market_id, lookback_ms=lookback_ms)
 
 
+@router.get("/live/holders")
+async def live_holders(limit: int = 20) -> dict[str, Any]:
+    """Top Up/Down holders for the active live market."""
+    from app.live import get_live_service
+
+    return await get_live_service().holders(limit=limit)
+
+
 @router.websocket("/ws/live")
 async def ws_live(websocket: WebSocket) -> None:
     """Stream live market state. View-only; no order placement.
