@@ -34,7 +34,6 @@ data/
   YYYY-MM-DD/
     {market_id}/
       btc_trades.parquet
-      btc_bookticker.parquet
       btc_depth.parquet
       orderbooks.parquet
       trades.parquet

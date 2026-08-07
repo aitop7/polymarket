@@ -48,15 +48,6 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("buyer_is_maker", pa.bool_()),
         ]
     ),
-    "btc_bookticker": pa.schema(
-        [
-            pa.field("timestamp", pa.int64()),
-            pa.field("bid_price", pa.float32()),
-            pa.field("bid_qty", pa.float32()),
-            pa.field("ask_price", pa.float32()),
-            pa.field("ask_qty", pa.float32()),
-        ]
-    ),
     "btc_depth": pa.schema(_btc_depth_fields()),
     "orderbooks": pa.schema(_orderbook_fields()),
     "trades": pa.schema(
@@ -73,7 +64,6 @@ SCHEMAS: dict[str, pa.Schema] = {
 
 TABLE_FILES = {
     "btc_trades": "btc_trades.parquet",
-    "btc_bookticker": "btc_bookticker.parquet",
     "btc_depth": "btc_depth.parquet",
     "orderbooks": "orderbooks.parquet",
     "trades": "trades.parquet",

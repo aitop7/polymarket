@@ -44,9 +44,6 @@ class MarketStore:
 
         self.buffers: dict[str, ParquetBuffer] = {
             "btc_trades": ParquetBuffer(table_path(self.dir, "btc_trades"), "btc_trades"),
-            "btc_bookticker": ParquetBuffer(
-                table_path(self.dir, "btc_bookticker"), "btc_bookticker"
-            ),
             "btc_depth": ParquetBuffer(
                 table_path(self.dir, "btc_depth"),
                 "btc_depth",
@@ -61,7 +58,6 @@ class MarketStore:
         }
         # Internal dedupe keys not written to parquet
         self._seen_agg_ids: set[int] = set()
-        self._last_bookticker: tuple[float, float, float, float] | None = None
         self._lock = threading.Lock()
         self.write_meta()
         logger.info("Market store ready {}", self.dir)
@@ -108,32 +104,6 @@ class MarketStore:
                 "price": float(price),
                 "quantity": float(quantity),
                 "buyer_is_maker": bool(buyer_is_maker),
-            },
-        )
-
-    def try_bookticker(
-        self,
-        *,
-        timestamp: int,
-        bid_price: float,
-        bid_qty: float,
-        ask_price: float,
-        ask_qty: float,
-    ) -> None:
-        if not self.in_window(timestamp):
-            return
-        key = (bid_price, bid_qty, ask_price, ask_qty)
-        if self._last_bookticker == key:
-            return
-        self._last_bookticker = key
-        self.append(
-            "btc_bookticker",
-            {
-                "timestamp": int(timestamp),
-                "bid_price": float(bid_price),
-                "bid_qty": float(bid_qty),
-                "ask_price": float(ask_price),
-                "ask_qty": float(ask_qty),
             },
         )
 

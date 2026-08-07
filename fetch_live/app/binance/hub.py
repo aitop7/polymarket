@@ -1,10 +1,9 @@
-"""Combined Binance WS: aggTrade + bookTicker + depth."""
+"""Combined Binance WS: aggTrade + depth."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import time
 from typing import Any, Callable
 
 import httpx
@@ -16,8 +15,6 @@ from app.binance.local_book import LocalOrderBook
 from app.config import settings
 
 OnTrade = Callable[[int, int, float, float, bool], None]  # agg_id, ts, price, qty, maker
-OnBookTicker = Callable[[int, float, float, float, float], None]
-OnDepthReady = Callable[[], None]
 
 
 class BinanceHub:
@@ -25,10 +22,8 @@ class BinanceHub:
         self,
         *,
         on_trade: OnTrade | None = None,
-        on_bookticker: OnBookTicker | None = None,
     ) -> None:
         self.on_trade = on_trade
-        self.on_bookticker = on_bookticker
         self.book = LocalOrderBook()
         self._running = False
         self._diff_buffer: list[dict[str, Any]] = []
@@ -43,7 +38,7 @@ class BinanceHub:
     async def run(self) -> None:
         self._running = True
         symbol = settings.btc_symbol.lower()
-        streams = f"{symbol}@aggTrade/{symbol}@bookTicker/{symbol}@depth@100ms"
+        streams = f"{symbol}@aggTrade/{symbol}@depth@100ms"
         bases = []
         for b in (settings.binance_ws_url, *settings.binance_ws_fallbacks):
             b = b.rstrip("/").replace("/ws", "")
@@ -87,9 +82,6 @@ class BinanceHub:
                     continue
             await asyncio.sleep(0.5)
 
-    async def _ensure_synced(self) -> None:
-        await self._sync_loop()
-
     async def _resync(self) -> None:
         self._syncing = True
         symbol = settings.btc_symbol.upper()
@@ -98,7 +90,6 @@ class BinanceHub:
         resp.raise_for_status()
         snap = resp.json()
         last_id = int(snap.get("lastUpdateId") or 0)
-        # Drop buffered diffs older than snapshot
         kept = [e for e in self._diff_buffer if int(e.get("u") or 0) > last_id]
         self.book.apply_snapshot(snap)
         for ev in kept:
@@ -122,18 +113,8 @@ class BinanceHub:
         event = data.get("e")
         if event == "aggTrade":
             self._on_agg_trade(data)
-        elif event == "bookTicker":
-            self._on_book_ticker(data)
         elif event == "depthUpdate":
             self._on_depth(data)
-        elif (
-            "B" in data
-            and "A" in data
-            and isinstance(data.get("b"), str)
-            and isinstance(data.get("a"), str)
-        ):
-            # Combined-stream bookTicker often omits event type `e`.
-            self._on_book_ticker(data)
 
     def _on_agg_trade(self, data: dict[str, Any]) -> None:
         if not self.on_trade:
@@ -148,19 +129,6 @@ class BinanceHub:
             return
         self.on_trade(agg_id, ts, price, qty, maker)
 
-    def _on_book_ticker(self, data: dict[str, Any]) -> None:
-        if not self.on_bookticker:
-            return
-        try:
-            ts = int(data.get("E") or time.time() * 1000)
-            bid_p = float(data["b"])
-            bid_q = float(data["B"])
-            ask_p = float(data["a"])
-            ask_q = float(data["A"])
-        except (KeyError, TypeError, ValueError):
-            return
-        self.on_bookticker(ts, bid_p, bid_q, ask_p, ask_q)
-
     def _on_depth(self, data: dict[str, Any]) -> None:
         if not self.book.ready:
             self._diff_buffer.append(data)
@@ -173,9 +141,3 @@ class BinanceHub:
             self.book.reset()
             self._diff_buffer = [data]
             self._needs_resync = True
-
-    async def _resync_safe(self) -> None:
-        try:
-            await self._resync()
-        except Exception as exc:
-            logger.warning("resync failed: {}", exc)

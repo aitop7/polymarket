@@ -37,7 +37,6 @@ class Orchestrator:
         )
         self.binance = BinanceHub(
             on_trade=self._on_btc_trade,
-            on_bookticker=self._on_bookticker,
         )
         self._running = False
         self._tasks: list[asyncio.Task[Any]] = []
@@ -72,22 +71,6 @@ class Orchestrator:
             price=price,
             quantity=qty,
             buyer_is_maker=maker,
-        )
-        if store.should_flush():
-            store.flush()
-
-    def _on_bookticker(
-        self, ts: int, bid_p: float, bid_q: float, ask_p: float, ask_q: float
-    ) -> None:
-        store = self._store()
-        if store is None:
-            return
-        store.try_bookticker(
-            timestamp=ts,
-            bid_price=bid_p,
-            bid_qty=bid_q,
-            ask_price=ask_p,
-            ask_qty=ask_q,
         )
         if store.should_flush():
             store.flush()
