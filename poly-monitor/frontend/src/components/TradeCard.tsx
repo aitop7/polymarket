@@ -227,20 +227,18 @@ export default function TradeCard({
         </div>
       </div>
 
-      <div className={`trade-outcomes${disabled ? ' trade-outcomes-disabled' : ''}`}>
+      <div className="trade-outcomes">
         <button
           type="button"
-          className={`trade-outcome up ${side === 'UP' ? 'active' : ''}`}
+          className={`trade-outcome up ${side === 'UP' ? 'active' : ''}${displayUp === '--' ? ' no-quote' : ''}`}
           onClick={() => onSide('UP')}
-          disabled={disabled && side === 'UP'}
         >
           Up {displayUp}
         </button>
         <button
           type="button"
-          className={`trade-outcome down ${side === 'DOWN' ? 'active' : ''}`}
+          className={`trade-outcome down ${side === 'DOWN' ? 'active' : ''}${displayDown === '--' ? ' no-quote' : ''}`}
           onClick={() => onSide('DOWN')}
-          disabled={disabled && side === 'DOWN'}
         >
           Down {displayDown}
         </button>
@@ -258,7 +256,7 @@ export default function TradeCard({
                 <button
                   key={usd}
                   type="button"
-                  disabled={tradeDisabled}
+                  disabled={disabled}
                   onClick={() => onTrade({ size_usd: usd })}
                 >
                   <strong>${usd}</strong>
@@ -271,7 +269,7 @@ export default function TradeCard({
       )}
 
       {orderType === 'market' && (
-        <div className="trade-market">
+        <div className={`trade-market${disabled ? ' is-disabled' : ''}`}>
           <div className="trade-amount-row">
             <span>Amount</span>
             <input
@@ -281,6 +279,7 @@ export default function TradeCard({
               step={1}
               value={marketAmount || ''}
               placeholder="$0"
+              disabled={disabled}
               onChange={(e) => setMarketAmount(Math.max(0, Number(e.target.value) || 0))}
             />
           </div>
@@ -289,6 +288,7 @@ export default function TradeCard({
               <button
                 key={n}
                 type="button"
+                disabled={disabled}
                 onClick={() => setMarketAmount((a) => a + n)}
               >
                 +${n}
@@ -302,12 +302,13 @@ export default function TradeCard({
       )}
 
       {orderType === 'limit' && (
-        <div className="trade-limit">
+        <div className={`trade-limit${disabled ? ' is-disabled' : ''}`}>
           <div className="trade-field-row">
             <span>Limit price</span>
             <div className="trade-stepper">
               <button
                 type="button"
+                disabled={disabled}
                 onClick={() => setLimitCents((c) => Math.max(0, c - 1))}
               >
                 −
@@ -319,12 +320,14 @@ export default function TradeCard({
                   max={100}
                   step={1}
                   value={limitCents}
+                  disabled={disabled}
                   onChange={(e) => setLimitCents(Number(e.target.value))}
                 />
                 <span>¢</span>
               </div>
               <button
                 type="button"
+                disabled={disabled}
                 onClick={() => setLimitCents((c) => Math.min(100, c + 1))}
               >
                 +
@@ -341,6 +344,7 @@ export default function TradeCard({
               step={1}
               value={shares || ''}
               placeholder="0"
+              disabled={disabled}
               onChange={(e) => setShares(Math.max(0, Number(e.target.value) || 0))}
             />
           </div>
@@ -351,6 +355,7 @@ export default function TradeCard({
                 key={d}
                 type="button"
                 className={d === 50 ? 'accent' : ''}
+                disabled={disabled}
                 onClick={() => bumpShares(d)}
               >
                 {d > 0 ? `+${d}` : d}

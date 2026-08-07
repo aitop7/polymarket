@@ -651,6 +651,10 @@ export default function MarketPage({ mode }: Props) {
         onTrade={onTrade}
         upPrice={up}
         downPrice={down}
+        upHasAsk={book == null ? true : (book.up?.asks?.length ?? 0) > 0}
+        downHasAsk={book == null ? true : (book.down?.asks?.length ?? 0) > 0}
+        upHasBid={book == null ? true : (book.up?.bids?.length ?? 0) > 0}
+        downHasBid={book == null ? true : (book.down?.bids?.length ?? 0) > 0}
         cash={tick?.portfolio?.cash}
         heldShares={
           side === 'UP' ? tick?.portfolio?.up_shares ?? 0 : tick?.portfolio?.down_shares ?? 0

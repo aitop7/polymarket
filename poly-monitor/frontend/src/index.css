@@ -556,6 +556,25 @@ select {
   border-color: #d1d5db;
 }
 
+.trade-outcome.no-quote {
+  opacity: 0.72;
+}
+
+.trade-outcome.up.active.no-quote,
+.trade-outcome.down.active.no-quote {
+  opacity: 0.85;
+}
+
+.trade-market.is-disabled,
+.trade-limit.is-disabled {
+  opacity: 0.55;
+}
+
+.trade-onetap-grid button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .trade-onetap {
   margin-top: 0.95rem;
 }

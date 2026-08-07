@@ -9,6 +9,10 @@ type Props = {
   onTrade: (opts: { size_usd?: number; shares?: number }) => void
   upPrice: number
   downPrice: number
+  upHasAsk?: boolean
+  downHasAsk?: boolean
+  upHasBid?: boolean
+  downHasBid?: boolean
   cash?: number
   heldShares?: number
   tradeDisabled: boolean
@@ -25,6 +29,10 @@ export default function TradeSidebar(props: Props) {
     onTrade,
     upPrice,
     downPrice,
+    upHasAsk,
+    downHasAsk,
+    upHasBid,
+    downHasBid,
     cash,
     heldShares,
     tradeDisabled,
@@ -41,6 +49,10 @@ export default function TradeSidebar(props: Props) {
         onSide={onSide}
         upPrice={upPrice}
         downPrice={downPrice}
+        upHasAsk={upHasAsk}
+        downHasAsk={downHasAsk}
+        upHasBid={upHasBid}
+        downHasBid={downHasBid}
         cash={cash}
         heldShares={heldShares}
         onTrade={onTrade}
