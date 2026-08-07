@@ -1893,26 +1893,26 @@ select {
 }
 
 .ob-empty-side {
-  display: grid;
-  grid-template-columns: minmax(96px, 1fr) 72px 100px 100px;
-  column-gap: 0.35rem;
+  display: flex;
   align-items: center;
-  min-height: calc(3 * var(--ob-row-h, 28px));
+  justify-content: center;
+  height: var(--ob-row-h, 28px);
+  min-height: var(--ob-row-h, 28px);
+  margin: 0;
   padding: 0 0.5rem;
   color: #9ca3af;
-  font-size: 0.88rem;
+  font-size: 0.82rem;
   font-weight: 500;
+  line-height: 1;
 }
 
 .ob-empty-side-label {
-  grid-column: 2;
   text-align: center;
 }
 
 @media (max-width: 640px) {
   .ob-cols,
-  .ob-row,
-  .ob-empty-side {
+  .ob-row {
     grid-template-columns: minmax(64px, 1fr) 56px 80px 80px;
   }
 }

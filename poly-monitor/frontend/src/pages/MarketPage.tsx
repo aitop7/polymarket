@@ -340,8 +340,14 @@ export default function MarketPage({ mode }: Props) {
 
   const startLive = () => {
     stopWs()
-    liveWsRef.current?.close()
+    const prev = liveWsRef.current
     liveWsRef.current = null
+    if (prev) {
+      prev.onerror = null
+      prev.onclose = null
+      prev.onmessage = null
+      prev.close()
+    }
     setLiveActive(true)
     setBtcTab('twap')
     setSeriesLive([])
@@ -356,9 +362,12 @@ export default function MarketPage({ mode }: Props) {
     const ws = new WebSocket(wsUrl('/api/ws/live'))
     liveWsRef.current = ws
     ws.onopen = () => {
+      if (liveWsRef.current !== ws) return
+      setError(null)
       ws.send(JSON.stringify({ interval_s: interval }))
     }
     ws.onmessage = (ev) => {
+      if (liveWsRef.current !== ws) return
       const msg = JSON.parse(ev.data) as Tick
       if (msg.type === 'error') {
         setError(msg.message || 'Live feed error')
@@ -376,7 +385,9 @@ export default function MarketPage({ mode }: Props) {
         return
       }
       if (msg.type === 'tick') {
+        // Soft feed notes (e.g. no active market) — don't sticky-banner WS errors.
         if (msg.error) setError(String(msg.error))
+        else setError(null)
         setTick(msg)
         if (msg.market_id) setLiveMarketId(String(msg.market_id))
         if (msg.start_time != null && msg.end_time != null) {
@@ -398,15 +409,32 @@ export default function MarketPage({ mode }: Props) {
         }
       }
     }
-    ws.onerror = () => setError('Live WebSocket error')
+    // Browsers fire onerror on intentional close/reconnect; ignore stale sockets.
+    ws.onerror = () => {
+      if (liveWsRef.current !== ws) return
+    }
+    ws.onclose = (ev) => {
+      if (liveWsRef.current !== ws) return
+      liveWsRef.current = null
+      // Only surface unexpected drops (not clean client close / StrictMode teardown).
+      if (!ev.wasClean && ev.code !== 1000 && ev.code !== 1001) {
+        setError('Live WebSocket disconnected')
+      }
+    }
   }
 
   // Live market is the default: connect on mount.
   useEffect(() => {
     startLive()
     return () => {
-      liveWsRef.current?.close()
+      const ws = liveWsRef.current
       liveWsRef.current = null
+      if (ws) {
+        ws.onerror = null
+        ws.onclose = null
+        ws.onmessage = null
+        ws.close()
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -422,11 +450,18 @@ export default function MarketPage({ mode }: Props) {
 
   const toggleLive = () => {
     if (liveActive) {
-      liveWsRef.current?.close()
+      const ws = liveWsRef.current
       liveWsRef.current = null
+      if (ws) {
+        ws.onerror = null
+        ws.onclose = null
+        ws.onmessage = null
+        ws.close()
+      }
       setLiveActive(false)
       setLiveMarketId('')
       setLiveWindow(null)
+      setError(null)
       setBtcTab('live')
       if (detail) {
         setSeriesLive(

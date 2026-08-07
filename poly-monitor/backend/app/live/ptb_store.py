@@ -10,14 +10,14 @@ from typing import Any
 _STORE_PATH = Path(__file__).resolve().parents[2] / ".cache" / "price_to_beat.json"
 _MAX_AGE_MS = 36 * 3600 * 1000  # keep ~1.5 days
 
-# Price To Beat = current market open 30s TWAP (not live spot / not TWAP-now).
+# Price To Beat = previous market close 30s TWAP (not live spot / not TWAP-now).
 VALID_SOURCES = frozenset(
     {
-        "open_twap_30s",
-        "open_twap_30s_computed",
-        # legacy aliases (same open-boundary timestamp)
         "prev_close_twap_30s",
         "prev_close_twap_30s_computed",
+        # legacy aliases (same boundary timestamp)
+        "open_twap_30s",
+        "open_twap_30s_computed",
         "twap_30s",
         "twap_30s_computed",
     }
