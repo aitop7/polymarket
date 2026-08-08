@@ -98,12 +98,35 @@ def _read_one(args: tuple[str, str, str, bool, bool]) -> dict[str, Any] | None:
         return None
 
 
-def _build_twap_index(*, force: bool = False) -> list[dict[str, Any]]:
-    if not force and TWAP_SPLIT in _CACHE:
-        return _CACHE[TWAP_SPLIT]
+def invalidate_market_index(split: str | None = None) -> None:
+    """Drop in-memory (+ optional on-disk) index so the next build rescans."""
+    if split is None:
+        _CACHE.clear()
+        return
+    _CACHE.pop(str(split), None)
+    try:
+        p = _cache_path(str(split))
+        if p.is_file():
+            p.unlink()
+    except OSError:
+        pass
 
+
+def _build_twap_index(*, force: bool = False) -> list[dict[str, Any]]:
     cache_file = _cache_path(TWAP_SPLIT)
     fp = live_fingerprint()
+
+    if not force and TWAP_SPLIT in _CACHE:
+        # Re-validate against disk fingerprint so newly synced markets appear.
+        try:
+            if cache_file.is_file():
+                payload = json.loads(cache_file.read_text(encoding="utf-8"))
+                if int(payload.get("n", -1)) == fp["n"]:
+                    return _CACHE[TWAP_SPLIT]
+        except Exception:
+            pass
+        # Stale memory cache
+        _CACHE.pop(TWAP_SPLIT, None)
 
     if not force and cache_file.is_file():
         try:
@@ -185,13 +208,21 @@ def build_market_index(split: str, *, force: bool = False) -> list[dict[str, Any
     return out
 
 
+def filter_history_markets(split: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """For TWAP, hide the in-progress live window from the history picker."""
+    if split != TWAP_SPLIT:
+        return rows
+    now_ms = int(time.time() * 1000)
+    return [r for r in rows if int(r.get("end_time") or 0) <= now_ms]
+
+
 def list_dates(split: str) -> list[str]:
-    idx = build_market_index(split)
+    idx = filter_history_markets(split, build_market_index(split))
     return sorted({r["date_et"] for r in idx})
 
 
 def list_markets_for_date(split: str, date_et: str) -> list[dict[str, Any]]:
-    idx = build_market_index(split)
+    idx = filter_history_markets(split, build_market_index(split))
     day = [r for r in idx if r["date_et"] == date_et]
     day.sort(key=lambda r: int(r["start_time"]), reverse=True)
     return day

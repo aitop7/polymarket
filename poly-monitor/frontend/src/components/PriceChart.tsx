@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Area,
   CartesianGrid,
@@ -326,28 +326,56 @@ export default function PriceChart({
   const hoverTime = onHoverTimeChange ? (hoverTimeProp ?? null) : localHoverTime
   const setHoverTime = onHoverTimeChange ?? setLocalHoverTime
 
-  const chartData = useMemo(
-    () =>
-      data.map((d) => ({
-        ...d,
-        upPct: d.up != null ? d.up * 100 : null,
-        downPct: d.down != null ? d.down * 100 : null,
-      })),
-    [data],
-  )
+  const chartData = useMemo(() => {
+    const mapped = data.map((d) => ({
+      ...d,
+      // undefined (not null): Recharts treats null as 0 on Line charts
+      upPct: d.up != null && Number.isFinite(d.up) ? d.up * 100 : undefined,
+      downPct: d.down != null && Number.isFinite(d.down) ? d.down * 100 : undefined,
+    }))
+    if (mode !== 'outcomes') return mapped
+    let i = 0
+    while (
+      i < mapped.length &&
+      mapped[i].upPct == null &&
+      mapped[i].downPct == null
+    ) {
+      i += 1
+    }
+    let j = mapped.length
+    while (j > i && mapped[j - 1].upPct == null && mapped[j - 1].downPct == null) {
+      j -= 1
+    }
+    return i || j < mapped.length ? mapped.slice(i, j) : mapped
+  }, [data, mode])
+
+  // When TWAP is frozen/missing (stalled RTDS), plot Binance so the chart isn't blank.
+  const plotVisible = useMemo((): BtcSeriesVisibility => {
+    if (!showBtc) return seriesVisible
+    const twapVals = chartData
+      .map((d) => d.twap)
+      .filter((v): v is number => v != null && Number.isFinite(v))
+    const twapSpan =
+      twapVals.length >= 2 ? Math.max(...twapVals) - Math.min(...twapVals) : 0
+    const twapDead = twapVals.length < 2 || twapSpan < 1
+    if (!twapDead) return seriesVisible
+    const hasBinance = chartData.some((d) => d.btc != null && Number.isFinite(Number(d.btc)))
+    if (!hasBinance) return seriesVisible
+    return { ...seriesVisible, twap: false, binance: true }
+  }, [showBtc, seriesVisible, chartData])
 
   const hoverTip = useMemo(
     () =>
       hoverTime == null
         ? null
-        : tipFromDataAtTime(mode, chartData, hoverTime, seriesVisible),
+        : tipFromDataAtTime(mode, chartData, hoverTime, plotVisible),
     [
       hoverTime,
       mode,
       chartData,
-      seriesVisible.twap,
-      seriesVisible.chainlink,
-      seriesVisible.binance,
+      plotVisible.twap,
+      plotVisible.chainlink,
+      plotVisible.binance,
     ],
   )
 
@@ -368,7 +396,7 @@ export default function PriceChart({
   const autoY = useMemo((): [number, number] => {
     if (!showBtc) return [0, 100]
     const values = chartData.flatMap((d) =>
-      SERIES_META.filter((s) => seriesVisible[s.key])
+      SERIES_META.filter((s) => plotVisible[s.key])
         .map((s) => d[s.dataKey])
         .filter((v): v is number => v != null && Number.isFinite(v)),
     )
@@ -382,22 +410,30 @@ export default function PriceChart({
     chartData,
     priceToBeat,
     showBtc,
-    seriesVisible.twap,
-    seriesVisible.chainlink,
-    seriesVisible.binance,
+    plotVisible.twap,
+    plotVisible.chainlink,
+    plotVisible.binance,
   ])
 
   // null = follow autoY; set when user zooms/pans vertically
   const [yZoom, setYZoom] = useState<[number, number] | null>(null)
   const yDomain = yZoom ?? autoY
 
-  const lastTwap = [...chartData].reverse().find((d) => d.twap != null)?.twap ?? null
+  const lastTwap =
+    [...chartData].reverse().find((d) => d.twap != null)?.twap ??
+    [...chartData].reverse().find((d) => d.btc != null)?.btc ??
+    null
   const aboveTarget =
     lastTwap != null && priceToBeat != null ? lastTwap >= priceToBeat : null
 
   const xZoomed = !domainEqual(xDomain, xDefaultDomain)
   const yZoomed = yZoom != null
   const canReset = xZoomed || yZoomed
+
+  const dataKey = `${data[0]?.t ?? 0}-${data[data.length - 1]?.t ?? 0}-${data.length}`
+  useEffect(() => {
+    setYZoom(null)
+  }, [dataKey])
 
   const resetZoom = () => {
     if (onXDomainReset) onXDomainReset()
@@ -527,11 +563,11 @@ export default function PriceChart({
               {SERIES_META.map((s) => (
                 <label
                   key={s.key}
-                  className={`chart-series-toggle ${seriesVisible[s.key] ? 'on' : ''}`}
+                  className={`chart-series-toggle ${plotVisible[s.key] ? 'on' : ''}`}
                 >
                   <input
                     type="checkbox"
-                    checked={seriesVisible[s.key]}
+                    checked={plotVisible[s.key]}
                     onChange={() => toggle(s.key)}
                   />
                   <span className="chart-series-swatch" style={{ background: s.color }} />
@@ -619,7 +655,7 @@ export default function PriceChart({
                     label={<TargetTagLabel above={aboveTarget} />}
                   />
                 )}
-                {seriesVisible.twap && (
+                {plotVisible.twap && (
                   <>
                     <Area
                       type="monotone"
@@ -652,7 +688,7 @@ export default function PriceChart({
                   </>
                 )}
                 {SERIES_META.filter((s) => s.key !== 'twap').map((s) =>
-                  seriesVisible[s.key] ? (
+                  plotVisible[s.key] ? (
                     <Line
                       key={s.key}
                       type="monotone"
@@ -699,6 +735,7 @@ export default function PriceChart({
                   )}
                   strokeWidth={2}
                   isAnimationActive={false}
+                  connectNulls={false}
                 />
                 <Line
                   type="monotone"
@@ -711,6 +748,7 @@ export default function PriceChart({
                   )}
                   strokeWidth={2}
                   isAnimationActive={false}
+                  connectNulls={false}
                 />
               </>
             )}

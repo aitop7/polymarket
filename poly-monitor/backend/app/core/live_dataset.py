@@ -92,6 +92,7 @@ def iter_live_market_metas() -> list[dict[str, Any]]:
                 winner_i = 0
             else:
                 winner_i = None
+            closed = bool(meta.get("closed")) or winner_i is not None
             open_px = meta.get("btc_open_price")
             try:
                 open_f = float(open_px) if open_px is not None else None
@@ -109,6 +110,7 @@ def iter_live_market_metas() -> list[dict[str, Any]]:
                     "has_training": True,
                     "rows": None,
                     "winner": winner_i,
+                    "closed": closed,
                     "btc_open_price": open_f,
                     "date_utc": day_dir.name,
                     "dir": str(market_dir),
@@ -241,6 +243,7 @@ def live_market_summary(market_id: str) -> dict[str, Any] | None:
         winner_i = 0
     else:
         winner_i = None
+    closed = bool(meta.get("closed")) or winner_i is not None
     rows = None
     try:
         df = load_live_market_frame(market_id)
@@ -256,6 +259,7 @@ def live_market_summary(market_id: str) -> dict[str, Any] | None:
         "end_time": end,
         "rows": rows,
         "winner": winner_i,
+        "closed": closed,
         "btc_open_price": open_f,
         "has_features": False,
         "has_training": True,

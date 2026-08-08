@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -20,6 +21,8 @@ logger = logging.getLogger(__name__)
 _CACHE_DIR = Path(__file__).resolve().parents[2] / ".cache"
 _WATERMARK_PATH = _CACHE_DIR / "fetch_live_sync.json"
 _ACTIVE_REFRESH_S = 12.0
+PERIODIC_SYNC_S = 60.0
+_REPAIR_LOOKBACK_MS = 2 * 60 * 60 * 1000  # re-check last 2h for gaps
 _EXPECTED_FILES = (
     "meta.json",
     "binance_trades.parquet",
@@ -35,6 +38,14 @@ class VpsSyncClient:
         self._last_active_pull: dict[str, float] = {}
         self._last_error_log = 0.0
         self._unreachable = False
+        self._hist_locks: dict[str, asyncio.Lock] = {}
+
+    def _hist_lock(self, market_id: str) -> asyncio.Lock:
+        lock = self._hist_locks.get(market_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._hist_locks[market_id] = lock
+        return lock
 
     @property
     def enabled(self) -> bool:
@@ -145,6 +156,10 @@ class VpsSyncClient:
             if isinstance(f, dict) and f.get("name")
         }
         if not remote_files:
+            # Still require core tables when we have no remote listing.
+            for name in ("meta.json", "orderbooks.parquet"):
+                if not (dest / name).is_file():
+                    return True
             return False
         for name, size in remote_files.items():
             p = dest / name
@@ -157,6 +172,90 @@ class VpsSyncClient:
                 return True
         return False
 
+    def _parquet_timestamps(self, path: Path) -> list[int]:
+        if not path.is_file():
+            return []
+        try:
+            import pyarrow.parquet as pq
+
+            table = pq.read_table(path, columns=["timestamp"])
+            out: list[int] = []
+            for v in table.column("timestamp").to_pylist():
+                if v is None:
+                    continue
+                try:
+                    out.append(int(v))
+                except (TypeError, ValueError):
+                    continue
+            return out
+        except Exception:
+            return []
+
+    def _local_has_time_gaps(self, remote: dict[str, Any]) -> bool:
+        """True when local 1s series is missing coverage vs market window."""
+        date = str(remote.get("date") or "")
+        mid = str(remote.get("market_id") or "")
+        if not date or not mid:
+            return False
+        dest = self._local_dir(date, mid)
+        if not dest.is_dir():
+            return True
+        try:
+            start = int(remote.get("start_time") or 0)
+            end = int(remote.get("end_time") or 0)
+        except (TypeError, ValueError):
+            return False
+        if start <= 0 or end <= start:
+            # Fall back to local meta window.
+            try:
+                meta = json.loads((dest / "meta.json").read_text(encoding="utf-8"))
+                start = int(meta.get("start_time") or 0)
+                end = int(meta.get("end_time") or 0)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                return False
+        if start <= 0 or end <= start:
+            return False
+        # In-progress live window: only require coverage up to now (not future end).
+        now_ms = int(time.time() * 1000)
+        if end > now_ms:
+            end = now_ms
+        if end <= start:
+            return False
+
+        # Prefer orderbooks (CLOB 1s); also flag sparse BTC tables.
+        for name, min_frac, max_gap_ms, start_slack_ms, end_slack_ms in (
+            ("orderbooks.parquet", 0.70, 10_000, 30_000, 5_000),
+            ("binance_price_orderbook.parquet", 0.55, 15_000, 45_000, 8_000),
+            ("chainlink_price.parquet", 0.55, 15_000, 45_000, 8_000),
+        ):
+            path = dest / name
+            if not path.is_file():
+                # Missing optional BTC table is a gap if remote has it.
+                remote_names = {
+                    str(f.get("name"))
+                    for f in (remote.get("files") or [])
+                    if isinstance(f, dict)
+                }
+                if name in remote_names:
+                    return True
+                continue
+            ts = self._parquet_timestamps(path)
+            if not ts:
+                return True
+            t0, t1 = min(ts), max(ts)
+            if t1 < end - end_slack_ms:
+                return True
+            if t0 > start + start_slack_ms:
+                return True
+            expected = max(1, (end - start) // 1000)
+            if len(set(ts)) < expected * min_frac:
+                return True
+            ordered = sorted(set(ts))
+            for a, b in zip(ordered, ordered[1:]):
+                if b - a > max_gap_ms:
+                    return True
+        return False
+
     def _needs_pull(self, remote: dict[str, Any]) -> bool:
         date = str(remote.get("date") or "")
         mid = str(remote.get("market_id") or "")
@@ -164,6 +263,8 @@ class VpsSyncClient:
             return False
         dest = self._local_dir(date, mid)
         if self._local_incomplete(dest, remote):
+            return True
+        if self._local_has_time_gaps(remote):
             return True
         remote_mtime = int(remote.get("mtime_ms") or 0)
         if remote_mtime <= 0:
@@ -247,7 +348,7 @@ class VpsSyncClient:
         return end_ms > 0 and now_ms >= end_ms + 2_000
 
     async def sync_incremental(self) -> dict[str, Any]:
-        """Pull all markets with start_time > watermark; advance watermark for finished ones."""
+        """Pull finished markets with start_time > watermark. Never pulls the live window."""
         if not self.enabled:
             return {"enabled": False, "pulled": 0}
         if not self._base():
@@ -265,17 +366,19 @@ class VpsSyncClient:
                     mid = str(remote.get("market_id") or "")
                     if not mid:
                         continue
+                    if not self._is_finished(remote, now_ms=now_ms):
+                        # Skip in-progress live market — history sync only.
+                        continue
                     try:
                         if self._needs_pull(remote):
                             await self.download_market(client, remote)
                             pulled.append(mid)
-                        if self._is_finished(remote, now_ms=now_ms):
-                            try:
-                                st = int(remote.get("start_time") or 0)
-                            except (TypeError, ValueError):
-                                st = 0
-                            if st > new_after:
-                                new_after = st
+                        try:
+                            st = int(remote.get("start_time") or 0)
+                        except (TypeError, ValueError):
+                            st = 0
+                        if st > new_after:
+                            new_after = st
                     except Exception as exc:
                         self._log_net_error(f"market {mid}", exc)
         except Exception as exc:
@@ -297,6 +400,54 @@ class VpsSyncClient:
             "pulled": len(pulled),
             "market_ids": pulled,
             "after_start_ms": new_after,
+        }
+
+    async def sync_tick(self) -> dict[str, Any]:
+        """
+        Periodic history update (default every 60s):
+        - pull newly finished markets past the watermark
+        - repair gaps in recently finished markets
+        Never downloads the currently live window.
+        """
+        if not self.enabled or not self._base():
+            return {"enabled": False, "pulled": 0}
+        inc = await self.sync_incremental()
+        repaired: list[str] = []
+        now_ms = int(time.time() * 1000)
+        lookback_after = max(0, now_ms - _REPAIR_LOOKBACK_MS)
+        try:
+            async with self._http() as client:
+                markets = await self.list_markets(client, after_start_ms=lookback_after)
+                self._unreachable = False
+                for remote in markets:
+                    mid = str(remote.get("market_id") or "")
+                    if not mid or not self._is_finished(remote, now_ms=now_ms):
+                        continue
+                    if mid in (inc.get("market_ids") or []):
+                        continue
+                    try:
+                        if self._needs_pull(remote):
+                            await self.download_market(client, remote)
+                            repaired.append(mid)
+                    except Exception as exc:
+                        self._log_net_error(f"repair {mid}", exc)
+        except Exception as exc:
+            self._log_net_error("periodic repair list", exc)
+            if not inc.get("error"):
+                inc["error"] = str(exc)
+
+        if repaired or int(inc.get("pulled") or 0) > 0:
+            try:
+                from app.core.live_dataset import TWAP_SPLIT
+                from app.core.market_index import invalidate_market_index
+
+                invalidate_market_index(TWAP_SPLIT)
+            except Exception:
+                pass
+        return {
+            **inc,
+            "repaired": len(repaired),
+            "repaired_ids": repaired,
         }
 
     async def pull_market(
@@ -323,18 +474,112 @@ class VpsSyncClient:
     async def ensure_active_market(
         self, market_id: str, *, force: bool = False
     ) -> Path | None:
-        """Throttle mid-window pulls so local has the VPS prefix for the current market."""
+        """Pull in-progress market history from VPS (throttled) for live chart backfill."""
         if not self.enabled or not market_id or not self._base():
             return None
         now = time.monotonic()
         last = self._last_active_pull.get(market_id, 0.0)
-        if not force and (now - last) < _ACTIVE_REFRESH_S:
+        # Always throttle — even force — so live seed + soft reconnect don't spam VPS.
+        if (now - last) < _ACTIVE_REFRESH_S:
             return None
-        # Back off harder while VPS is known unreachable
-        if self._unreachable and not force and (now - last) < 60.0:
+        if self._unreachable and (now - last) < 60.0:
             return None
         self._last_active_pull[market_id] = now
-        return await self.pull_market(market_id, force=force)
+        # force=True means "refresh live prefix if VPS is ahead"; still skip when local is current.
+        return await self.pull_market(market_id, force=False)
+
+    def _local_stub(self, market_id: str) -> tuple[Path | None, dict[str, Any]]:
+        from app.core.live_dataset import find_live_market_dir
+
+        mid = str(market_id).strip()
+        d = find_live_market_dir(mid)
+        if d is None:
+            return None, {
+                "market_id": mid,
+                "date": "",
+                "start_time": 0,
+                "end_time": 0,
+                "files": [],
+            }
+        start = end = 0
+        try:
+            meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+            start = int(meta.get("start_time") or 0)
+            end = int(meta.get("end_time") or 0)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+        files: list[dict[str, Any]] = []
+        try:
+            for p in d.iterdir():
+                if p.is_file():
+                    try:
+                        files.append({"name": p.name, "size": int(p.stat().st_size)})
+                    except OSError:
+                        files.append({"name": p.name, "size": 0})
+        except OSError:
+            pass
+        return d, {
+            "market_id": mid,
+            "date": d.parent.name,
+            "start_time": start,
+            "end_time": end,
+            "files": files,
+        }
+
+    async def ensure_history_market(self, market_id: str) -> Path | None:
+        """
+        On history market switch: if local files/time slots are incomplete vs VPS,
+        download the archive and rewrite the local market dir.
+        """
+        if not self.enabled or not market_id or not self._base():
+            return None
+        mid = str(market_id).strip()
+        if not mid:
+            return None
+        now = time.monotonic()
+        key = f"hist:{mid}"
+        last = self._last_active_pull.get(key, 0.0)
+        if self._unreachable and (now - last) < 60.0:
+            return None
+
+        async with self._hist_lock(mid):
+            # Re-read after waiting — another request may have just repaired.
+            now = time.monotonic()
+            last = self._last_active_pull.get(key, 0.0)
+            local_path, stub = self._local_stub(mid)
+            local_gappy = local_path is None or self._local_has_time_gaps(stub)
+            # Complete local copy: only re-check VPS every 30s for newer/larger files.
+            if not local_gappy and (now - last) < 30.0:
+                return local_path
+
+            try:
+                async with self._http() as client:
+                    remote = await self.get_market(client, mid)
+                    if remote is None:
+                        logger.info("VPS has no market %s — keeping local", mid)
+                        self._last_active_pull[key] = now
+                        return local_path
+                    self._unreachable = False
+                    if not self._needs_pull(remote):
+                        self._last_active_pull[key] = now
+                        date = str(remote.get("date") or stub.get("date") or "")
+                        return self._local_dir(date, mid) if date else local_path
+                    path = await self.download_market(client, remote)
+                    self._last_active_pull[key] = now
+                    if path is not None:
+                        try:
+                            from app.core.live_dataset import TWAP_SPLIT
+                            from app.core.market_index import invalidate_market_index
+
+                            invalidate_market_index(TWAP_SPLIT)
+                            logger.info("Repaired local history market %s from VPS", mid)
+                        except Exception:
+                            pass
+                    return path
+            except Exception as exc:
+                self._last_active_pull[key] = now
+                self._log_net_error(f"history ensure {mid}", exc)
+                return local_path
 
 
 _client: VpsSyncClient | None = None

@@ -237,27 +237,95 @@ def load_market_frame(market_id: str, *, split: str | None = None) -> pd.DataFra
     raise FileNotFoundError(f"No parquet for market {mid} in {split}")
 
 
+def _chart_up_buy(row: Any) -> float | None:
+    """
+    Up buy for charts.
+    Open placeholders are often up_price=99¢ with an empty or mid-range book — prefer book.
+    Near resolution, 99¢/1¢ with an extreme book is real and must be kept.
+    """
+    from app.core.pricing import _as_float
+
+    lo, hi = 0.02, 0.98
+    if isinstance(row, pd.Series):
+        up = _as_float(row["up_price"]) if "up_price" in row.index else None
+        bid = _as_float(row["up_bid_price"]) if "up_bid_price" in row.index else None
+        ask = _as_float(row["up_ask_price"]) if "up_ask_price" in row.index else None
+    else:
+        up = _as_float(row.get("up_price")) if isinstance(row, dict) else None
+        bid = _as_float(row.get("up_bid_price")) if isinstance(row, dict) else None
+        ask = _as_float(row.get("up_ask_price")) if isinstance(row, dict) else None
+
+    book_mid: float | None = None
+    if bid is not None and ask is not None and bid <= ask:
+        book_mid = (bid + ask) / 2.0
+    elif ask is not None:
+        book_mid = ask
+    elif bid is not None:
+        book_mid = bid
+
+    if up is not None and lo < up < hi:
+        return up
+    # Mid-range book wins over extreme placeholder last-trade.
+    if book_mid is not None and lo < book_mid < hi:
+        return book_mid
+    # Settling tape: extreme last-trade confirmed by extreme (or one-sided) book.
+    if up is not None and (up <= lo or up >= hi):
+        if book_mid is not None and (book_mid <= lo or book_mid >= hi):
+            return up
+        if bid is not None and (bid <= lo or bid >= hi):
+            return up
+        if ask is not None and (ask <= lo or ask >= hi):
+            return up
+        return None
+    return book_mid
+
+
+
 def series_for_chart(df: pd.DataFrame, *, max_points: int = 300) -> list[dict[str, Any]]:
     if df.empty:
         return []
-    from app.core.pricing import quotes_from_row
+    from app.core.pricing import quotes_from_up_buy
+    from app.live.fetch_live_series import break_outcome_jumps, scrub_leading_outcome_extremes
 
     step = max(1, len(df) // max_points)
     rows = df.iloc[::step]
     out: list[dict[str, Any]] = []
     for _, r in rows.iterrows():
-        q = quotes_from_row(r)
+        up_buy = _chart_up_buy(r)
+        if up_buy is None:
+            up_v = down_v = None
+        else:
+            q = quotes_from_up_buy(up_buy)
+            up_v, down_v = q["up_price"], q["down_price"]
         point: dict[str, Any] = {
             "t": int(r["timestamp"]),
             "btc": float(r["btc_price"]) if "btc_price" in df.columns and pd.notna(r.get("btc_price")) else None,
-            "up": q["up_price"],
-            "down": q["down_price"],
+            "up": up_v,
+            "down": down_v,
         }
         if "btc_twap_30s" in df.columns and pd.notna(r.get("btc_twap_30s")):
             point["twap"] = float(r["btc_twap_30s"])
         if "btc_chainlink" in df.columns and pd.notna(r.get("btc_chainlink")):
             point["chainlink"] = float(r["btc_chainlink"])
         out.append(point)
+    # Same as live: drop open 1¢/99¢ placeholders and break prior-window bleed jumps.
+    out = scrub_leading_outcome_extremes(out)
+    out = break_outcome_jumps(out)
+    # Omit leading/trailing null outcome quotes — Recharts draws null as 0¢.
+    i = 0
+    while i < len(out) and out[i].get("up") is None and out[i].get("down") is None:
+        i += 1
+    j = len(out)
+    while j > i and out[j - 1].get("up") is None and out[j - 1].get("down") is None:
+        j -= 1
+    if i or j < len(out):
+        out = out[i:j]
+    # Frozen TWAP/chainlink (stalled RTDS) → null so UI can fall back to Binance.
+    for key in ("twap", "chainlink"):
+        vals = [float(p[key]) for p in out if p.get(key) is not None]
+        if len(vals) >= 5 and (max(vals) - min(vals)) < 1.0:
+            for p in out:
+                p[key] = None
     return out
 
 

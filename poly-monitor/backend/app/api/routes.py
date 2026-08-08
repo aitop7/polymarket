@@ -22,6 +22,7 @@ from app.core.data import (
 from app.core.live_dataset import TWAP_SPLIT
 from app.core.market_index import (
     build_market_index,
+    filter_history_markets,
     find_market_at,
     find_market_by_date_time,
     list_dates,
@@ -82,7 +83,10 @@ def get_strategies() -> list[dict[str, Any]]:
 @router.get("/markets/dates")
 def get_market_dates(
     split: str = Query("validation", pattern="^(train|validation|test|twap)$"),
+    rebuild_index: bool = Query(False),
 ) -> dict[str, Any]:
+    if rebuild_index:
+        build_market_index(split, force=True)
     dates = list_dates(split)
     return {
         "split": split,
@@ -128,7 +132,7 @@ def get_markets(
     else:
         # Prefer indexed full list (fast); fall back to legacy limited scan
         try:
-            markets = build_market_index(split)
+            markets = filter_history_markets(split, build_market_index(split))
             if limit is not None:
                 markets = markets[: max(0, int(limit))]
         except Exception:
@@ -291,7 +295,7 @@ async def live_state() -> dict[str, Any]:
 @router.get("/live/series")
 async def live_series(
     market_id: str | None = None,
-    lookback_ms: int = 180_000,
+    lookback_ms: int = 300_000,
 ) -> dict[str, Any]:
     """Historical chart points for the active (or requested) live market window."""
     from app.live import get_live_service
@@ -302,8 +306,9 @@ async def live_series(
     await svc.market_meta()
     mid = str(market_id or svc._market_id or "") or None
     if mid:
-        await get_vps_sync().ensure_active_market(mid)
-    return svc.series(market_id, lookback_ms=lookback_ms)
+        # Live reload/seed: pull this market's history from VPS so charts continue.
+        await get_vps_sync().ensure_active_market(mid, force=True)
+    return svc.series(market_id or mid, lookback_ms=lookback_ms)
 
 
 @router.get("/live/holders")

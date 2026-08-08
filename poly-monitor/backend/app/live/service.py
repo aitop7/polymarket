@@ -21,8 +21,6 @@ from app.live.fetch_live_series import (
     scrub_leading_outcome_extremes,
 )
 from app.live.twap_feed import get_twap_feed
-from app.live.vps_sync import get_vps_sync
-
 _UPDOWN_SLUG_RE = re.compile(r"(?i)^btc-updown-5m-(\d+)$")
 
 # Don't lock PTB before the open boundary; refine while near open.
@@ -474,16 +472,7 @@ class LiveMarketService:
         self._window_start_ms = start_ms
         self._window_end_ms = end_s * 1000
         if rolled:
-            # Authoritative VPS copy of the market that just closed.
-            if prev_market_id and prev_market_id != market_id:
-                try:
-                    await get_vps_sync().pull_market(prev_market_id, force=True)
-                except Exception:
-                    pass
-            try:
-                await get_vps_sync().ensure_active_market(market_id, force=True)
-            except Exception:
-                pass
+            # Local history is refreshed by the 1-minute VPS sync loop (not mid-live pulls).
             self._series.clear()
             self._series_market_id = market_id
             self._holders_cache = None
@@ -519,12 +508,6 @@ class LiveMarketService:
                     self._price_to_beat_source = str(
                         stored.get("source") or "open_twap_30s"
                     )
-        else:
-            # Mid-window: keep local mirror of VPS prefix fresh (throttled).
-            try:
-                await get_vps_sync().ensure_active_market(market_id)
-            except Exception:
-                pass
         return market
 
     def _record_series_point(self, snap: dict[str, Any]) -> None:

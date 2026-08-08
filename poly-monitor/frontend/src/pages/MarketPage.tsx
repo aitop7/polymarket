@@ -141,7 +141,65 @@ export default function MarketPage({ mode }: Props) {
   const liveActiveRef = useRef(liveActive)
   const liveReconnectTimer = useRef<number | null>(null)
   const liveReconnectAttempt = useRef(0)
+  const effectiveSplitRef = useRef(effectiveSplit)
+  const selectedDateRef = useRef(selectedDate)
+  const selectedTimeRef = useRef(selectedTime)
+  const catalogRefreshTimer = useRef<number | null>(null)
   liveActiveRef.current = liveActive
+  effectiveSplitRef.current = effectiveSplit
+  selectedDateRef.current = selectedDate
+  selectedTimeRef.current = selectedTime
+
+  const applyMarketsList = (list: MarketSummary[]) => {
+    if (!list.length) {
+      setMarkets([])
+      setSelectedTime('')
+      setMarketId('')
+      return
+    }
+    const ordered = [...list].sort((a, b) => (b.start_time || 0) - (a.start_time || 0))
+    setMarkets(ordered)
+    setMarketId((prev) => {
+      const keep = ordered.find((m) => m.market_id === prev)
+      if (keep) {
+        setSelectedTime(keep.time_et || '')
+        return prev
+      }
+      const still = ordered.find((m) => (m.time_et || '') === selectedTimeRef.current)
+      const pick = still || ordered[0]
+      setSelectedTime(pick.time_et || '')
+      return pick.market_id
+    })
+  }
+
+  /** Refresh calendar + day slots (e.g. after each 5m live market ends). */
+  const refreshMarketCatalog = async (opts?: { rebuild?: boolean; preferLatest?: boolean }) => {
+    const split = effectiveSplitRef.current
+    const rebuild = Boolean(opts?.rebuild)
+    try {
+      const datesRes = await api.marketDates(split, { rebuild_index: rebuild })
+      setDateMin(datesRes.min || '')
+      setDateMax(datesRes.max || '')
+      let date = selectedDateRef.current
+      const onLatest = !date || date === datesRes.max || !datesRes.dates.includes(date)
+      if (opts?.preferLatest || onLatest) {
+        date = datesRes.max || datesRes.dates[datesRes.dates.length - 1] || ''
+        if (date) setSelectedDate(date)
+      }
+      if (!date) return
+      const res = await api.markets(split, { date, rebuild_index: rebuild })
+      // Only apply into UI when not live (list is for history sidebar); still warm cache when live.
+      if (!liveActiveRef.current) {
+        applyMarketsList(res.markets)
+      } else {
+        // Keep in-memory list warm for when user exits live.
+        const ordered = [...res.markets].sort((a, b) => (b.start_time || 0) - (a.start_time || 0))
+        setMarkets(ordered)
+      }
+    } catch {
+      // Non-fatal — live/history UI continues.
+    }
+  }
 
   const clearLiveReconnectTimer = () => {
     if (liveReconnectTimer.current != null) {
@@ -202,27 +260,7 @@ export default function MarketPage({ mode }: Props) {
       .markets(effectiveSplit, { date: selectedDate })
       .then((res) => {
         if (cancelled) return
-        if (!res.markets.length) {
-          setMarkets([])
-          setSelectedTime('')
-          setMarketId('')
-          return
-        }
-        const ordered = [...res.markets].sort(
-          (a, b) => (b.start_time || 0) - (a.start_time || 0),
-        )
-        setMarkets(ordered)
-        setMarketId((prev) => {
-          const keep = ordered.find((m) => m.market_id === prev)
-          if (keep) {
-            setSelectedTime(keep.time_et || '')
-            return prev
-          }
-          const still = ordered.find((m) => (m.time_et || '') === selectedTime)
-          const pick = still || ordered[0]
-          setSelectedTime(pick.time_et || '')
-          return pick.market_id
-        })
+        applyMarketsList(res.markets)
       })
       .catch((e) => {
         if (!cancelled) setError(String(e))
@@ -232,6 +270,34 @@ export default function MarketPage({ mode }: Props) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveSplit, selectedDate, liveActive])
+
+  // Refresh TWAP/history catalog ~2s after each 5m wall-clock boundary (market finish).
+  useEffect(() => {
+    const PERIOD_MS = 300_000
+    const delayToNext = () => {
+      const now = Date.now()
+      return Math.max(500, Math.ceil(now / PERIOD_MS) * PERIOD_MS + 2_000 - now)
+    }
+    const arm = () => {
+      if (catalogRefreshTimer.current != null) window.clearTimeout(catalogRefreshTimer.current)
+      catalogRefreshTimer.current = window.setTimeout(async () => {
+        catalogRefreshTimer.current = null
+        await refreshMarketCatalog({
+          rebuild: true,
+          preferLatest: liveActiveRef.current || effectiveSplitRef.current === 'twap',
+        })
+        arm()
+      }, delayToNext())
+    }
+    arm()
+    return () => {
+      if (catalogRefreshTimer.current != null) {
+        window.clearTimeout(catalogRefreshTimer.current)
+        catalogRefreshTimer.current = null
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveSplit])
 
   const onTimeChange = (timeEt: string) => {
     setSelectedTime(timeEt)
@@ -452,7 +518,7 @@ export default function MarketPage({ mode }: Props) {
     const seedSeries = (marketId?: string | null) => {
       const reqId = marketId ? String(marketId) : ''
       api
-        .liveSeries(reqId || undefined, 180_000)
+        .liveSeries(reqId || undefined, 300_000)
         .then((res) => {
           if (liveWsRef.current !== ws) return
           if (reqId && res.market_id && String(res.market_id) !== reqId) return
@@ -509,6 +575,10 @@ export default function MarketPage({ mode }: Props) {
         setBook(null)
         setHolders(null)
         seedSeries(msg.market_id)
+        // Closed market just rolled — rebuild TWAP catalog after VPS sync lands.
+        window.setTimeout(() => {
+          void refreshMarketCatalog({ rebuild: true, preferLatest: true })
+        }, 3_000)
         return
       }
       if (msg.type === 'holders') {
@@ -804,16 +874,16 @@ export default function MarketPage({ mode }: Props) {
     setChartXDomain(xDefaultDomain)
   }
 
-  const historyOutcome = useMemo((): 'Up' | 'Down' | null => {
+  /** Outcome from meta.json only (winner / closed) — no price inference. */
+  const historyOutcome = useMemo((): 'Up' | 'Down' | 'not_closed' | null => {
     if (liveActive || playing) return null
-    const w = tick?.settlement?.winner ?? detail?.winner
+    if (!detail) return 'not_closed'
+    if (detail.closed === false) return 'not_closed'
+    const w = detail.winner
     if (w === 1) return 'Up'
     if (w === 0) return 'Down'
-    if (finalHistoryPrice != null && beat != null) {
-      return finalHistoryPrice >= beat ? 'Up' : 'Down'
-    }
-    return null
-  }, [liveActive, playing, tick?.settlement?.winner, detail?.winner, finalHistoryPrice, beat])
+    return 'not_closed'
+  }, [liveActive, playing, detail])
 
   const outcomeSubtitle =
     detail != null

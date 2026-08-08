@@ -24,42 +24,51 @@ for p in (_BACKEND, _POLY):
 
 from app.api.routes import router  # noqa: E402
 from app.core.config import settings  # noqa: E402
-
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Non-blocking: sync in background so API comes up even if VPS is slow/down.
-    async def _startup_sync() -> None:
-        try:
-            from app.live.vps_sync import get_vps_sync
+    # Background: refresh finished TWAP history from VPS every minute (never live window).
+    async def _vps_sync_loop() -> None:
+        from app.live.vps_sync import PERIODIC_SYNC_S, get_vps_sync
 
-            sync = get_vps_sync()
-            if not sync.enabled:
-                logger.info(
-                    "VPS sync disabled (set VPS_SYNC_URL); local live dir=%s",
-                    settings.fetch_live_data_dir,
-                )
-                return
-            result = await sync.sync_incremental()
-            if result.get("error"):
-                logger.warning(
-                    "VPS sync unavailable at startup: %s (local dir=%s)",
-                    result.get("error"),
-                    settings.fetch_live_data_dir,
-                )
-            else:
-                logger.info(
-                    "VPS fetch_live sync on startup: pulled=%s after_start_ms=%s → %s",
-                    result.get("pulled"),
-                    result.get("after_start_ms"),
-                    settings.fetch_live_data_dir,
-                )
-        except Exception as exc:
-            logger.warning("VPS fetch_live startup sync failed: %s", exc)
+        sync = get_vps_sync()
+        if not sync.enabled:
+            logger.info(
+                "VPS sync disabled (set VPS_SYNC_URL); local live dir=%s",
+                settings.fetch_live_data_dir,
+            )
+            return
+        while True:
+            try:
+                result = await sync.sync_tick()
+                if result.get("error"):
+                    logger.warning(
+                        "VPS sync tick: %s (local dir=%s)",
+                        result.get("error"),
+                        settings.fetch_live_data_dir,
+                    )
+                else:
+                    pulled = int(result.get("pulled") or 0)
+                    repaired = int(result.get("repaired") or 0)
+                    if pulled or repaired:
+                        logger.info(
+                            "VPS history sync: pulled=%s repaired=%s → %s",
+                            pulled,
+                            repaired,
+                            settings.fetch_live_data_dir,
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("VPS sync loop error: %s", exc)
+            try:
+                await asyncio.sleep(PERIODIC_SYNC_S)
+            except asyncio.CancelledError:
+                raise
 
-    sync_task = asyncio.create_task(_startup_sync(), name="vps-startup-sync")
+    sync_task = asyncio.create_task(_vps_sync_loop(), name="vps-periodic-sync")
     yield
     sync_task.cancel()
     try:

@@ -169,7 +169,11 @@ def scrub_leading_outcome_extremes(
 def break_outcome_jumps(
     points: list[dict[str, Any]], *, max_jump: float = 0.45
 ) -> list[dict[str, Any]]:
-    """Break Up/Down continuity across huge one-step jumps (prior-window bleed)."""
+    """
+    Break Up/Down continuity across huge one-step jumps (prior-window bleed).
+    Only the jumped sample is nulled; prev advances so a real move to 99¢/1¢
+    near resolution does not cascade-null the rest of the window.
+    """
     if len(points) < 2:
         return points
     out = [dict(p) for p in points]
@@ -182,17 +186,20 @@ def break_outcome_jumps(
             and u is not None
             and abs(float(u) - float(prev_u)) > max_jump
         ):
+            prev_u = u
             out[i]["up"] = None
             u = None
+        elif u is not None:
+            prev_u = u
         if (
             prev_d is not None
             and d is not None
             and abs(float(d) - float(prev_d)) > max_jump
         ):
+            prev_d = d
             out[i]["down"] = None
             d = None
-        if u is not None:
-            prev_u = u
-        if d is not None:
+        elif d is not None:
             prev_d = d
     return out
+

@@ -7,6 +7,8 @@ export type MarketSummary = {
   end_time: number
   rows: number
   winner: number | null
+  /** From meta.json for TWAP/live; true when market resolved/closed. */
+  closed?: boolean | null
   btc_open_price: number | null
   has_features: boolean
   has_training: boolean
@@ -42,15 +44,19 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => json<{ ok: boolean }>('/api/health'),
   strategies: () => json<{ name: string; description: string; params: Record<string, unknown> }[]>('/api/strategies'),
-  marketDates: (split: string) =>
-    json<{ split: string; count: number; dates: string[]; min: string | null; max: string | null }>(
-      `/api/markets/dates?split=${split}`,
-    ),
-  markets: (split: string, opts?: { limit?: number; date?: string }) => {
+  markets: (split: string, opts?: { limit?: number; date?: string; rebuild_index?: boolean }) => {
     const q = new URLSearchParams({ split })
     if (opts?.limit != null) q.set('limit', String(opts.limit))
     if (opts?.date) q.set('date', opts.date)
+    if (opts?.rebuild_index) q.set('rebuild_index', 'true')
     return json<{ split: string; count: number; markets: MarketSummary[]; date?: string }>(`/api/markets?${q}`)
+  },
+  marketDates: (split: string, opts?: { rebuild_index?: boolean }) => {
+    const q = new URLSearchParams({ split })
+    if (opts?.rebuild_index) q.set('rebuild_index', 'true')
+    return json<{ split: string; count: number; dates: string[]; min: string | null; max: string | null }>(
+      `/api/markets/dates?${q}`,
+    )
   },
   marketAt: (split: string, opts: { date?: string; time?: string; t?: number }) => {
     const q = new URLSearchParams({ split })
@@ -78,7 +84,7 @@ export const api = {
     json<{ ok: boolean }>('/api/paper/order', { method: 'POST', body: JSON.stringify(body) }),
   paperStatus: (sessionId: string) => json<Record<string, unknown>>(`/api/paper/${sessionId}`),
   liveState: () => json<LiveTick>('/api/live/state'),
-  liveSeries: (marketId?: string | null, lookbackMs = 180_000) => {
+  liveSeries: (marketId?: string | null, lookbackMs = 300_000) => {
     const q = new URLSearchParams()
     if (marketId) q.set('market_id', marketId)
     q.set('lookback_ms', String(lookbackMs))

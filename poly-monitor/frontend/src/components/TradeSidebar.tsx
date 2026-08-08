@@ -27,7 +27,7 @@ type Props = {
   holdersReloading?: boolean
   /** History stopped: show settled outcome instead of trade card */
   showOutcome?: boolean
-  outcome?: 'Up' | 'Down' | null
+  outcome?: 'Up' | 'Down' | 'not_closed' | null
   outcomeSubtitle?: string
 }
 

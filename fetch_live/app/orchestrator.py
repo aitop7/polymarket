@@ -213,14 +213,26 @@ class Orchestrator:
         if not store.in_window(ts):
             return
 
+        # Drop stale RTDS quotes (feed can stall and otherwise freeze the chart).
+        stale_ms = 15_000
         cl = self.twap.latest_chainlink()
         tw = self.twap.latest_twap()
-        if cl is not None or tw is not None:
+        cl_px = (
+            float(cl[0])
+            if cl is not None and ts - int(cl[1]) <= stale_ms
+            else None
+        )
+        tw_px = (
+            float(tw[0])
+            if tw is not None and ts - int(tw[1]) <= stale_ms
+            else None
+        )
+        if cl_px is not None or tw_px is not None:
             store.append_chainlink_price(
                 {
                     "timestamp": ts,
-                    "Chainlink_BTC": float(cl[0]) if cl is not None else None,
-                    "twap": float(tw[0]) if tw is not None else None,
+                    "Chainlink_BTC": cl_px,
+                    "twap": tw_px,
                 }
             )
 

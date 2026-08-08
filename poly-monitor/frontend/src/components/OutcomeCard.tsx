@@ -1,14 +1,20 @@
 type Props = {
-  outcome: 'Up' | 'Down' | null
+  /** Up/Down from meta.winner; not_closed when meta.closed is false / unresolved */
+  outcome: 'Up' | 'Down' | 'not_closed' | null
   subtitle: string
 }
 
 export default function OutcomeCard({ outcome, subtitle }: Props) {
   const resolved = outcome === 'Up' || outcome === 'Down'
   const up = outcome === 'Up'
+  const notClosed = outcome === 'not_closed' || outcome == null
 
   return (
-    <div className={`outcome-card ${resolved ? (up ? 'up' : 'down') : 'pending'}`}>
+    <div
+      className={`outcome-card ${resolved ? (up ? 'up' : 'down') : 'pending'}${
+        notClosed ? ' not-closed' : ''
+      }`}
+    >
       <div className="outcome-card-icon" aria-hidden>
         {resolved ? (
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none">
@@ -34,7 +40,7 @@ export default function OutcomeCard({ outcome, subtitle }: Props) {
         )}
       </div>
       <div className="outcome-card-title">
-        {resolved ? `Outcome: ${outcome}` : 'Outcome: Pending'}
+        {resolved ? `Outcome: ${outcome}` : 'Not closed'}
       </div>
       <div className="outcome-card-sub">{subtitle}</div>
     </div>
