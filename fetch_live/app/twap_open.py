@@ -189,8 +189,32 @@ class TwapOpenResolver:
             await ws.send(json.dumps(sub))
             logger.info("RTDS subscribed Chainlink + 30s TWAP (btc/usd)")
             ping_at = time.monotonic()
+            session_start = time.monotonic()
+            # If quotes stop updating, drop the socket so _run() reconnects.
+            stale_limit_s = 45.0
             while self._running:
-                timeout = max(0.1, 5.0 - (time.monotonic() - ping_at))
+                now_mono = time.monotonic()
+                # Grace period for first quotes after subscribe.
+                if now_mono - session_start >= stale_limit_s:
+                    now_ms = int(time.time() * 1000)
+                    tw_age = (
+                        (now_ms - int(self._twap_ts)) / 1000.0
+                        if self._twap_ts is not None
+                        else stale_limit_s + 1
+                    )
+                    cl_age = (
+                        (now_ms - int(self._chainlink_ts)) / 1000.0
+                        if self._chainlink_ts is not None
+                        else stale_limit_s + 1
+                    )
+                    if tw_age > stale_limit_s and cl_age > stale_limit_s:
+                        logger.warning(
+                            "RTDS quotes stale (twap_age={:.0f}s chainlink_age={:.0f}s) — reconnecting",
+                            tw_age,
+                            cl_age,
+                        )
+                        break
+                timeout = max(0.1, 5.0 - (now_mono - ping_at))
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
                 except asyncio.TimeoutError:
