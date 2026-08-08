@@ -59,7 +59,7 @@ export default function BtcPricePanel({
             {delta != null && (
               <span className={`btc-delta ${above ? 'up' : 'down'}`}>
                 {above ? '▲' : '▼'} $
-                {formatUsd(Math.abs(delta), Math.abs(delta) < 1 ? 1 : 0)}
+                {formatUsd(Math.abs(delta), Math.abs(delta) >= 1 ? 0 : 2)}
               </span>
             )}
           </div>

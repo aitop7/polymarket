@@ -31,7 +31,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 Or use `poly-monitor/run-api.bat`.
 
-Terminal 2 — UI:
+Terminal 2 — UI (dev):
 
 ```bash
 cd poly-monitor/frontend
@@ -39,6 +39,18 @@ npm run dev
 ```
 
 Open http://localhost:5173
+
+### Built UI
+
+```bash
+cd poly-monitor/frontend
+npm run build
+```
+
+Then either:
+
+- Open **http://127.0.0.1:8000** (API serves `frontend/dist`), or
+- `npm run preview` → http://localhost:4173 (proxies `/api` to the backend)
 
 ## Strategies
 

@@ -16,7 +16,10 @@ class Settings(BaseSettings):
     fetch_real_root: Path = _REPO_ROOT / "fetch_real"
     host: str = "127.0.0.1"
     port: int = 8000
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    cors_origins: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:4173,http://127.0.0.1:4173"
+    )
     default_cash: float = 1000.0
 
     @property

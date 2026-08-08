@@ -153,15 +153,31 @@ export function wsUrl(path: string): string {
   return u.toString()
 }
 
-export function formatUsd(n: number | null | undefined, digits = 2): string {
-  if (n == null || Number.isNaN(n)) return '—'
-  return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })
+function isWholeAfterDigits(n: number, digits: number): boolean {
+  const factor = 10 ** digits
+  const rounded = Math.round(Math.abs(n) * factor) / factor
+  return Math.abs(rounded - Math.round(rounded)) < 1e-12
 }
 
-/** Format probability/price as cents with 2 fractional digits (e.g. 51.48¢). */
+/** Drop trailing zeros / decimal when the fractional part is zero (e.g. 12.00 → 12). */
+function formatFixedTrim(n: number, digits: number): string {
+  if (isWholeAfterDigits(n, digits)) return String(Math.round(n))
+  return n.toFixed(digits)
+}
+
+export function formatUsd(n: number | null | undefined, digits = 2): string {
+  if (n == null || Number.isNaN(n)) return '—'
+  const minFrac = isWholeAfterDigits(n, digits) ? 0 : digits
+  return n.toLocaleString(undefined, {
+    minimumFractionDigits: minFrac,
+    maximumFractionDigits: digits,
+  })
+}
+
+/** Format probability/price as cents with up to 2 fractional digits (e.g. 51.48¢, 51¢). */
 export function formatCents(p: number | null | undefined): string {
   if (p == null || Number.isNaN(p)) return '—¢'
-  return `${(p * 100).toFixed(2)}¢`
+  return `${formatFixedTrim(p * 100, 2)}¢`
 }
 
 /** Format probability/price as whole cents (e.g. 51¢). */
@@ -172,16 +188,13 @@ export function formatCentsInt(p: number | null | undefined): string {
 
 /**
  * Trade / order-book display: whole cents mid-range, one decimal at the extremes
- * (≤1¢ or ≥90¢) where Polymarket uses finer ticks. Exact 1¢ / 99¢ stay integers.
+ * (≤1¢ or ≥90¢) where Polymarket uses finer ticks. Whole values stay integers (no .0).
  */
 export function formatCentsTrade(p: number | null | undefined): string {
   if (p == null || Number.isNaN(p)) return '—¢'
   const c = p * 100
   if (c <= 1 || c >= 90) {
-    if (Math.abs(c - 1) < 1e-9 || Math.abs(c - 99) < 1e-9) {
-      return `${Math.round(c)}¢`
-    }
-    return `${c.toFixed(1)}¢`
+    return `${formatFixedTrim(c, 1)}¢`
   }
   return `${Math.round(c)}¢`
 }
@@ -189,10 +202,7 @@ export function formatCentsTrade(p: number | null | undefined): string {
 function formatCentsBound(cents: number): string {
   const c = Math.max(0, Math.min(100, cents))
   if (c <= 1 || c >= 90) {
-    if (Math.abs(c - 1) < 1e-9 || Math.abs(c - 99) < 1e-9) {
-      return String(Math.round(c))
-    }
-    return c.toFixed(1)
+    return formatFixedTrim(c, 1)
   }
   return String(Math.round(c))
 }
