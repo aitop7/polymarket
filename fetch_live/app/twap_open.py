@@ -65,8 +65,9 @@ class TwapOpenResolver:
         for ts, px in self._twap_hist:
             if ts < lo or ts > hi:
                 continue
+            delta = abs(ts - end)
             after = 0 if ts <= end else 1
-            key = (after, abs(ts - end))
+            key = (delta, after)
             if best_key is None or key < best_key:
                 best_key = key
                 best = (float(px), int(ts))
@@ -217,11 +218,12 @@ class TwapOpenResolver:
         if symbol and symbol not in {"btc/usd", "btcusdt"}:
             return
         value = payload.get("value")
-        if value is None and payload.get("full_accuracy_value") is not None:
+        raw_full = payload.get("full_accuracy_value")
+        if raw_full is not None:
             try:
-                value = float(payload["full_accuracy_value"]) / 1e18
+                value = float(raw_full) / 1e18
             except (TypeError, ValueError):
-                value = None
+                pass
         try:
             price = float(value) if value is not None else None
         except (TypeError, ValueError):

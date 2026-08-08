@@ -78,8 +78,15 @@ export const api = {
     const qs = q.toString()
     return json<LiveSeriesResponse>(`/api/live/series${qs ? `?${qs}` : ''}`)
   },
-  liveHolders: (limit = 20) =>
-    json<LiveHoldersResponse>(`/api/live/holders?limit=${Math.max(1, Math.min(20, limit))}`),
+  liveHolders: (limit = 20) => {
+    const q = new URLSearchParams({
+      limit: String(Math.max(1, Math.min(20, limit))),
+      _ts: String(Date.now()),
+    })
+    return json<LiveHoldersResponse>(`/api/live/holders?${q}`, {
+      cache: 'no-store',
+    })
+  },
 }
 
 export type LiveSeriesPoint = {
@@ -161,6 +168,38 @@ export function formatCents(p: number | null | undefined): string {
 export function formatCentsInt(p: number | null | undefined): string {
   if (p == null || Number.isNaN(p)) return '—¢'
   return `${Math.round(p * 100)}¢`
+}
+
+/**
+ * Trade / order-book display: whole cents mid-range, one decimal at the extremes
+ * (≤1¢ or ≥90¢) where Polymarket uses finer ticks. Exact 1¢ / 99¢ stay integers.
+ */
+export function formatCentsTrade(p: number | null | undefined): string {
+  if (p == null || Number.isNaN(p)) return '—¢'
+  const c = p * 100
+  if (c <= 1 || c >= 90) {
+    if (Math.abs(c - 1) < 1e-9 || Math.abs(c - 99) < 1e-9) {
+      return `${Math.round(c)}¢`
+    }
+    return `${c.toFixed(1)}¢`
+  }
+  return `${Math.round(c)}¢`
+}
+
+function formatCentsBound(cents: number): string {
+  const c = Math.max(0, Math.min(100, cents))
+  if (c <= 1 || c >= 90) {
+    if (Math.abs(c - 1) < 1e-9 || Math.abs(c - 99) < 1e-9) {
+      return String(Math.round(c))
+    }
+    return c.toFixed(1)
+  }
+  return String(Math.round(c))
+}
+
+/** Same adaptive rule as formatCentsTrade, without the ¢ suffix (for ranges). */
+export function formatCentsTradeNumber(p: number): string {
+  return formatCentsBound(p * 100)
 }
 
 export function formatPct(p: number | null | undefined): string {

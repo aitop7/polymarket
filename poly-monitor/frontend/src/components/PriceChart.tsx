@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
   Area,
   CartesianGrid,
@@ -412,78 +412,6 @@ export default function PriceChart({
     onSeriesVisibleChange(next)
   }
 
-  const zoomAt = (clientX: number, clientY: number, deltaY: number) => {
-    const el = wrapRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const plotRight = rect.right - CHART_MARGIN.right - Y_AXIS_WIDTH
-    const plotTop = rect.top + CHART_MARGIN.top
-    const plotBottom = rect.bottom - CHART_MARGIN.bottom
-    const plotH = Math.max(1, plotBottom - plotTop)
-
-    // Bottom strip = time zoom; right strip = price zoom; corner = reset (no zoom).
-    const onPriceScale = clientX >= plotRight && clientY < plotBottom
-    const onTimeScale = clientY >= plotBottom && clientX < plotRight
-    const zoomX = onTimeScale
-    const zoomY = onPriceScale
-    // Main plot: wheel pans time only.
-    const panX = clientX < plotRight && clientY < plotBottom
-
-    const py = Math.min(1, Math.max(0, (clientY - plotTop) / plotH))
-    const zoomIn = deltaY < 0
-    const factor = zoomIn ? 0.85 : 1.18
-
-    if (zoomX) {
-      const [x0, x1] = xDomain
-      const xSpan = Math.max(1, x1 - x0)
-      const nextSpan = Math.min(
-        xFullDomain[1] - xFullDomain[0],
-        Math.max((xFullDomain[1] - xFullDomain[0]) * 0.02, xSpan * factor),
-      )
-      const anchorPx = 0.5
-      const anchor = x0 + xSpan * anchorPx
-      const next: TimeDomain = [
-        anchor - nextSpan * anchorPx,
-        anchor + nextSpan * (1 - anchorPx),
-      ]
-      onXDomainChange(clampDomain(next, xFullDomain))
-    }
-
-    if (panX) {
-      const [x0, x1] = xDomain
-      const xSpan = x1 - x0
-      const shift = (deltaY > 0 ? 1 : -1) * xSpan * 0.08
-      onXDomainChange(clampDomain([x0 + shift, x1 + shift], xFullDomain))
-    }
-
-    if (zoomY) {
-      const [y0, y1] = yDomain
-      const ySpan = Math.max(showBtc ? 1 : 0.5, y1 - y0)
-      const nextSpan = Math.max(showBtc ? 1 : 0.5, ySpan * factor)
-      const anchor = y0 + ySpan * (1 - py)
-      const next0 = anchor - nextSpan * (1 - py)
-      const next1 = anchor + nextSpan * py
-      if (showBtc) {
-        setYZoom([next0, next1])
-      } else {
-        setYZoom([Math.max(0, next0), Math.min(100, next1)])
-      }
-    }
-  }
-
-  // Native non-passive wheel so page scroll doesn't fight chart zoom.
-  useEffect(() => {
-    const el = wrapRef.current
-    if (!el) return
-    const handler = (ev: WheelEvent) => {
-      ev.preventDefault()
-      zoomAt(ev.clientX, ev.clientY, ev.deltaY)
-    }
-    el.addEventListener('wheel', handler, { passive: false })
-    return () => el.removeEventListener('wheel', handler)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [xDomain, yDomain, xFullDomain, showBtc])
-
   const hitZone = (clientX: number, clientY: number): 'price' | 'time' | 'plot' => {
     const el = wrapRef.current
     if (!el) return 'plot'
@@ -525,15 +453,47 @@ export default function PriceChart({
     const dx = ev.clientX - drag.x
     const dy = ev.clientY - drag.y
     const dragZone = drag.zone
+    const fullXSpan = Math.max(1, xFullDomain[1] - xFullDomain[0])
+    const minXSpan = fullXSpan * 0.02
+    const minYSpan = showBtc ? 1 : 0.5
 
-    if (dragZone === 'time' || dragZone === 'plot') {
+    // X-axis strip: drag left/right to scale time (right = zoom in, left = zoom out).
+    if (dragZone === 'time') {
+      const [x0, x1] = drag.xDomain
+      const xSpan = Math.max(1, x1 - x0)
+      const factor = Math.exp((-dx / plotW) * 2.2)
+      const nextSpan = Math.min(fullXSpan, Math.max(minXSpan, xSpan * factor))
+      const mid = (x0 + x1) / 2
+      onXDomainChange(
+        clampDomain([mid - nextSpan / 2, mid + nextSpan / 2], xFullDomain),
+      )
+      return
+    }
+
+    // Y-axis strip: drag up/down to scale price (up = zoom in, down = zoom out).
+    if (dragZone === 'price') {
+      const [y0, y1] = drag.yDomain
+      const ySpan = Math.max(minYSpan, y1 - y0)
+      const factor = Math.exp((dy / plotH) * 2.2)
+      const nextSpan = Math.max(minYSpan, ySpan * factor)
+      const mid = (y0 + y1) / 2
+      const next0 = mid - nextSpan / 2
+      const next1 = mid + nextSpan / 2
+      if (showBtc) {
+        setYZoom([next0, next1])
+      } else {
+        setYZoom([Math.max(0, next0), Math.min(100, next1)])
+      }
+      return
+    }
+
+    // Plot: drag to pan.
+    if (dragZone === 'plot') {
       const [x0, x1] = drag.xDomain
       const xSpan = x1 - x0
       const xShift = (-dx / plotW) * xSpan
       onXDomainChange(clampDomain([x0 + xShift, x1 + xShift], xFullDomain))
-    }
 
-    if (dragZone === 'price' || dragZone === 'plot') {
       const [y0, y1] = drag.yDomain
       const ySpan = y1 - y0
       const yShift = (dy / plotH) * ySpan
@@ -595,7 +555,7 @@ export default function PriceChart({
           clearHover()
         }}
         onDoubleClick={resetZoom}
-        title="Scroll bottom time axis to zoom time · scroll right price axis to zoom price · scroll plot to pan time · drag to pan · double-click / Reset to restore"
+        title="Drag left/right on time axis to zoom time · drag up/down on price axis to zoom price · drag plot to pan · double-click / Reset to restore"
       >
         <div className="chart-zoom-zone chart-zoom-zone-time" aria-hidden />
         <div className="chart-zoom-zone chart-zoom-zone-price" aria-hidden />

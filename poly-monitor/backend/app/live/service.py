@@ -128,6 +128,7 @@ class LiveMarketService:
         self._price_to_beat_source: str | None = None
         self._fetch_live_open_px: float | None = None
         self._fetch_live_open_for: int | None = None
+        self._fetch_live_open_obs: int | None = None
         self._last_discover_s = 0.0
         self._series: deque[dict[str, Any]] = deque(maxlen=_SERIES_MAX)
         self._series_market_id: str | None = None
@@ -147,48 +148,111 @@ class LiveMarketService:
 
     def _lookup_fetch_live_open(
         self, *, market_id: str | None, window_start_ms: int
-    ) -> float | None:
-        """Prefer fetch_live meta.json btc_open_price when that recorder has it."""
+    ) -> tuple[float, int | None] | None:
+        """Nearest RTDS TWAP from fetch_live parquet; else meta.json open."""
         start = int(window_start_ms)
         if self._fetch_live_open_for == start and self._fetch_live_open_px is not None:
-            return self._fetch_live_open_px
+            return self._fetch_live_open_px, self._fetch_live_open_obs
 
         root = _FETCH_LIVE_DATA
         if not root.is_dir():
             return None
 
-        metas: list[Path] = []
+        market_dirs: list[Path] = []
         if market_id:
             for day in sorted(root.iterdir(), reverse=True)[:4]:
                 if day.is_dir():
-                    meta = day / str(market_id) / "meta.json"
-                    if meta.is_file():
-                        metas.append(meta)
+                    d = day / str(market_id)
+                    if d.is_dir():
+                        market_dirs.append(d)
                         break
-        if not metas:
-            # Fallback: find meta by start_time in recent days (cheap: only meta.json).
+        if not market_dirs:
             for day in sorted(root.iterdir(), reverse=True)[:2]:
                 if not day.is_dir():
                     continue
                 for market_dir in day.iterdir():
-                    meta = market_dir / "meta.json"
-                    if meta.is_file():
-                        metas.append(meta)
+                    if market_dir.is_dir():
+                        market_dirs.append(market_dir)
 
-        for meta in metas:
+        for market_dir in market_dirs:
+            meta_path = market_dir / "meta.json"
+            if not meta_path.is_file():
+                continue
             try:
-                row = json.loads(meta.read_text(encoding="utf-8"))
+                row = json.loads(meta_path.read_text(encoding="utf-8"))
                 if int(row.get("start_time") or 0) != start:
                     continue
-                open_px = row.get("btc_open_price")
-                if open_px is None:
-                    continue
-                px = float(open_px)
-                self._fetch_live_open_for = start
-                self._fetch_live_open_px = px
-                return px
             except Exception:
                 continue
+
+            candidates = [market_dir / "chainlink_price.parquet"]
+            try:
+                for day in sorted(root.iterdir(), reverse=True)[:2]:
+                    if not day.is_dir():
+                        continue
+                    for other in day.iterdir():
+                        if not other.is_dir() or other == market_dir:
+                            continue
+                        om = other / "meta.json"
+                        if not om.is_file():
+                            continue
+                        try:
+                            ometa = json.loads(om.read_text(encoding="utf-8"))
+                        except Exception:
+                            continue
+                        if int(ometa.get("end_time") or 0) == start:
+                            candidates.append(other / "chainlink_price.parquet")
+                            break
+            except Exception:
+                pass
+
+            best_px: float | None = None
+            best_obs: int | None = None
+            best_key: tuple[int, int] | None = None
+            for path in candidates:
+                if not path.is_file():
+                    continue
+                try:
+                    import pandas as pd
+
+                    df = pd.read_parquet(path, columns=["timestamp", "twap"])
+                except Exception:
+                    continue
+                if df is None or df.empty:
+                    continue
+                for ts, tw in zip(df["timestamp"].tolist(), df["twap"].tolist()):
+                    try:
+                        tsi = int(ts)
+                        px = float(tw)
+                    except (TypeError, ValueError):
+                        continue
+                    if abs(tsi - start) > 5_000:
+                        continue
+                    delta = abs(tsi - start)
+                    after = 0 if tsi <= start else 1
+                    key = (delta, after)
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best_px = px
+                        best_obs = tsi
+
+            if best_px is not None:
+                self._fetch_live_open_for = start
+                self._fetch_live_open_px = best_px
+                self._fetch_live_open_obs = best_obs
+                return best_px, best_obs
+
+            open_px = row.get("btc_open_price")
+            if open_px is None:
+                continue
+            try:
+                px = float(open_px)
+            except (TypeError, ValueError):
+                continue
+            self._fetch_live_open_for = start
+            self._fetch_live_open_px = px
+            self._fetch_live_open_obs = start
+            return px, start
         return None
 
     def _apply_ptb(self, price: float, source: str, observed_ts: int | None) -> None:
@@ -265,72 +329,81 @@ class LiveMarketService:
 
     async def _resolve_price_to_beat(self, window_start_ms: int) -> None:
         """
-        Price To Beat = Chainlink 30s TWAP at window start (same as Polymarket).
+        Price To Beat = Chainlink 30s TWAP nearest window start (same as Polymarket).
 
-        Prefer fetch_live meta when present. Otherwise RTDS sample nearest T0;
-        refine for a short window after open so early samples do not stick.
+        Prefer live RTDS samples. fetch_live meta is a fallback only — never blocks
+        a closer RTDS lock (meta often uses a provisional/Binance value).
         """
         start_ms = int(window_start_ms)
         now_ms = int(time.time() * 1000)
-
-        # Authoritative: fetch_live recorder (matches Polymarket when captured live).
-        meta_open = self._lookup_fetch_live_open(
-            market_id=self._market_id, window_start_ms=start_ms
-        )
-        if meta_open is not None:
-            self._apply_ptb(meta_open, "fetch_live_meta", start_ms)
-            return
 
         stored = ptb_store.get_price_to_beat(start_ms)
         good = (
             stored is not None
             and ptb_store.is_good_sample(start_ms, stored.get("observed_ts"))
+            and str(stored.get("source") or "") != "fetch_live_meta"
         )
         refining = 0 <= (now_ms - start_ms) <= _PTB_REFINE_MS
-
-        if stored is not None and good and not refining:
-            self._price_to_beat = float(stored["price"])
-            self._price_to_beat_source = str(
-                stored.get("source") or "open_twap_30s"
-            )
-            return
-
-        if stored is not None and not refining and not good:
-            # Too late to refine an early lock; still surface it.
-            self._price_to_beat = float(stored["price"])
-            self._price_to_beat_source = str(
-                stored.get("source") or "open_twap_30s"
-            )
-            return
-
-        # Near open (or no lock yet): wait for the sample closest to start_time.
-        if now_ms < start_ms:
-            # Not open yet — keep any provisional value but do not hard-lock early.
-            if stored is not None:
-                self._price_to_beat = float(stored["price"])
-                self._price_to_beat_source = str(
-                    stored.get("source") or "open_twap_30s"
-                )
-            return
-
-        wait_s = 4.0 if now_ms - start_ms < 8_000 else (1.0 if refining else 0.0)
-        fetched = await self._fetch_open_price(start_ms, wait_s=wait_s)
-        if fetched is None:
-            if stored is not None:
-                self._price_to_beat = float(stored["price"])
-                self._price_to_beat_source = str(
-                    stored.get("source") or "open_twap_30s"
-                )
-            return
-        price, source, obs_ts = fetched
-        wrote = ptb_store.set_price_to_beat(
-            start_ms, price, source=source, observed_ts=obs_ts
+        meta_only = (
+            stored is not None and str(stored.get("source") or "") == "fetch_live_meta"
         )
-        if wrote or self._price_to_beat is None:
-            self._price_to_beat = price
-            self._price_to_beat_source = source
-        elif stored is not None:
-            # Kept closer existing sample.
+
+        if stored is not None and good and not refining and not meta_only:
+            self._price_to_beat = float(stored["price"])
+            self._price_to_beat_source = str(
+                stored.get("source") or "open_twap_30s"
+            )
+            return
+
+        if now_ms < start_ms:
+            # Not open yet — surface provisional values but do not hard-lock early.
+            meta_hit = self._lookup_fetch_live_open(
+                market_id=self._market_id, window_start_ms=start_ms
+            )
+            if meta_hit is not None:
+                px, obs = meta_hit
+                self._price_to_beat = float(px)
+                self._price_to_beat_source = (
+                    "open_twap_30s" if obs is not None and obs != start_ms else "fetch_live_meta"
+                )
+            elif stored is not None:
+                self._price_to_beat = float(stored["price"])
+                self._price_to_beat_source = str(
+                    stored.get("source") or "open_twap_30s"
+                )
+            return
+
+        wait_s = 4.0 if now_ms - start_ms < 8_000 else (1.0 if refining or meta_only else 0.0)
+        fetched = await self._fetch_open_price(start_ms, wait_s=wait_s)
+        if fetched is not None:
+            price, source, obs_ts = fetched
+            wrote = ptb_store.set_price_to_beat(
+                start_ms, price, source=source, observed_ts=obs_ts
+            )
+            if wrote or self._price_to_beat is None or meta_only:
+                self._price_to_beat = price
+                self._price_to_beat_source = source
+                return
+
+        # Fallbacks when RTDS missed the open boundary.
+        meta_hit = self._lookup_fetch_live_open(
+            market_id=self._market_id, window_start_ms=start_ms
+        )
+        if meta_hit is not None and (
+            self._price_to_beat is None
+            or meta_only
+            or not good
+        ):
+            px, obs = meta_hit
+            source = (
+                "open_twap_30s"
+                if obs is not None and ptb_store.is_good_sample(start_ms, obs)
+                else "fetch_live_meta"
+            )
+            self._apply_ptb(px, source, obs if obs is not None else start_ms)
+            return
+
+        if stored is not None:
             self._price_to_beat = float(stored["price"])
             self._price_to_beat_source = str(
                 stored.get("source") or "open_twap_30s"
@@ -406,23 +479,30 @@ class LiveMarketService:
             self._price_to_beat_source = None
             self._fetch_live_open_px = None
             self._fetch_live_open_for = None
-            # Prefer fetch_live / good persisted open TWAP immediately.
-            meta_open = self._lookup_fetch_live_open(
-                market_id=market_id, window_start_ms=start_ms
-            )
-            if meta_open is not None:
-                self._apply_ptb(meta_open, "fetch_live_meta", start_ms)
+            self._fetch_live_open_obs = None
+            # Prefer a good RTDS lock; fetch_live meta is provisional only.
+            stored = ptb_store.get_price_to_beat(start_ms)
+            if (
+                stored is not None
+                and ptb_store.is_good_sample(start_ms, stored.get("observed_ts"))
+                and str(stored.get("source") or "") != "fetch_live_meta"
+            ):
+                self._price_to_beat = float(stored["price"])
+                self._price_to_beat_source = str(
+                    stored.get("source") or "open_twap_30s"
+                )
             else:
-                stored = ptb_store.get_price_to_beat(start_ms)
-                if stored is not None and ptb_store.is_good_sample(
-                    start_ms, stored.get("observed_ts")
-                ):
-                    self._price_to_beat = float(stored["price"])
-                    self._price_to_beat_source = str(
-                        stored.get("source") or "open_twap_30s"
-                    )
+                meta_hit = self._lookup_fetch_live_open(
+                    market_id=market_id, window_start_ms=start_ms
+                )
+                if meta_hit is not None:
+                    px, obs = meta_hit
+                    if obs is not None and ptb_store.is_good_sample(start_ms, obs):
+                        self._apply_ptb(px, "open_twap_30s", obs)
+                    else:
+                        self._price_to_beat = float(px)
+                        self._price_to_beat_source = "fetch_live_meta"
                 elif stored is not None:
-                    # Provisional early lock — show it but keep refining.
                     self._price_to_beat = float(stored["price"])
                     self._price_to_beat_source = str(
                         stored.get("source") or "open_twap_30s"
@@ -639,13 +719,13 @@ class LiveMarketService:
         return snap
 
     async def holders(self, *, limit: int = 20) -> dict[str, Any]:
-        """Top Up/Down holders for the active market (cached ~2.5s)."""
+        """Top Up/Down holders for the active market (cached ~0.3s)."""
         await self._ensure_market()
         now = time.time()
         if (
             self._holders_cache is not None
             and self._holders_cache.get("condition_id") == self._condition_id
-            and now - self._holders_cache_at < 2.5
+            and now - self._holders_cache_at < 0.3
         ):
             return self._holders_cache
 

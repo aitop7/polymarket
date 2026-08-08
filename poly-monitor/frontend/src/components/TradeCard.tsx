@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { formatCentsInt, formatUsd } from '../api'
+import { formatCentsTrade, formatUsd } from '../api'
 
 type OrderType = '1-tap' | 'market' | 'limit'
 
@@ -34,7 +34,7 @@ const ORDER_LABELS: Record<OrderType, string> = {
 }
 
 function cents(p: number): string {
-  return formatCentsInt(p)
+  return formatCentsTrade(p)
 }
 
 function winFromUsd(usd: number, price: number): number {

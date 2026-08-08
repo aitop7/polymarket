@@ -84,48 +84,34 @@ class TwapFeed:
     def twap_at_close(
         self, window_end_ms: int, *, grace_ms: int = _BOUNDARY_GRACE_MS
     ) -> tuple[float, int] | None:
-        """
-        30s TWAP nearest to a market close (timestamp ≈ window end).
-
-        Prefer the last sample at/before close in [end-grace, end], else the
-        closest sample in [end-grace, end+grace].
-        """
-        end = int(window_end_ms)
-        lo = end - grace_ms
-        hi = end + grace_ms
-        best: tuple[float, int] | None = None
-        best_key: tuple[int, int] | None = None  # (prefer_after_end, abs_delta)
-        for ts, px in self._twap_hist:
-            if ts < lo or ts > hi:
-                continue
-            after = 0 if ts <= end else 1
-            delta = abs(ts - end)
-            key = (after, delta)
-            if best_key is None or key < best_key:
-                best_key = key
-                best = (float(px), int(ts))
-        return best
+        """30s TWAP nearest to a boundary timestamp (open or close)."""
+        return self.twap_nearest(window_end_ms, grace_ms=grace_ms)
 
     def twap_at_open(
         self, window_start_ms: int, *, grace_ms: int = _BOUNDARY_GRACE_MS
     ) -> tuple[float, int] | None:
-        """
-        First / nearest 30s TWAP at current market open (timestamp ≈ window start).
+        """30s TWAP nearest to market open (same nearest-boundary rule as close)."""
+        return self.twap_nearest(window_start_ms, grace_ms=grace_ms)
 
-        Prefer the first sample at/after open in [start, start+grace], else the
-        closest sample in [start-grace, start+grace].
+    def twap_nearest(
+        self, at_ms: int, *, grace_ms: int = _BOUNDARY_GRACE_MS
+    ) -> tuple[float, int] | None:
         """
-        start = int(window_start_ms)
-        lo = start - grace_ms
-        hi = start + grace_ms
+        Sample closest to at_ms within grace.
+
+        Tie-break: prefer at/before the boundary (matches prior-window close continuity).
+        """
+        target = int(at_ms)
+        lo = target - grace_ms
+        hi = target + grace_ms
         best: tuple[float, int] | None = None
-        best_key: tuple[int, int] | None = None  # (prefer_before_start, abs_delta)
+        best_key: tuple[int, int] | None = None  # (abs_delta, prefer_after)
         for ts, px in self._twap_hist:
             if ts < lo or ts > hi:
                 continue
-            before = 0 if ts >= start else 1
-            delta = abs(ts - start)
-            key = (before, delta)
+            delta = abs(int(ts) - target)
+            after = 0 if int(ts) <= target else 1
+            key = (delta, after)
             if best_key is None or key < best_key:
                 best_key = key
                 best = (float(px), int(ts))
@@ -279,11 +265,13 @@ class TwapFeed:
             return
 
         value = payload.get("value")
-        if value is None and payload.get("full_accuracy_value") is not None:
+        # Prefer Chainlink full-accuracy E18 when present (docs: `value` is display-only).
+        raw_full = payload.get("full_accuracy_value")
+        if raw_full is not None:
             try:
-                value = float(payload["full_accuracy_value"]) / 1e18
+                value = float(raw_full) / 1e18
             except (TypeError, ValueError):
-                value = None
+                pass
         try:
             price = float(value) if value is not None else None
         except (TypeError, ValueError):

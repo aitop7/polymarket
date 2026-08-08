@@ -3,6 +3,8 @@ import {
   api,
   formatUsd,
   formatWindowEt,
+  type HolderRow,
+  type LiveHoldersResponse,
   type LiveSeriesPoint,
   type MarketDetail,
   type MarketSummary,
@@ -32,6 +34,7 @@ type Tick = {
   fills?: { side: string; action: string; price: number; shares: number; reason: string; source: string }[]
   settlement?: { winner: number; ending_cash: number }
   market_id?: string | null
+  condition_id?: string | null
   start_time?: number | null
   end_time?: number | null
   price_to_beat?: number | null
@@ -44,6 +47,9 @@ type Tick = {
   live?: boolean
   error?: string
   message?: string
+  updated_at?: number
+  up?: HolderRow[]
+  down?: HolderRow[]
 }
 
 type FillRow = {
@@ -54,6 +60,14 @@ type FillRow = {
   reason?: string
   source?: string
   timestamp?: number
+}
+
+function sortHolders(rows: HolderRow[] | undefined): HolderRow[] {
+  return [...(rows ?? [])].sort((a, b) => {
+    const da = Number(b.amount) - Number(a.amount)
+    if (da !== 0) return da
+    return String(a.proxy_wallet).localeCompare(String(b.proxy_wallet))
+  })
 }
 
 type Props = {
@@ -117,8 +131,34 @@ export default function MarketPage({ mode }: Props) {
   const [followLiveX, setFollowLiveX] = useState(true)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [liveInterval, setLiveInterval] = useState(0.5)
+  const [holders, setHolders] = useState<LiveHoldersResponse | null>(null)
+  const [holdersRevision, setHoldersRevision] = useState(0)
+  const [holdersReloading, setHoldersReloading] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const liveWsRef = useRef<WebSocket | null>(null)
+  const liveActiveRef = useRef(liveActive)
+  const liveReconnectTimer = useRef<number | null>(null)
+  const liveReconnectAttempt = useRef(0)
+  liveActiveRef.current = liveActive
+
+  const clearLiveReconnectTimer = () => {
+    if (liveReconnectTimer.current != null) {
+      window.clearTimeout(liveReconnectTimer.current)
+      liveReconnectTimer.current = null
+    }
+  }
+
+  const scheduleLiveReconnect = (_reason: string) => {
+    if (!liveActiveRef.current) return
+    if (liveReconnectTimer.current != null) return
+    liveReconnectAttempt.current += 1
+    const attempt = liveReconnectAttempt.current
+    const delay = Math.min(10_000, Math.round(500 * 1.6 ** Math.min(attempt - 1, 8)))
+    liveReconnectTimer.current = window.setTimeout(() => {
+      liveReconnectTimer.current = null
+      if (liveActiveRef.current && !liveWsRef.current) startLive({ soft: true })
+    }, delay)
+  }
 
   useEffect(() => {
     if (liveActive) return
@@ -372,7 +412,9 @@ export default function MarketPage({ mode }: Props) {
     }
   }
 
-  const startLive = () => {
+  const startLive = (opts?: { soft?: boolean }) => {
+    const soft = Boolean(opts?.soft)
+    clearLiveReconnectTimer()
     stopWs()
     const prev = liveWsRef.current
     liveWsRef.current = null
@@ -383,13 +425,19 @@ export default function MarketPage({ mode }: Props) {
       prev.close()
     }
     setLiveActive(true)
-    setSeriesLive([])
-    setTick(null)
-    setActivity([])
-    setBook(null)
+    liveActiveRef.current = true
+    if (!soft) {
+      setSeriesLive([])
+      setTick(null)
+      setActivity([])
+      setBook(null)
+      setHolders(null)
+      setHoldersRevision(0)
+      setLiveMarketId('')
+      setLiveWindow(null)
+      liveReconnectAttempt.current = 0
+    }
     setError(null)
-    setLiveMarketId('')
-    setLiveWindow(null)
 
     const interval = Math.max(0.1, Math.min(2, liveInterval))
     const ws = new WebSocket(wsUrl('/api/ws/live'))
@@ -431,6 +479,7 @@ export default function MarketPage({ mode }: Props) {
 
     ws.onopen = () => {
       if (liveWsRef.current !== ws) return
+      liveReconnectAttempt.current = 0
       setError(null)
       ws.send(JSON.stringify({ interval_s: interval }))
       // Seed immediately (buffer/parquet) before ticks accumulate.
@@ -452,7 +501,22 @@ export default function MarketPage({ mode }: Props) {
         setTick(null)
         setSeriesLive([])
         setBook(null)
+        setHolders(null)
         seedSeries(msg.market_id)
+        return
+      }
+      if (msg.type === 'holders') {
+        const upSorted = sortHolders(msg.up)
+        const downSorted = sortHolders(msg.down)
+        setHolders({
+          market_id: msg.market_id ?? null,
+          condition_id: msg.condition_id ?? null,
+          updated_at: msg.updated_at ?? Date.now(),
+          live: true,
+          up: upSorted,
+          down: downSorted,
+        })
+        setHoldersRevision((n) => n + 1)
         return
       }
       if (msg.type === 'tick') {
@@ -511,8 +575,10 @@ export default function MarketPage({ mode }: Props) {
       liveWsRef.current = null
       // Only surface unexpected drops (not clean client close / StrictMode teardown).
       if (!ev.wasClean && ev.code !== 1000 && ev.code !== 1001) {
-        setError('Live WebSocket disconnected')
+        setError('Live WebSocket disconnected — reconnecting…')
       }
+      // Auto-reconnect while live mode remains on (API reload / proxy blip).
+      scheduleLiveReconnect(`close:${ev.code}`)
     }
   }
 
@@ -520,6 +586,8 @@ export default function MarketPage({ mode }: Props) {
   useEffect(() => {
     startLive()
     return () => {
+      clearLiveReconnectTimer()
+      liveActiveRef.current = false
       const ws = liveWsRef.current
       liveWsRef.current = null
       if (ws) {
@@ -532,6 +600,27 @@ export default function MarketPage({ mode }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const reloadHolders = async () => {
+    if (holdersReloading) return
+    setHoldersReloading(true)
+    try {
+      const res = await api.liveHolders(20)
+      setHolders({
+        market_id: res.market_id ?? null,
+        condition_id: res.condition_id ?? null,
+        updated_at: res.updated_at ?? Date.now(),
+        live: true,
+        up: sortHolders(res.up),
+        down: sortHolders(res.down),
+      })
+      setHoldersRevision((n) => n + 1)
+    } catch {
+      /* keep last good snapshot */
+    } finally {
+      setHoldersReloading(false)
+    }
+  }
+
   const onLiveInterval = (s: number) => {
     const v = Math.max(0.1, Math.min(2, s))
     setLiveInterval(v)
@@ -543,6 +632,8 @@ export default function MarketPage({ mode }: Props) {
 
   const toggleLive = () => {
     if (liveActive) {
+      clearLiveReconnectTimer()
+      liveActiveRef.current = false
       const ws = liveWsRef.current
       liveWsRef.current = null
       if (ws) {
@@ -554,6 +645,7 @@ export default function MarketPage({ mode }: Props) {
       setLiveActive(false)
       setLiveMarketId('')
       setLiveWindow(null)
+      setHolders(null)
       setError(null)
       if (detail) {
         setSeriesLive(
@@ -892,7 +984,10 @@ export default function MarketPage({ mode }: Props) {
         tradeDisabled={liveActive || mode !== 'paper' || (!playing && !sessionId)}
         monitorHint={liveActive || mode === 'monitor'}
         liveHolders={liveActive}
-        liveMarketId={liveMarketId || null}
+        holders={holders}
+        holdersRevision={holdersRevision}
+        onReloadHolders={reloadHolders}
+        holdersReloading={holdersReloading}
       />
     </div>
   )

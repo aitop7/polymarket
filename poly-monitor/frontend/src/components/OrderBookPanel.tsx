@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { formatCents, formatCentsInt, formatUsd } from '../api'
+import { formatCentsTrade, formatCentsTradeNumber, formatUsd } from '../api'
 
 export type BookLevel = {
   range: string
@@ -43,23 +43,20 @@ const COLLAPSED_ROWS = 9
 
 function formatAbsRange(level: BookLevel, ladder: boolean): string {
   if (ladder && level.price != null) {
-    return formatCentsInt(level.price)
+    return formatCentsTrade(level.price)
   }
   if (level.price_lo != null) {
-    const lo = Math.round(Math.max(0, Math.min(100, level.price_lo * 100)))
+    const lo = formatCentsTradeNumber(level.price_lo)
     if (level.price_hi == null) return `${lo}¢+`
-    let hi = Math.round(Math.max(0, Math.min(100, level.price_hi * 100)))
-    let a = lo
-    let b = hi
-    if (a > b) [a, b] = [b, a]
-    if (a === b) return `${a}¢`
-    return ladder ? `${a}¢` : `${a}–${b}¢`
+    const hi = formatCentsTradeNumber(level.price_hi)
+    if (lo === hi) return `${lo}¢`
+    return ladder ? `${lo}¢` : `${lo}–${hi}¢`
   }
   return level.range
 }
 
 function cents(price: number | null | undefined): string {
-  return formatCents(price)
+  return formatCentsTrade(price)
 }
 
 function formatVol(usd: number): string {

@@ -107,14 +107,29 @@ def set_price_to_beat(
     existing = data.get(key) if isinstance(data.get(key), dict) else None
 
     if existing is not None and existing.get("price") is not None and not overwrite:
-        if str(existing.get("source") or "") == "fetch_live_meta":
+        existing_source = str(existing.get("source") or "")
+        # RTDS open_twap may replace a fetch_live / Binance provisional lock when closer.
+        allow_replace_meta = (
+            existing_source == "fetch_live_meta"
+            and source in {"open_twap_30s", "open_twap_30s_computed"}
+            and is_good_sample(start, observed_ts)
+        )
+        if existing_source == "fetch_live_meta" and not allow_replace_meta:
             return False
         old_ts = existing.get("observed_ts")
         old_delta = sample_delta_ms(start, old_ts if old_ts is not None else None)
         new_delta = sample_delta_ms(start, observed_ts)
         # Keep existing if it is at least as close to T0.
-        if old_delta is not None and (new_delta is None or new_delta >= old_delta):
+        if (
+            not allow_replace_meta
+            and old_delta is not None
+            and (new_delta is None or new_delta >= old_delta)
+        ):
             return False
+        if allow_replace_meta and old_delta is not None and new_delta is not None:
+            # Only replace meta when RTDS is strictly closer (or equal + RTDS).
+            if new_delta > old_delta:
+                return False
 
     data[key] = {
         "price": float(price),

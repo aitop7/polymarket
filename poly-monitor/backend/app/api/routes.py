@@ -344,6 +344,25 @@ async def ws_live(websocket: WebSocket) -> None:
                     interval_s = _clamp_interval(msg.get("interval_s"))
 
         reader_task = asyncio.create_task(reader())
+        send_lock = asyncio.Lock()
+
+        async def send_json(payload: dict[str, Any]) -> None:
+            async with send_lock:
+                await websocket.send_json(payload)
+
+        async def holders_sender() -> None:
+            while True:
+                try:
+                    payload = await svc.holders(limit=20)
+                    await send_json({"type": "holders", **payload})
+                except WebSocketDisconnect:
+                    raise
+                except Exception:
+                    # Don't kill the holders loop on a single Data API failure.
+                    pass
+                await asyncio.sleep(0.5)
+
+        holders_task = asyncio.create_task(holders_sender())
         try:
             last_start: int | None = None
             while True:
@@ -355,7 +374,7 @@ async def ws_live(websocket: WebSocket) -> None:
                     start is not None and start != last_start and last_start is not None
                 )
                 if rolled or (last_market_id is None and mid):
-                    await websocket.send_json(
+                    await send_json(
                         {
                             "type": "market",
                             "live": True,
@@ -366,19 +385,33 @@ async def ws_live(websocket: WebSocket) -> None:
                             "price_to_beat": snap.get("price_to_beat"),
                         }
                     )
+                    # Clear client lists immediately on roll; next holders tick refills.
+                    await send_json(
+                        {
+                            "type": "holders",
+                            "live": True,
+                            "market_id": mid,
+                            "condition_id": None,
+                            "updated_at": int(time.time() * 1000),
+                            "up": [],
+                            "down": [],
+                        }
+                    )
                     last_market_id = mid
                     last_start = start if start is not None else last_start
                 snap["interval_s"] = interval_s
-                await websocket.send_json(snap)
+                await send_json(snap)
                 # Target cadence = interval_s (don't add fetch time on top).
                 elapsed = time.perf_counter() - t0
                 await asyncio.sleep(max(0.0, interval_s - elapsed))
         finally:
+            holders_task.cancel()
             reader_task.cancel()
-            try:
-                await reader_task
-            except asyncio.CancelledError:
-                pass
+            for task in (holders_task, reader_task):
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
     except WebSocketDisconnect:
         return
     except Exception as exc:

@@ -58,7 +58,8 @@ export default function BtcPricePanel({
             <span className="btc-stat-label current-label">Chainlink 30s TWAP</span>
             {delta != null && (
               <span className={`btc-delta ${above ? 'up' : 'down'}`}>
-                {above ? '▲' : '▼'} ${formatUsd(Math.abs(delta), 0)}
+                {above ? '▲' : '▼'} $
+                {formatUsd(Math.abs(delta), Math.abs(delta) < 1 ? 1 : 0)}
               </span>
             )}
           </div>

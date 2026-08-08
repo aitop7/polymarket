@@ -1,3 +1,4 @@
+import type { LiveHoldersResponse } from '../api'
 import HoldersPanel from './HoldersPanel'
 import TradeCard from './TradeCard'
 
@@ -19,7 +20,10 @@ type Props = {
   tradeDisabled: boolean
   monitorHint?: boolean
   liveHolders?: boolean
-  liveMarketId?: string | null
+  holders?: LiveHoldersResponse | null
+  holdersRevision?: number
+  onReloadHolders?: () => void | Promise<void>
+  holdersReloading?: boolean
 }
 
 export default function TradeSidebar(props: Props) {
@@ -41,7 +45,10 @@ export default function TradeSidebar(props: Props) {
     tradeDisabled,
     monitorHint,
     liveHolders = false,
-    liveMarketId = null,
+    holders = null,
+    holdersRevision = 0,
+    onReloadHolders,
+    holdersReloading = false,
   } = props
 
   return (
@@ -63,7 +70,13 @@ export default function TradeSidebar(props: Props) {
         onTrade={onTrade}
         tradeDisabled={tradeDisabled}
       />
-      <HoldersPanel enabled={liveHolders} marketId={liveMarketId} />
+      <HoldersPanel
+        enabled={liveHolders}
+        data={holders}
+        revision={holdersRevision}
+        onReload={onReloadHolders}
+        reloading={holdersReloading}
+      />
     </aside>
   )
 }

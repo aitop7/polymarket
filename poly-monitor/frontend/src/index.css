@@ -160,16 +160,58 @@ select {
   box-shadow: 0 1px 2px rgba(15, 17, 23, 0.04);
 }
 
-.holders-live-badge {
+.holders-toolbar {
   position: absolute;
-  top: 0.75rem;
-  right: 0.85rem;
+  top: 0.55rem;
+  right: 0.65rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.holders-live-badge {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   color: #ef4444;
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.holders-reload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #64748b;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.holders-reload-btn:hover:not(:disabled) {
+  background: #fff;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+.holders-reload-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.holders-reload-btn.spinning svg {
+  animation: holders-reload-spin 0.7s linear infinite;
+}
+
+@keyframes holders-reload-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .holders-live-dot {
@@ -226,6 +268,7 @@ select {
   list-style: none;
   margin: 0;
   padding: 0;
+  position: relative;
 }
 
 .holders-row {
@@ -235,11 +278,39 @@ select {
   gap: 0.45rem;
   padding: 0.48rem 0;
   border-top: 1px solid #eef0f4;
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 .holders-row:first-child {
   border-top: none;
   padding-top: 0.15rem;
+}
+
+.holders-row.holders-rank-up {
+  animation: holders-flash-up 0.7s ease;
+}
+
+.holders-row.holders-rank-down {
+  animation: holders-flash-down 0.7s ease;
+}
+
+@keyframes holders-flash-up {
+  0% {
+    background: rgba(16, 185, 129, 0.18);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+@keyframes holders-flash-down {
+  0% {
+    background: rgba(239, 68, 68, 0.14);
+  }
+  100% {
+    background: transparent;
+  }
 }
 
 .holders-avatar {
@@ -281,6 +352,19 @@ select {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  transition: color 0.2s ease;
+  animation: holders-share-tick 0.35s ease;
+}
+
+@keyframes holders-share-tick {
+  0% {
+    transform: translateY(3px);
+    opacity: 0.45;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
 }
 
 .holders-shares.up {
