@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     flush_max_rows: int = 1000
     parquet_compression: str = "zstd"
 
+    # HTTP serve (python serve.py) — Bearer token; empty = no auth (dev only)
+    api_token: str = ""
+    serve_host: str = "0.0.0.0"
+    serve_port: int = 8787
+
     market_duration_s: int = 300
     discovery_interval_s: float = 5.0
     resolve_poll_interval_s: float = 10.0

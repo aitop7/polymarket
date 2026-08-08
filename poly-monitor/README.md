@@ -23,13 +23,19 @@ npm install
 Terminal 1 — API:
 
 ```bash
-cd poly-monitor/backend
-# PYTHONPATH includes backend + poly-monitor (strategies)
-set PYTHONPATH=%CD%;%CD%\..
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+cd poly-monitor
+.\run-api.bat
 ```
 
-Or use `poly-monitor/run-api.bat`.
+(`run-api.bat` loads `.env`, sets `PYTHONPATH`, and starts uvicorn on `127.0.0.1:8000`.)
+
+Or manually:
+
+```bash
+cd poly-monitor/backend
+set PYTHONPATH=%CD%;%CD%\..
+..\..\venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
 
 Terminal 2 — UI (dev):
 
@@ -63,7 +69,23 @@ Implement `on_tick` / `on_market_end` per `strategies/base.py` and register in `
 
 ## Env
 
+Copy `.env.example` → `.env` (loaded from `poly-monitor/.env`).
+
 | Variable | Default |
 |----------|---------|
+| `FETCH_LIVE_DATA_DIR` | `E:\DataSets\poly\live` — local mirror of VPS `fetch_live` markets |
+| `VPS_SYNC_URL` | empty (sync off). Example: `http://YOUR_VPS:8787` |
+| `VPS_SYNC_TOKEN` | must match VPS `FETCH_LIVE_API_TOKEN` |
 | `FETCH_REAL_ROOT` | `../fetch_real` (relative to cwd; absolute path recommended) |
 | `CORS_ORIGINS` | `http://localhost:5173` |
+
+### VPS → local live sync
+
+`fetch_live` runs on the VPS only. Local poly-monitor:
+
+1. On startup: pulls all markets with `start_time` after the watermark in `backend/.cache/fetch_live_sync.json`
+2. On market rollover: re-pulls the just-closed market
+3. Mid-window: periodically refreshes the current market so chart backfill has the VPS prefix
+4. Historical / replay / paper: **local disk only** (no VPS calls)
+
+Synced layout: `{FETCH_LIVE_DATA_DIR}/YYYY-MM-DD/{market_id}/`.

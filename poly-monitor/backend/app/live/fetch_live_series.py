@@ -8,13 +8,17 @@ from typing import Any
 
 import pandas as pd
 
-_FETCH_LIVE_DATA = Path(__file__).resolve().parents[4] / "fetch_live" / "data"
+from app.core.config import settings
+
+
+def fetch_live_root() -> Path:
+    return Path(settings.fetch_live_data_dir)
 
 
 def fetch_live_market_dir(market_id: str | None) -> Path | None:
     if not market_id:
         return None
-    root = _FETCH_LIVE_DATA
+    root = fetch_live_root()
     if not root.is_dir():
         return None
     mid = str(market_id)

@@ -1,0 +1,25 @@
+# systemd unit for fetch_live data API (Linux VPS)
+#
+#   sudo cp /root/charles/fetch_live/deploy/fetch-live-serve.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now fetch-live-serve
+#   sudo ufw allow 8787/tcp
+#   curl -s http://127.0.0.1:8787/health
+
+[Unit]
+Description=fetch_live market data API (poly-monitor sync)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/charles/fetch_live
+Environment=FETCH_LIVE_DATA_DIR=/root/charles/fetch_live/data
+Environment=FETCH_LIVE_SERVE_HOST=0.0.0.0
+Environment=FETCH_LIVE_SERVE_PORT=8787
+# Environment=FETCH_LIVE_API_TOKEN=change-me
+ExecStart=/root/charles/venv/bin/python /root/charles/fetch_live/serve.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

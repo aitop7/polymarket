@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -22,7 +24,42 @@ for p in (_BACKEND, _POLY):
 from app.api.routes import router  # noqa: E402
 from app.core.config import settings  # noqa: E402
 
-app = FastAPI(title="poly-monitor", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Fill missed local fetch_live markets from VPS (watermark incremental).
+    try:
+        from app.live.vps_sync import get_vps_sync
+
+        sync = get_vps_sync()
+        if sync.enabled:
+            result = await sync.sync_incremental()
+            if result.get("error"):
+                logger.warning(
+                    "VPS sync unavailable at startup: %s (local dir=%s)",
+                    result.get("error"),
+                    settings.fetch_live_data_dir,
+                )
+            else:
+                logger.info(
+                    "VPS fetch_live sync on startup: pulled=%s after_start_ms=%s → %s",
+                    result.get("pulled"),
+                    result.get("after_start_ms"),
+                    settings.fetch_live_data_dir,
+                )
+        else:
+            logger.info(
+                "VPS sync disabled (set VPS_SYNC_URL); local live dir=%s",
+                settings.fetch_live_data_dir,
+            )
+    except Exception as exc:
+        logger.warning("VPS fetch_live startup sync failed: %s", exc)
+    yield
+
+
+app = FastAPI(title="poly-monitor", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,

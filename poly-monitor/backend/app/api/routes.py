@@ -284,10 +284,14 @@ async def live_series(
 ) -> dict[str, Any]:
     """Historical chart points for the active (or requested) live market window."""
     from app.live import get_live_service
+    from app.live.vps_sync import get_vps_sync
 
     svc = get_live_service()
     # Ensure market discovery so window bounds / id are current.
     await svc.market_meta()
+    mid = str(market_id or svc._market_id or "") or None
+    if mid:
+        await get_vps_sync().ensure_active_market(mid)
     return svc.series(market_id, lookback_ms=lookback_ms)
 
 
