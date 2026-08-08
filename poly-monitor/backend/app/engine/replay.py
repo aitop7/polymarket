@@ -201,6 +201,18 @@ class ReplaySession:
             "timestamp": ctx.timestamp,
             "btc_price": ctx.btc_price,
             "btc_open": ctx.btc_open,
+            "btc_twap_30s": (
+                float(row["btc_twap_30s"])
+                if "btc_twap_30s" in row.index and pd.notna(row["btc_twap_30s"])
+                else (
+                    float(row["btc_price"])
+                    if "btc_price" in row.index and pd.notna(row["btc_price"])
+                    else None
+                )
+            ),
+            "btc_chainlink": float(row["btc_chainlink"])
+            if "btc_chainlink" in row.index and pd.notna(row["btc_chainlink"])
+            else None,
             "up_price": ctx.up_price,
             "down_price": ctx.down_price,
             "up_buy": ctx.up_price,

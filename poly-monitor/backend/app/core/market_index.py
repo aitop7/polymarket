@@ -13,8 +13,14 @@ from zoneinfo import ZoneInfo
 import pyarrow.parquet as pq
 
 from app.core.config import settings
+from app.core.live_dataset import (
+    TWAP_SPLIT,
+    iter_live_market_metas,
+    live_fingerprint,
+)
 
 SPLITS = ("train", "validation", "test")
+ALL_SPLITS = (*SPLITS, TWAP_SPLIT)
 ET = ZoneInfo("America/New_York")
 
 _CACHE: dict[str, list[dict[str, Any]]] = {}
@@ -92,7 +98,40 @@ def _read_one(args: tuple[str, str, str, bool, bool]) -> dict[str, Any] | None:
         return None
 
 
+def _build_twap_index(*, force: bool = False) -> list[dict[str, Any]]:
+    if not force and TWAP_SPLIT in _CACHE:
+        return _CACHE[TWAP_SPLIT]
+
+    cache_file = _cache_path(TWAP_SPLIT)
+    fp = live_fingerprint()
+
+    if not force and cache_file.is_file():
+        try:
+            payload = json.loads(cache_file.read_text(encoding="utf-8"))
+            if int(payload.get("n", -1)) == fp["n"] and isinstance(payload.get("markets"), list):
+                rows = payload["markets"]
+                _CACHE[TWAP_SPLIT] = rows
+                return rows
+        except Exception:
+            pass
+
+    rows = iter_live_market_metas()
+    # Drop heavy path field from API/cache
+    slim = [{k: v for k, v in r.items() if k != "dir"} for r in rows]
+    try:
+        cache_file.write_text(
+            json.dumps({"n": fp["n"], "stamp": fp["stamp"], "markets": slim}, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    _CACHE[TWAP_SPLIT] = slim
+    return slim
+
+
 def build_market_index(split: str, *, force: bool = False) -> list[dict[str, Any]]:
+    if split == TWAP_SPLIT:
+        return _build_twap_index(force=force)
     if split not in SPLITS:
         raise ValueError(f"Invalid split: {split}")
 
@@ -153,7 +192,9 @@ def list_dates(split: str) -> list[str]:
 
 def list_markets_for_date(split: str, date_et: str) -> list[dict[str, Any]]:
     idx = build_market_index(split)
-    return [r for r in idx if r["date_et"] == date_et]
+    day = [r for r in idx if r["date_et"] == date_et]
+    day.sort(key=lambda r: int(r["start_time"]), reverse=True)
+    return day
 
 
 def find_market_at(split: str, timestamp_ms: int) -> dict[str, Any] | None:

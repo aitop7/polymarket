@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -28,13 +29,19 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
-    # Fill missed local fetch_live markets from VPS (watermark incremental).
-    try:
-        from app.live.vps_sync import get_vps_sync
+async def lifespan(app: FastAPI):
+    # Non-blocking: sync in background so API comes up even if VPS is slow/down.
+    async def _startup_sync() -> None:
+        try:
+            from app.live.vps_sync import get_vps_sync
 
-        sync = get_vps_sync()
-        if sync.enabled:
+            sync = get_vps_sync()
+            if not sync.enabled:
+                logger.info(
+                    "VPS sync disabled (set VPS_SYNC_URL); local live dir=%s",
+                    settings.fetch_live_data_dir,
+                )
+                return
             result = await sync.sync_incremental()
             if result.get("error"):
                 logger.warning(
@@ -49,14 +56,16 @@ async def lifespan(_app: FastAPI):
                     result.get("after_start_ms"),
                     settings.fetch_live_data_dir,
                 )
-        else:
-            logger.info(
-                "VPS sync disabled (set VPS_SYNC_URL); local live dir=%s",
-                settings.fetch_live_data_dir,
-            )
-    except Exception as exc:
-        logger.warning("VPS fetch_live startup sync failed: %s", exc)
+        except Exception as exc:
+            logger.warning("VPS fetch_live startup sync failed: %s", exc)
+
+    sync_task = asyncio.create_task(_startup_sync(), name="vps-startup-sync")
     yield
+    sync_task.cancel()
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(title="poly-monitor", version="0.1.0", lifespan=lifespan)

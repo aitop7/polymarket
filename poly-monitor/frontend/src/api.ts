@@ -15,7 +15,14 @@ export type MarketSummary = {
 }
 
 export type MarketDetail = MarketSummary & {
-  series: { t: number; btc: number | null; up: number | null; down: number | null }[]
+  series: {
+    t: number
+    btc: number | null
+    up: number | null
+    down: number | null
+    twap?: number | null
+    chainlink?: number | null
+  }[]
   first: { timestamp: number; btc_price: number | null; up_price: number; down_price: number }
   last: { timestamp: number; btc_price: number | null; up_price: number; down_price: number }
 }

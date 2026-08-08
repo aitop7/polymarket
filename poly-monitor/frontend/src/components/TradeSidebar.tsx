@@ -1,5 +1,6 @@
 import type { LiveHoldersResponse } from '../api'
 import HoldersPanel from './HoldersPanel'
+import OutcomeCard from './OutcomeCard'
 import TradeCard from './TradeCard'
 
 type Props = {
@@ -24,6 +25,10 @@ type Props = {
   holdersRevision?: number
   onReloadHolders?: () => void | Promise<void>
   holdersReloading?: boolean
+  /** History stopped: show settled outcome instead of trade card */
+  showOutcome?: boolean
+  outcome?: 'Up' | 'Down' | null
+  outcomeSubtitle?: string
 }
 
 export default function TradeSidebar(props: Props) {
@@ -49,27 +54,34 @@ export default function TradeSidebar(props: Props) {
     holdersRevision = 0,
     onReloadHolders,
     holdersReloading = false,
+    showOutcome = false,
+    outcome = null,
+    outcomeSubtitle = '',
   } = props
 
   return (
     <aside className="control-sidebar control-sidebar-right">
-      <TradeCard
-        monitorHint={monitorHint ?? mode === 'monitor'}
-        tradeAction={tradeAction}
-        onTradeAction={onTradeAction}
-        side={side}
-        onSide={onSide}
-        upPrice={upPrice}
-        downPrice={downPrice}
-        upHasAsk={upHasAsk}
-        downHasAsk={downHasAsk}
-        upHasBid={upHasBid}
-        downHasBid={downHasBid}
-        cash={cash}
-        heldShares={heldShares}
-        onTrade={onTrade}
-        tradeDisabled={tradeDisabled}
-      />
+      {showOutcome ? (
+        <OutcomeCard outcome={outcome} subtitle={outcomeSubtitle} />
+      ) : (
+        <TradeCard
+          monitorHint={monitorHint ?? mode === 'monitor'}
+          tradeAction={tradeAction}
+          onTradeAction={onTradeAction}
+          side={side}
+          onSide={onSide}
+          upPrice={upPrice}
+          downPrice={downPrice}
+          upHasAsk={upHasAsk}
+          downHasAsk={downHasAsk}
+          upHasBid={upHasBid}
+          downHasBid={downHasBid}
+          cash={cash}
+          heldShares={heldShares}
+          onTrade={onTrade}
+          tradeDisabled={tradeDisabled}
+        />
+      )}
       <HoldersPanel
         enabled={liveHolders}
         data={holders}

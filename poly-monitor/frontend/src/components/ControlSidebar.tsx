@@ -7,6 +7,8 @@ type Props = {
   liveLabel?: string
   liveInterval: number
   onLiveInterval: (s: number) => void
+  collection: 'before_twap' | 'twap'
+  onCollection: (c: 'before_twap' | 'twap') => void
   split: string
   onSplit: (s: string) => void
   indexing: boolean
@@ -43,6 +45,8 @@ export default function ControlSidebar(props: Props) {
     liveLabel,
     liveInterval,
     onLiveInterval,
+    collection,
+    onCollection,
     split,
     onSplit,
     indexing,
@@ -72,6 +76,7 @@ export default function ControlSidebar(props: Props) {
   } = props
 
   const histDisabled = liveActive || indexing
+  const beforeTwap = collection === 'before_twap'
 
   return (
     <aside className="control-sidebar control-sidebar-left">
@@ -103,12 +108,29 @@ export default function ControlSidebar(props: Props) {
 
       <div className="sidebar-section">
         <div className="sidebar-heading">Data</div>
-        <label className="sidebar-label">Dataset</label>
-        <select value={split} onChange={(e) => onSplit(e.target.value)} disabled={histDisabled}>
-          <option value="validation">Validation</option>
-          <option value="test">Test</option>
-          <option value="train">Train</option>
+        <label className="sidebar-label">Collection</label>
+        <select
+          value={collection}
+          onChange={(e) => onCollection(e.target.value as 'before_twap' | 'twap')}
+          disabled={histDisabled}
+        >
+          <option value="twap">TWAP</option>
+          <option value="before_twap">before TWAP</option>
         </select>
+        {beforeTwap ? (
+          <>
+            <label className="sidebar-label">Dataset</label>
+            <select value={split} onChange={(e) => onSplit(e.target.value)} disabled={histDisabled}>
+              <option value="validation">Validation</option>
+              <option value="test">Test</option>
+              <option value="train">Train</option>
+            </select>
+          </>
+        ) : (
+          <div className="sidebar-meta" title="E:\DataSets\poly\live">
+            E:\DataSets\poly\live
+          </div>
+        )}
 
         <label className="sidebar-label">Date (ET)</label>
         <input

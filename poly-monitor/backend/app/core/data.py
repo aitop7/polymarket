@@ -8,8 +8,14 @@ from typing import Any
 import pandas as pd
 
 from app.core.config import settings
+from app.core.live_dataset import (
+    TWAP_SPLIT,
+    live_market_summary,
+    load_live_market_frame,
+)
 
 SPLITS = ("train", "validation", "test")
+ALL_SPLITS = (*SPLITS, TWAP_SPLIT)
 
 # Feature columns expected by LightGBM (must match fetch_real feature_schema)
 FEATURE_COLUMNS = [
@@ -77,10 +83,21 @@ def find_split(market_id: str) -> str | None:
             return split
         if (settings.training_dir / split / f"{mid}.parquet").is_file():
             return split
+    from app.core.live_dataset import find_live_market_dir
+
+    if find_live_market_dir(mid) is not None:
+        return TWAP_SPLIT
     return None
 
 
 def list_markets(split: str, *, limit: int | None = None) -> list[dict[str, Any]]:
+    if split == TWAP_SPLIT:
+        from app.core.market_index import build_market_index
+
+        rows = build_market_index(TWAP_SPLIT)
+        if limit is not None:
+            rows = rows[: max(0, int(limit))]
+        return rows
     if split not in SPLITS:
         raise ValueError(f"Invalid split: {split}")
     feat_dir = settings.features_dir / split
@@ -129,8 +146,12 @@ def list_markets(split: str, *, limit: int | None = None) -> list[dict[str, Any]
 
 def market_summary(market_id: str, *, split: str | None = None) -> dict[str, Any] | None:
     mid = str(market_id)
+    if split == TWAP_SPLIT or (split is None and find_split(mid) == TWAP_SPLIT):
+        return live_market_summary(mid)
     split = split or find_split(mid)
-    if not split:
+    if not split or split == TWAP_SPLIT:
+        if split == TWAP_SPLIT:
+            return live_market_summary(mid)
         return None
     train_path = settings.training_dir / split / f"{mid}.parquet"
     feat_path = settings.features_dir / split / f"{mid}.parquet"
@@ -166,9 +187,13 @@ def load_market_frame(market_id: str, *, split: str | None = None) -> pd.DataFra
     Prefer features parquet merged with training BTC/book columns when available.
     """
     mid = str(market_id)
+    if split == TWAP_SPLIT or (split is None and find_split(mid) == TWAP_SPLIT):
+        return load_live_market_frame(mid)
     split = split or find_split(mid)
     if not split:
         raise FileNotFoundError(f"Market not found: {mid}")
+    if split == TWAP_SPLIT:
+        return load_live_market_frame(mid)
 
     feat_path = settings.features_dir / split / f"{mid}.parquet"
     train_path = settings.training_dir / split / f"{mid}.parquet"
@@ -222,14 +247,17 @@ def series_for_chart(df: pd.DataFrame, *, max_points: int = 300) -> list[dict[st
     out: list[dict[str, Any]] = []
     for _, r in rows.iterrows():
         q = quotes_from_row(r)
-        out.append(
-            {
-                "t": int(r["timestamp"]),
-                "btc": float(r["btc_price"]) if "btc_price" in df.columns and pd.notna(r.get("btc_price")) else None,
-                "up": q["up_price"],
-                "down": q["down_price"],
-            }
-        )
+        point: dict[str, Any] = {
+            "t": int(r["timestamp"]),
+            "btc": float(r["btc_price"]) if "btc_price" in df.columns and pd.notna(r.get("btc_price")) else None,
+            "up": q["up_price"],
+            "down": q["down_price"],
+        }
+        if "btc_twap_30s" in df.columns and pd.notna(r.get("btc_twap_30s")):
+            point["twap"] = float(r["btc_twap_30s"])
+        if "btc_chainlink" in df.columns and pd.notna(r.get("btc_chainlink")):
+            point["chainlink"] = float(r["btc_chainlink"])
+        out.append(point)
     return out
 
 

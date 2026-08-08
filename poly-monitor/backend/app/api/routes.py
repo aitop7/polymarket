@@ -11,7 +11,15 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
-from app.core.data import SPLITS, book_at, list_markets, load_market_frame, market_summary, series_for_chart
+from app.core.data import (
+    SPLITS,
+    book_at,
+    list_markets,
+    load_market_frame,
+    market_summary,
+    series_for_chart,
+)
+from app.core.live_dataset import TWAP_SPLIT
 from app.core.market_index import (
     build_market_index,
     find_market_at,
@@ -73,7 +81,7 @@ def get_strategies() -> list[dict[str, Any]]:
 
 @router.get("/markets/dates")
 def get_market_dates(
-    split: str = Query("validation", pattern="^(train|validation|test)$"),
+    split: str = Query("validation", pattern="^(train|validation|test|twap)$"),
 ) -> dict[str, Any]:
     dates = list_dates(split)
     return {
@@ -87,7 +95,7 @@ def get_market_dates(
 
 @router.get("/markets/at")
 def get_market_at(
-    split: str = Query("validation", pattern="^(train|validation|test)$"),
+    split: str = Query("validation", pattern="^(train|validation|test|twap)$"),
     date: str | None = Query(None, description="YYYY-MM-DD in ET"),
     time: str | None = Query(None, description="HH:MM in ET"),
     t: int | None = Query(None, description="unix ms"),
@@ -108,7 +116,7 @@ def get_market_at(
 
 @router.get("/markets")
 def get_markets(
-    split: str = Query("validation", pattern="^(train|validation|test)$"),
+    split: str = Query("validation", pattern="^(train|validation|test|twap)$"),
     limit: int = Query(50, ge=1, le=5000),
     date: str | None = Query(None, description="Filter by ET date YYYY-MM-DD"),
     rebuild_index: bool = Query(False),
@@ -174,13 +182,16 @@ def get_neighbors(market_id: str, split: str | None = None) -> dict[str, Any]:
     meta = market_summary(market_id, split=split)
     if not meta:
         raise HTTPException(404, f"Market {market_id} not found")
-    # Lightweight id list
     from pathlib import Path
 
-    d = settings.features_dir / meta["split"]
-    if not d.is_dir():
-        d = settings.training_dir / meta["split"]
-    ids = sorted(p.stem for p in d.glob("*.parquet"))
+    if meta["split"] == TWAP_SPLIT:
+        idx = build_market_index(TWAP_SPLIT)
+        ids = [str(r["market_id"]) for r in idx]
+    else:
+        d = settings.features_dir / meta["split"]
+        if not d.is_dir():
+            d = settings.training_dir / meta["split"]
+        ids = sorted(p.stem for p in d.glob("*.parquet"))
     try:
         i = ids.index(str(market_id))
     except ValueError:

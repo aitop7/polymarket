@@ -55,7 +55,7 @@ const SERIES_META: {
   label: string
   color: string
 }[] = [
-  { key: 'twap', dataKey: 'twap', label: 'Chainlink 30s TWAP', color: '#eab308' },
+  { key: 'twap', dataKey: 'twap', label: 'Current Price', color: '#eab308' },
   { key: 'chainlink', dataKey: 'chainlink', label: 'Chainlink BTC', color: '#22c55e' },
   { key: 'binance', dataKey: 'btc', label: 'Binance BTC', color: '#2563eb' },
 ]
@@ -624,7 +624,7 @@ export default function PriceChart({
                     <Area
                       type="monotone"
                       dataKey="twap"
-                      name="Chainlink 30s TWAP"
+                      name="Current Price"
                       stroke="none"
                       fill={`url(#${twapFillId})`}
                       fillOpacity={1}
@@ -639,7 +639,7 @@ export default function PriceChart({
                     <Line
                       type="monotone"
                       dataKey="twap"
-                      name="Chainlink 30s TWAP"
+                      name="Current Price"
                       stroke={TWAP_COLOR}
                       strokeWidth={2.35}
                       dot={false}

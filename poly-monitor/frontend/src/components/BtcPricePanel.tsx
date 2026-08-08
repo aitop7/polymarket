@@ -55,7 +55,7 @@ export default function BtcPricePanel({
 
         <div className="btc-stat">
           <div className="btc-stat-label-row">
-            <span className="btc-stat-label current-label">Chainlink 30s TWAP</span>
+            <span className="btc-stat-label current-label">Current Price</span>
             {delta != null && (
               <span className={`btc-delta ${above ? 'up' : 'down'}`}>
                 {above ? '▲' : '▼'} $
@@ -65,7 +65,7 @@ export default function BtcPricePanel({
           </div>
           <div className={`btc-stat-value current ${above ? 'up' : 'down'}`}>
             {twapPrice == null ? (
-              <span className="btc-waiting">Waiting for TWAP…</span>
+              <span className="btc-waiting">—</span>
             ) : (
               `$${formatUsd(twapPrice, 2)}`
             )}

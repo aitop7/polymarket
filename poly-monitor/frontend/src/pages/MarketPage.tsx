@@ -93,6 +93,8 @@ function formatSlotLabel(timeEt: string, startMs?: number, endMs?: number): stri
 
 export default function MarketPage({ mode }: Props) {
   const [split, setSplit] = useState('validation')
+  const [collection, setCollection] = useState<'before_twap' | 'twap'>('twap')
+  const effectiveSplit = collection === 'twap' ? 'twap' : split
   const [dateMin, setDateMin] = useState('')
   const [dateMax, setDateMax] = useState('')
   const [selectedDate, setSelectedDate] = useState('')
@@ -169,7 +171,7 @@ export default function MarketPage({ mode }: Props) {
     setMarketId('')
     setSelectedTime('')
     api
-      .marketDates(split)
+      .marketDates(effectiveSplit)
       .then((res) => {
         if (cancelled) return
         setDateMin(res.min || '')
@@ -191,29 +193,33 @@ export default function MarketPage({ mode }: Props) {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [split, liveActive])
+  }, [effectiveSplit, liveActive])
 
   useEffect(() => {
     if (liveActive || !selectedDate) return
     let cancelled = false
     api
-      .markets(split, { date: selectedDate })
+      .markets(effectiveSplit, { date: selectedDate })
       .then((res) => {
         if (cancelled) return
-        setMarkets(res.markets)
         if (!res.markets.length) {
+          setMarkets([])
           setSelectedTime('')
           setMarketId('')
           return
         }
+        const ordered = [...res.markets].sort(
+          (a, b) => (b.start_time || 0) - (a.start_time || 0),
+        )
+        setMarkets(ordered)
         setMarketId((prev) => {
-          const keep = res.markets.find((m) => m.market_id === prev)
+          const keep = ordered.find((m) => m.market_id === prev)
           if (keep) {
             setSelectedTime(keep.time_et || '')
             return prev
           }
-          const still = res.markets.find((m) => (m.time_et || '') === selectedTime)
-          const pick = still || res.markets[0]
+          const still = ordered.find((m) => (m.time_et || '') === selectedTime)
+          const pick = still || ordered[0]
           setSelectedTime(pick.time_et || '')
           return pick.market_id
         })
@@ -225,7 +231,7 @@ export default function MarketPage({ mode }: Props) {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [split, selectedDate, liveActive])
+  }, [effectiveSplit, selectedDate, liveActive])
 
   const onTimeChange = (timeEt: string) => {
     setSelectedTime(timeEt)
@@ -234,7 +240,7 @@ export default function MarketPage({ mode }: Props) {
       setMarketId(m.market_id)
       return
     }
-    api.marketAt(split, { date: selectedDate, time: timeEt }).then((hit) => {
+    api.marketAt(effectiveSplit, { date: selectedDate, time: timeEt }).then((hit) => {
       setMarketId(hit.market_id)
       setSelectedTime(hit.time_et || timeEt)
     }).catch((e) => setError(String(e)))
@@ -243,7 +249,7 @@ export default function MarketPage({ mode }: Props) {
   useEffect(() => {
     if (liveActive || !marketId) return
     setError(null)
-    Promise.all([api.market(marketId, split), api.neighbors(marketId, split), api.book(marketId)])
+    Promise.all([api.market(marketId, effectiveSplit), api.neighbors(marketId, effectiveSplit), api.book(marketId)])
       .then(([d, n, b]) => {
         setDetail(d)
         setNeighbors({ prev: n.prev, next: n.next })
@@ -254,8 +260,8 @@ export default function MarketPage({ mode }: Props) {
             up: p.up ?? 0,
             down: p.down ?? 0,
             btc: p.btc,
-            twap: null,
-            chainlink: null,
+            twap: p.twap ?? null,
+            chainlink: p.chainlink ?? null,
           })),
         )
         setTick(null)
@@ -279,7 +285,7 @@ export default function MarketPage({ mode }: Props) {
         }
       })
       .catch((e) => setError(String(e)))
-  }, [marketId, split, liveActive])
+  }, [marketId, effectiveSplit, liveActive])
 
   const stopWs = () => {
     wsRef.current?.close()
@@ -293,8 +299,8 @@ export default function MarketPage({ mode }: Props) {
           up: p.up ?? 0,
           down: p.down ?? 0,
           btc: p.btc,
-          twap: null,
-          chainlink: null,
+          twap: p.twap ?? null,
+          chainlink: p.chainlink ?? null,
         })),
       )
       setTick(null)
@@ -337,7 +343,7 @@ export default function MarketPage({ mode }: Props) {
     if (mode === 'paper') {
       const sess = await api.paperSession({
         market_id: marketId,
-        split,
+        split: effectiveSplit,
         strategy,
         speed,
         starting_cash: 1000,
@@ -355,7 +361,7 @@ export default function MarketPage({ mode }: Props) {
       ws.send(
         JSON.stringify({
           market_id: marketId,
-          split,
+          split: effectiveSplit,
           strategy: mode === 'monitor' ? 'none' : strategy,
           speed,
           paper: mode === 'paper',
@@ -385,8 +391,8 @@ export default function MarketPage({ mode }: Props) {
             up: t.up_price,
             down: t.down_price,
             btc: t.btc_price,
-            twap: null,
-            chainlink: null,
+            twap: t.btc_twap_30s ?? t.btc_price ?? null,
+            chainlink: t.btc_chainlink ?? null,
           },
         ])
         if (t.fills?.length) {
@@ -654,8 +660,8 @@ export default function MarketPage({ mode }: Props) {
             up: p.up ?? 0,
             down: p.down ?? 0,
             btc: p.btc,
-            twap: null,
-            chainlink: null,
+            twap: p.twap ?? null,
+            chainlink: p.chainlink ?? null,
           })),
         )
         setTick(null)
@@ -685,11 +691,34 @@ export default function MarketPage({ mode }: Props) {
 
   const up = tick?.up_price ?? detail?.first.up_price ?? 0.5
   const down = tick?.down_price ?? detail?.first.down_price ?? 0.5
-  const twap = liveActive ? tick?.btc_twap_30s ?? null : null
+
+  const finalHistoryPrice = useMemo(() => {
+    const series = detail?.series
+    if (!series?.length) return null
+    for (let i = series.length - 1; i >= 0; i--) {
+      const tw = series[i].twap
+      if (tw != null && Number.isFinite(tw)) return tw
+    }
+    for (let i = series.length - 1; i >= 0; i--) {
+      const btc = series[i].btc
+      if (btc != null && Number.isFinite(btc)) return btc
+    }
+    return null
+  }, [detail])
+
+  const twap = liveActive
+    ? tick?.btc_twap_30s ?? null
+    : playing || paused
+      ? tick?.btc_twap_30s ?? tick?.btc_price ?? null
+      : finalHistoryPrice
   const beat = liveActive
     ? tick?.price_to_beat ?? tick?.btc_open ?? null
     : tick?.btc_open ?? detail?.btc_open_price
-  const remaining = tick?.remaining_seconds
+  const remaining = liveActive
+    ? tick?.remaining_seconds
+    : playing || paused
+      ? tick?.remaining_seconds
+      : null
 
   // Wall-clock tick so the live timeline scrolls smoothly between WS updates.
   useEffect(() => {
@@ -705,8 +734,8 @@ export default function MarketPage({ mode }: Props) {
       up: p.up ?? 0,
       down: p.down ?? 0,
       btc: p.btc,
-      twap: null as number | null,
-      chainlink: null as number | null,
+      twap: p.twap ?? null,
+      chainlink: p.chainlink ?? null,
     }))
   }, [seriesLive, detail])
 
@@ -726,17 +755,21 @@ export default function MarketPage({ mode }: Props) {
     return [nowMs - DEFAULT_X_SPAN_MS, nowMs]
   }, [liveActive, liveWindow, detail, chartData, nowMs])
 
-  // Trailing fixed-span window ending at "now" / latest point — scrolls left as time flows.
+  // Live: trailing fixed-span window. Historical idle/paused: full 5m market.
   const xDefaultDomain = useMemo((): TimeDomain => {
     const [f0, f1] = xFullDomain
+    if (!liveActive && (!playing || paused)) {
+      const end = Number.isFinite(f1) && f1 > f0 ? f1 : f0 + 300_000
+      const start = Number.isFinite(f0) ? f0 : end - 300_000
+      return [start, end]
+    }
     const latestData = chartData.length > 0 ? chartData[chartData.length - 1].t : f0
     const end = liveActive
       ? Math.min(f1, Math.max(latestData, nowMs))
       : Math.min(f1, Math.max(f0 + 1, latestData))
-    // Keep span fixed so the strip scrolls (don't pin left to market open).
     const start = end - DEFAULT_X_SPAN_MS
     return [start, end]
-  }, [xFullDomain, chartData, liveActive, nowMs])
+  }, [xFullDomain, chartData, liveActive, nowMs, playing, paused])
 
   // When following live, always use the sliding default window.
   useEffect(() => {
@@ -753,11 +786,11 @@ export default function MarketPage({ mode }: Props) {
     })
   }, [followLiveX, xDefaultDomain])
 
-  // Re-arm live follow on market / mode changes.
+  // Re-arm default domain on market / mode / playback state changes.
   useEffect(() => {
     setFollowLiveX(true)
     setChartXDomain(null)
-  }, [liveActive, liveWindow?.start, liveMarketId, marketId])
+  }, [liveActive, liveWindow?.start, liveMarketId, marketId, playing, paused])
 
   const sharedXDomain = followLiveX ? xDefaultDomain : (chartXDomain ?? xDefaultDomain)
 
@@ -770,6 +803,24 @@ export default function MarketPage({ mode }: Props) {
     setFollowLiveX(true)
     setChartXDomain(xDefaultDomain)
   }
+
+  const historyOutcome = useMemo((): 'Up' | 'Down' | null => {
+    if (liveActive || playing) return null
+    const w = tick?.settlement?.winner ?? detail?.winner
+    if (w === 1) return 'Up'
+    if (w === 0) return 'Down'
+    if (finalHistoryPrice != null && beat != null) {
+      return finalHistoryPrice >= beat ? 'Up' : 'Down'
+    }
+    return null
+  }, [liveActive, playing, tick?.settlement?.winner, detail?.winner, finalHistoryPrice, beat])
+
+  const outcomeSubtitle =
+    detail != null
+      ? `Bitcoin Up or Down - ${formatWindowEt(detail.start_time, detail.end_time)}`
+      : windowLabel
+
+  const showOutcomeCard = !liveActive && !playing && !paused
 
   const liveLabel = liveActive
     ? liveMarketId
@@ -813,6 +864,8 @@ export default function MarketPage({ mode }: Props) {
         liveLabel={liveLabel}
         liveInterval={liveInterval}
         onLiveInterval={onLiveInterval}
+        collection={collection}
+        onCollection={setCollection}
         split={split}
         onSplit={setSplit}
         indexing={indexing}
@@ -988,6 +1041,9 @@ export default function MarketPage({ mode }: Props) {
         holdersRevision={holdersRevision}
         onReloadHolders={reloadHolders}
         holdersReloading={holdersReloading}
+        showOutcome={showOutcomeCard}
+        outcome={historyOutcome}
+        outcomeSubtitle={outcomeSubtitle}
       />
     </div>
   )
