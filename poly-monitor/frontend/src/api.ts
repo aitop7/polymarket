@@ -1,5 +1,7 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
+export type DataHealth = 'great' | 'good' | 'ok' | 'low' | 'bad' | 'unchecked'
+
 export type MarketSummary = {
   market_id: string
   split: string
@@ -11,6 +13,10 @@ export type MarketSummary = {
   closed?: boolean | null
   /** Epoch ms when Gamma/UMA reported resolution (meta.resolved_at). */
   resolved_at?: number | null
+  /** Local parquet integrity: great|good|ok|low|bad|unchecked (meta.data_health). */
+  data_health?: DataHealth | null
+  /** Gap details (file + ET times) — shown on badge hover. */
+  data_health_comment?: string | null
   btc_open_price: number | null
   has_features: boolean
   has_training: boolean
@@ -82,6 +88,20 @@ export const api = {
     json<{ prev: string | null; next: string | null; split: string; index: number; total: number }>(
       `/api/markets/${id}/neighbors${split ? `?split=${split}` : ''}`,
     ),
+  recheckMarketHealth: (id: string) =>
+    json<{
+      ok: boolean
+      market_id: string
+      pulled: boolean
+      vps_enabled: boolean
+      trade_rows_added?: number
+      data_health: DataHealth
+      data_health_comment?: string | null
+      max_gap_ms?: number
+      max_trade_quiet_ms?: number
+      notes?: string[]
+      notes_by_file?: Record<string, string[]>
+    }>(`/api/markets/${id}/health/recheck`, { method: 'POST' }),
   book: (id: string, t?: number) =>
     json<Record<string, unknown>>(`/api/markets/${id}/book${t != null ? `?t=${t}` : ''}`),
   backtest: (body: Record<string, unknown>) =>

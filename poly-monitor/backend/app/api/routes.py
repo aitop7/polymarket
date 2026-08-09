@@ -67,11 +67,14 @@ class PaperOrderRequest(BaseModel):
 
 @router.get("/health")
 def health() -> dict[str, Any]:
+    from app.core.live_dataset import data_health_thresholds
+
     return {
         "ok": True,
         "fetch_real_root": str(settings.fetch_real_root),
         "training_exists": settings.training_dir.is_dir(),
         "features_exists": settings.features_dir.is_dir(),
+        "data_health_thresholds": data_health_thresholds(),
     }
 
 
@@ -140,8 +143,22 @@ def get_markets(
     return {"split": split, "date": date, "count": len(markets), "markets": markets}
 
 
+async def _ensure_twap_history(market_id: str, split: str | None) -> None:
+    """If selecting a TWAP history market, repair local gaps from VPS when needed."""
+    from app.core.live_dataset import find_live_market_dir
+    from app.live.vps_sync import get_vps_sync
+
+    mid = str(market_id).strip()
+    if not mid:
+        return
+    if split != TWAP_SPLIT and find_live_market_dir(mid) is None:
+        return
+    await get_vps_sync().ensure_history_market(mid)
+
+
 @router.get("/markets/{market_id}")
-def get_market(market_id: str, split: str | None = None) -> dict[str, Any]:
+async def get_market(market_id: str, split: str | None = None) -> dict[str, Any]:
+    await _ensure_twap_history(market_id, split)
     meta = market_summary(market_id, split=split)
     if not meta:
         raise HTTPException(404, f"Market {market_id} not found")
@@ -172,8 +189,25 @@ def get_market(market_id: str, split: str | None = None) -> dict[str, Any]:
     }
 
 
+@router.post("/markets/{market_id}/health/recheck")
+async def recheck_market_health(market_id: str) -> dict[str, Any]:
+    """Force VPS re-pull + rewrite meta.data_health / gap comments."""
+    from app.live.vps_sync import get_vps_sync
+
+    mid = str(market_id or "").strip()
+    if not mid:
+        raise HTTPException(400, "market_id required")
+    result = await get_vps_sync().recheck_history_market(mid)
+    if not result.get("ok"):
+        raise HTTPException(404, str(result.get("error") or "recheck failed"))
+    return result
+
+
 @router.get("/markets/{market_id}/book")
-def get_book(market_id: str, t: int | None = None, split: str | None = None) -> dict[str, Any]:
+async def get_book(
+    market_id: str, t: int | None = None, split: str | None = None
+) -> dict[str, Any]:
+    await _ensure_twap_history(market_id, split)
     meta = market_summary(market_id, split=split)
     if not meta:
         raise HTTPException(404, f"Market {market_id} not found")

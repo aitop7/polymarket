@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { MarketSummary } from '../api'
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { createPortal } from 'react-dom'
+import { api, type DataHealth, type MarketSummary } from '../api'
+import { healthThresholdHeadline } from '../dataHealth'
 
 function outcomeTone(m: MarketSummary): 'up' | 'down' | 'pending' {
   if (m.winner === 1) return 'up'
@@ -12,6 +14,73 @@ function outcomeLabel(tone: 'up' | 'down' | 'pending'): string {
   if (tone === 'up') return 'Up'
   if (tone === 'down') return 'Down'
   return '—'
+}
+
+type HealthTone = 'great' | 'good' | 'ok' | 'low' | 'bad' | 'unchecked'
+
+function healthTone(h?: string | null): HealthTone {
+  const s = String(h || '').toLowerCase()
+  if (s === 'great' || s === 'healthy') return 'great'
+  if (s === 'good') return 'good'
+  if (s === 'ok') return 'ok'
+  if (s === 'low') return 'low'
+  if (s === 'bad' || s === 'unhealthy' || s === 'not_healthy') return 'bad'
+  return 'unchecked'
+}
+
+function healthLabel(tone: HealthTone): string {
+  if (tone === 'great') return 'Great'
+  if (tone === 'good') return 'Good'
+  if (tone === 'ok') return 'Ok'
+  if (tone === 'low') return 'Low'
+  if (tone === 'bad') return 'Bad'
+  return '?'
+}
+
+function healthTitle(tone: HealthTone, comment?: string | null): string {
+  const note = String(comment || '').trim()
+  const headline = healthThresholdHeadline(tone)
+  return note ? `${headline}\n${note}` : headline
+}
+
+type HealthNoteGroup = { file: string; gaps: string[] }
+
+/** Parse file-grouped comments (new) or flat `file: detail` lines (legacy). */
+function parseHealthNotes(comment?: string | null): HealthNoteGroup[] {
+  const text = String(comment || '')
+  if (!text.trim()) return []
+  const order: string[] = []
+  const map = new Map<string, string[]>()
+  let current: string | null = null
+
+  const ensure = (file: string) => {
+    if (!map.has(file)) {
+      map.set(file, [])
+      order.push(file)
+    }
+  }
+
+  for (const raw of text.split('\n')) {
+    if (!raw.trim()) continue
+    const indented = /^\s+/.test(raw)
+    const line = raw.trim()
+    if (indented && current) {
+      map.get(current)!.push(line)
+      continue
+    }
+    const legacy = line.match(/^([^:]+\.parquet):\s*(.+)$/i)
+    if (legacy) {
+      const file = legacy[1]
+      ensure(file)
+      map.get(file)!.push(legacy[2])
+      current = file
+      continue
+    }
+    ensure(line)
+    current = line
+  }
+
+  return order.map((file) => ({ file, gaps: map.get(file) || [] }))
 }
 
 function formatClock(ms: number): string {
@@ -102,6 +171,12 @@ type Props = {
   /** Current playhead (ms); null = idle / full market */
   playheadMs?: number | null
   onSeek?: (timestampMs: number) => void
+  /** After health recheck — update window list badges */
+  onHealthUpdated?: (
+    marketId: string,
+    health: DataHealth,
+    comment: string | null,
+  ) => void
 }
 
 export default function ControlSidebar(props: Props) {
@@ -144,6 +219,7 @@ export default function ControlSidebar(props: Props) {
     marketEndMs,
     playheadMs,
     onSeek,
+    onHealthUpdated,
   } = props
 
   const histDisabled = liveActive || indexing
@@ -155,6 +231,59 @@ export default function ControlSidebar(props: Props) {
 
   const [dragTs, setDragTs] = useState<number | null>(null)
   const dragging = useRef(false)
+  const [healthDialog, setHealthDialog] = useState<MarketSummary | null>(null)
+  const [rechecking, setRechecking] = useState(false)
+  const [recheckError, setRecheckError] = useState<string | null>(null)
+
+  const dialogHealth = healthTone(healthDialog?.data_health)
+  const dialogGroups = useMemo(
+    () => parseHealthNotes(healthDialog?.data_health_comment),
+    [healthDialog?.data_health_comment],
+  )
+
+  const openHealthDialog = (m: MarketSummary, e: MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setRecheckError(null)
+    setHealthDialog(m)
+  }
+
+  const closeHealthDialog = () => {
+    if (rechecking) return
+    setHealthDialog(null)
+    setRecheckError(null)
+  }
+
+  const runHealthRecheck = async () => {
+    if (!healthDialog || rechecking) return
+    const mid = healthDialog.market_id
+    setRechecking(true)
+    setRecheckError(null)
+    try {
+      const res = await api.recheckMarketHealth(mid)
+      const health = (res.data_health || 'unchecked') as DataHealth
+      const fromFiles = res.notes_by_file
+        ? Object.entries(res.notes_by_file)
+            .flatMap(([file, gaps]) => [file, ...gaps.map((g) => `  ${g}`)])
+            .join('\n')
+        : ''
+      const comment = res.data_health_comment || fromFiles || (res.notes || []).join('\n') || null
+      setHealthDialog((prev) =>
+        prev && prev.market_id === mid
+          ? {
+              ...prev,
+              data_health: health,
+              data_health_comment: comment,
+            }
+          : prev,
+      )
+      onHealthUpdated?.(mid, health, comment)
+    } catch (err) {
+      setRecheckError(err instanceof Error ? err.message : 'Recheck failed')
+    } finally {
+      setRechecking(false)
+    }
+  }
 
   const displayTs = dragTs ?? playheadMs ?? start
   const progress =
@@ -165,6 +294,23 @@ export default function ControlSidebar(props: Props) {
   useEffect(() => {
     if (!dragging.current) setDragTs(null)
   }, [playheadMs])
+
+  useEffect(() => {
+    if (!healthDialog) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !rechecking) {
+        setHealthDialog(null)
+        setRecheckError(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.body.style.overflow = prev
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [healthDialog, rechecking])
 
   const elapsedLabel = useMemo(() => {
     if (start == null || displayTs == null) return '0:00'
@@ -366,6 +512,7 @@ export default function ControlSidebar(props: Props) {
           ) : (
             markets.map((m) => {
               const tone = outcomeTone(m)
+              const health = healthTone(m.data_health)
               const active = (m.time_et || '') === selectedTime
               return (
                 <button
@@ -380,8 +527,32 @@ export default function ControlSidebar(props: Props) {
                   <span className="time-window-label">
                     {formatSlotLabel(m.time_et || '', m.start_time, m.end_time)}
                   </span>
-                  <span className={`time-window-badge ${tone}`} title={`Outcome: ${outcomeLabel(tone)}`}>
-                    {tone === 'up' ? '▲ Up' : tone === 'down' ? '▼ Down' : '—'}
+                  <span className="time-window-badges">
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className={`time-window-badge health-${health} health-badge-btn`}
+                      title={healthTitle(health, m.data_health_comment)}
+                      aria-label={`Data health ${healthLabel(health)}. Open details.`}
+                      onClick={(e) => openHealthDialog(m, e)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setRecheckError(null)
+                          setHealthDialog(m)
+                        }
+                      }}
+                    >
+                      {healthLabel(health)}
+                    </span>
+                    <span
+                      className={`time-window-badge outcome-icon ${tone}`}
+                      title={`Outcome: ${outcomeLabel(tone)}`}
+                      aria-label={outcomeLabel(tone)}
+                    >
+                      {tone === 'up' ? '▲' : tone === 'down' ? '▼' : '—'}
+                    </span>
                   </span>
                 </button>
               )
@@ -389,6 +560,80 @@ export default function ControlSidebar(props: Props) {
           )}
         </div>
       </div>
+
+      {healthDialog &&
+        createPortal(
+          <div className="health-dialog-backdrop" onClick={closeHealthDialog} role="presentation">
+            <div
+              className="health-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="health-dialog-title"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="health-dialog-head">
+                <div>
+                  <div id="health-dialog-title" className="health-dialog-title">
+                    Data health
+                  </div>
+                  <div className="health-dialog-slot">
+                    {formatSlotLabel(
+                      healthDialog.time_et || '',
+                      healthDialog.start_time,
+                      healthDialog.end_time,
+                    )}
+                  </div>
+                </div>
+                <span className={`time-window-badge health-${dialogHealth}`}>
+                  {healthLabel(dialogHealth)}
+                </span>
+              </div>
+              <p className="health-dialog-summary">{healthTitle(dialogHealth, null)}</p>
+              <div className="health-dialog-body">
+                {dialogHealth === 'great' && dialogGroups.length === 0 ? (
+                  <p className="health-dialog-empty">No missing gaps in price, book, or trade files.</p>
+                ) : dialogGroups.length === 0 ? (
+                  <p className="health-dialog-empty">No gap details stored yet. Recheck to scan files.</p>
+                ) : (
+                  <ul className="health-dialog-files">
+                    {dialogGroups.map((group) => (
+                      <li key={group.file} className="health-dialog-file">
+                        <div className="health-dialog-file-name">{group.file}</div>
+                        {group.gaps.length > 0 && (
+                          <ul className="health-dialog-notes">
+                            {group.gaps.map((gap) => (
+                              <li key={`${group.file}:${gap}`}>{gap}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              {recheckError && <p className="health-dialog-error">{recheckError}</p>}
+              <div className="health-dialog-actions">
+                <button
+                  type="button"
+                  className="health-dialog-btn ghost"
+                  onClick={closeHealthDialog}
+                  disabled={rechecking}
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  className="health-dialog-btn primary"
+                  onClick={() => void runHealthRecheck()}
+                  disabled={rechecking || histDisabled}
+                >
+                  {rechecking ? 'Rechecking…' : 'Recheck'}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       <div className="sidebar-section sidebar-section-last playback-section">
         <div className="sidebar-heading playback-heading">

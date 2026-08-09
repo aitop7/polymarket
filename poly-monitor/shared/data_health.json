@@ -1,0 +1,17 @@
+{
+  "_comment": "Single source for poly-monitor data-health badge thresholds (ms). Price/orderbook: inclusive upper bounds (gap <= X). Trades: exclusive upper bounds (quiet < X; Bad when >= low_ms).",
+  "price": {
+    "great_ms": 2000,
+    "good_ms": 3000,
+    "ok_ms": 5000,
+    "low_ms": 10000,
+    "inclusive": true
+  },
+  "trade": {
+    "great_ms": 5000,
+    "good_ms": 10000,
+    "ok_ms": 15000,
+    "low_ms": 20000,
+    "inclusive": false
+  }
+}

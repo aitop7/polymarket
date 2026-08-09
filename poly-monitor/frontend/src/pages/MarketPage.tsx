@@ -660,6 +660,20 @@ export default function MarketPage({ mode }: Props) {
             ...volumeFields(p),
           })),
         )
+        // Reflect meta.data_health badge after ensure/check on select.
+        if (d.data_health) {
+          setMarkets((prev) =>
+            prev.map((m) =>
+              m.market_id === d.market_id
+                ? {
+                    ...m,
+                    data_health: d.data_health,
+                    data_health_comment: d.data_health_comment ?? m.data_health_comment,
+                  }
+                : m,
+            ),
+          )
+        }
         setTick(null)
         setActivity([])
         setPlaying(false)
@@ -1422,6 +1436,20 @@ export default function MarketPage({ mode }: Props) {
           marketEndMs={detail?.end_time}
           playheadMs={playheadTs}
           onSeek={seekReplay}
+          onHealthUpdated={(mid, health, comment) => {
+            setMarkets((prev) =>
+              prev.map((m) =>
+                m.market_id === mid
+                  ? { ...m, data_health: health, data_health_comment: comment }
+                  : m,
+              ),
+            )
+            setDetail((prev) =>
+              prev && prev.market_id === mid
+                ? { ...prev, data_health: health, data_health_comment: comment }
+                : prev,
+            )
+          }}
         />
         {liveActive && (
           <TradeSidebar
