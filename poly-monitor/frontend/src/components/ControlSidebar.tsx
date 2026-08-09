@@ -79,7 +79,7 @@ export default function ControlSidebar(props: Props) {
   const beforeTwap = collection === 'before_twap'
 
   return (
-    <aside className="control-sidebar control-sidebar-left">
+    <div className="control-sidebar control-sidebar-embedded">
       <div className="sidebar-section">
         <div className="sidebar-heading">Mode</div>
         <button
@@ -246,6 +246,6 @@ export default function ControlSidebar(props: Props) {
           </button>
         </div>
       </div>
-    </aside>
+    </div>
   )
 }

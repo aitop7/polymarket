@@ -148,6 +148,24 @@ export type LiveHoldersResponse = {
   down: HolderRow[]
 }
 
+/** Polymarket RTDS activity/trades row (live tape). */
+export type LiveActivityTrade = {
+  id: string
+  timestamp: number
+  name: string
+  pseudonym?: string | null
+  proxy_wallet: string
+  profile_image?: string | null
+  outcome: 'Up' | 'Down'
+  side: 'BUY' | 'SELL'
+  price: number
+  shares: number
+  usd: number
+  transaction_hash?: string | null
+  token?: boolean
+  is_sell?: boolean
+}
+
 export type LiveTick = {
   type: string
   live?: boolean

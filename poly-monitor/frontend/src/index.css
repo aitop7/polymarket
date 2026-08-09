@@ -112,42 +112,51 @@ select {
 
 .workspace {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) 400px;
+  grid-template-columns: 300px minmax(0, 1fr) 400px;
   gap: 1rem;
   align-items: start;
 }
 
 .workspace-main {
   min-width: 0;
+  order: 1;
+}
+
+.workspace-rail {
+  position: sticky;
+  top: 4.5rem;
+  max-height: calc(100vh - 5.5rem);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.workspace-rail-left {
+  order: 0;
+}
+
+.workspace-rail-right {
+  order: 2;
+}
+
+.trade-stack .trade-card {
+  margin-top: 0;
 }
 
 .control-sidebar {
-  position: sticky;
-  top: 4.5rem;
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 0.85rem 1rem 1.1rem;
   box-shadow: 0 1px 2px rgba(15, 17, 23, 0.04);
-  max-height: calc(100vh - 5.5rem);
-  overflow: auto;
 }
 
-.control-sidebar-left {
-  order: 0;
-}
-
-.control-sidebar-right {
-  order: 2;
-  padding: 0;
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  border-radius: 0;
-}
-
-.control-sidebar-right .trade-card {
-  margin-top: 0;
+.control-sidebar-embedded {
+  position: static;
+  max-height: none;
+  overflow: visible;
 }
 
 .outcome-card {
@@ -216,23 +225,187 @@ select {
   white-space: pre-line;
 }
 
-.holders-panel {
-  position: relative;
-  margin-top: 0.85rem;
-  padding: 1.85rem 0.75rem 0.95rem;
+.activity-panel {
+  margin-top: 0;
+  padding: 0.75rem 0.75rem 0.55rem;
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 1px 2px rgba(15, 17, 23, 0.04);
 }
 
-.holders-toolbar {
-  position: absolute;
-  top: 0.55rem;
-  right: 0.65rem;
+.activity-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.activity-panel-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.activity-live-badge {
   display: inline-flex;
   align-items: center;
+  gap: 0.35rem;
+  color: #ef4444;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.activity-live-badge i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55);
+  animation: activity-live-pulse 1.4s ease-out infinite;
+}
+
+@keyframes activity-live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+.activity-panel-empty {
+  margin: 0.35rem 0 0.55rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.activity-tape {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.activity-tape-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 0.45rem;
+  align-items: start;
+  padding: 0.42rem 0;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.activity-tape-row:last-child {
+  border-bottom: none;
+}
+
+.activity-tape-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #e5e7eb;
+  display: grid;
+  place-items: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #4b5563;
+  flex-shrink: 0;
+}
+
+.activity-tape-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.activity-tape-body {
+  min-width: 0;
+}
+
+.activity-tape-line {
+  font-size: 0.78rem;
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.activity-tape-name {
+  font-weight: 700;
+}
+
+.activity-tape-action .up {
+  color: var(--up);
+  font-weight: 700;
+}
+
+.activity-tape-action .down {
+  color: var(--down);
+  font-weight: 700;
+}
+
+.activity-tape-meta {
+  margin-top: 0.12rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.activity-tape-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+  flex-shrink: 0;
+}
+
+.activity-tape-ago {
+  font-size: 0.7rem;
+  color: #9ca3af;
+  white-space: nowrap;
+}
+
+.activity-tape-link {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  text-decoration: none;
+  line-height: 1;
+}
+
+.activity-tape-link:hover {
+  color: var(--text);
+}
+
+.holders-panel {
+  position: relative;
+  margin-top: 0;
+  padding: 0.75rem 0.75rem 0.95rem;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(15, 17, 23, 0.04);
+}
+
+.holders-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.55rem;
+}
+
+.holders-panel-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .holders-live-badge {
@@ -240,44 +413,8 @@ select {
   align-items: center;
   gap: 0.35rem;
   color: #ef4444;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 700;
-}
-
-.holders-reload-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #f8fafc;
-  color: #64748b;
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.holders-reload-btn:hover:not(:disabled) {
-  background: #fff;
-  color: #0f172a;
-  border-color: #cbd5e1;
-}
-
-.holders-reload-btn:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.holders-reload-btn.spinning svg {
-  animation: holders-reload-spin 0.7s linear infinite;
-}
-
-@keyframes holders-reload-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .holders-live-dot {
@@ -299,6 +436,12 @@ select {
   100% {
     box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
   }
+}
+
+.holders-scroll {
+  max-height: 320px;
+  overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .holders-grid {
@@ -335,6 +478,7 @@ select {
   margin: 0;
   padding: 0;
   position: relative;
+  overflow: visible;
 }
 
 .holders-row {
@@ -344,8 +488,8 @@ select {
   gap: 0.45rem;
   padding: 0.48rem 0;
   border-top: 1px solid #eef0f4;
-  will-change: transform;
-  backface-visibility: hidden;
+  border-radius: 6px;
+  background: #fff;
 }
 
 .holders-row:first-child {
@@ -353,29 +497,30 @@ select {
   padding-top: 0.15rem;
 }
 
-.holders-row.holders-rank-up {
-  animation: holders-flash-up 0.7s ease;
+/* Amount up → green, down → red, then fade back to white over 1s */
+.holders-row.holders-flash-up {
+  animation: holders-flash-up 1s ease forwards;
 }
 
-.holders-row.holders-rank-down {
-  animation: holders-flash-down 0.7s ease;
+.holders-row.holders-flash-down {
+  animation: holders-flash-down 1s ease forwards;
 }
 
 @keyframes holders-flash-up {
   0% {
-    background: rgba(16, 185, 129, 0.18);
+    background: rgba(16, 185, 129, 0.28);
   }
   100% {
-    background: transparent;
+    background: #fff;
   }
 }
 
 @keyframes holders-flash-down {
   0% {
-    background: rgba(239, 68, 68, 0.14);
+    background: rgba(239, 68, 68, 0.22);
   }
   100% {
-    background: transparent;
+    background: #fff;
   }
 }
 
@@ -413,24 +558,21 @@ select {
   color: var(--text);
 }
 
+.holders-shares-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 0.05rem;
+  min-width: 0;
+  line-height: 1.15;
+}
+
 .holders-shares {
   font-size: 0.8rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  transition: color 0.2s ease;
-  animation: holders-share-tick 0.35s ease;
-}
-
-@keyframes holders-share-tick {
-  0% {
-    transform: translateY(3px);
-    opacity: 0.45;
-  }
-  100% {
-    transform: translateY(0);
-    opacity: 1;
-  }
 }
 
 .holders-shares.up {
@@ -441,14 +583,36 @@ select {
   color: #ef4444;
 }
 
+.holders-delta {
+  font-size: 0.68rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  animation: holders-delta-fade 1.5s ease forwards;
+}
+
+.holders-delta.up {
+  color: #059669;
+}
+
+.holders-delta.down {
+  color: #dc2626;
+}
+
+@keyframes holders-delta-fade {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 .holders-empty {
   padding: 0.55rem 0 0.2rem;
   color: #9ca3af;
   font-size: 0.78rem;
-}
-
-.workspace-main {
-  order: 1;
 }
 
 .sidebar-section {
@@ -1145,14 +1309,14 @@ select {
   .workspace {
     grid-template-columns: 1fr;
   }
-  .control-sidebar {
+  .workspace-rail {
     position: static;
     max-height: none;
   }
-  .control-sidebar-left {
+  .workspace-rail-left {
     order: -2;
   }
-  .control-sidebar-right {
+  .workspace-rail-right {
     order: -1;
   }
   .workspace-main {
@@ -1507,6 +1671,39 @@ select {
   margin-bottom: 0.2rem;
 }
 
+.chart-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.chart-collapse {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.chart-collapse:hover {
+  color: var(--text);
+  background: #eef1f6;
+}
+
+.chart-block-collapsed .chart-header,
+.chart-block-collapsed .chart-header-volume {
+  min-height: 0;
+  margin-bottom: 0;
+  align-items: center;
+}
+
 
 .chart-volume-legend {
   display: flex;
@@ -1691,6 +1888,41 @@ select {
   position: relative;
   height: 260px;
   width: 100%;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* No focus ring when clicking inside the plot (SVG / Recharts wrappers). */
+.chart-wrap:focus,
+.chart-wrap:focus-visible,
+.chart-wrap:active,
+.chart-wrap svg,
+.chart-wrap svg:focus,
+.chart-wrap svg:focus-visible,
+.chart-wrap .recharts-wrapper,
+.chart-wrap .recharts-wrapper:focus,
+.chart-wrap .recharts-wrapper:focus-visible,
+.chart-wrap .recharts-surface,
+.chart-wrap .recharts-surface:focus,
+.chart-wrap .recharts-surface:focus-visible,
+.chart-wrap *:focus,
+.chart-wrap *:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: transparent;
+}
+
+.chart-wrap .recharts-wrapper,
+.chart-wrap .recharts-surface {
+  border: none !important;
+}
+
+/* Kill default Recharts rectangle / bar outlines inside charts. */
+.chart-wrap .recharts-rectangle,
+.chart-wrap .recharts-bar-rectangle,
+.chart-wrap .recharts-cartesian-axis-line,
+.chart-wrap .recharts-cartesian-axis-tick-line {
+  stroke: none !important;
 }
 
 .chart-wrap.chart-wrap-volume {
@@ -2333,9 +2565,9 @@ select {
 .ob-cols,
 .ob-row {
   display: grid;
-  /* Depth/tag track on the left; PRICE/SHARES/TOTAL fixed on the right */
-  grid-template-columns: minmax(96px, 1fr) 72px 100px 100px;
-  column-gap: 0.35rem;
+  /* Depth can grow; PRICE is fixed so ranges like 98.9–99.9¢ stay one line */
+  grid-template-columns: minmax(96px, 1fr) 110px 84px 92px;
+  column-gap: 0.4rem;
   row-gap: 0;
   align-items: center;
   font-size: 0.82rem;
@@ -2447,6 +2679,7 @@ select {
   font-weight: 650;
   color: var(--text);
   text-align: right;
+  white-space: nowrap;
 }
 
 .ob-range.ask {

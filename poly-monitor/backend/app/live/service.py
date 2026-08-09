@@ -20,7 +20,9 @@ from app.live.fetch_live_series import (
     merge_series,
     scrub_leading_outcome_extremes,
 )
+from app.live.activity_feed import get_activity_feed
 from app.live.twap_feed import get_twap_feed
+
 _UPDOWN_SLUG_RE = re.compile(r"(?i)^btc-updown-5m-(\d+)$")
 
 # Don't lock PTB before the open boundary; refine while near open.
@@ -116,6 +118,7 @@ class LiveMarketService:
     def __init__(self) -> None:
         self.clients = LiveClients()
         self.twap = get_twap_feed()
+        self.activity = get_activity_feed()
         self._market: dict[str, Any] | None = None
         self._market_id: str | None = None
         self._condition_id: str | None = None
@@ -135,10 +138,15 @@ class LiveMarketService:
         self._holders_cache_at = 0.0
         # Start RTDS early so open TWAP (Price to Beat) is ready at market open.
         self.twap.ensure_started()
+        self.activity.ensure_started()
 
     async def close(self) -> None:
         self.twap.stop()
+        self.activity.stop()
         await self.clients.close()
+
+    def drain_activity(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        return self.activity.drain(limit=limit)
 
     def _with_twap(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.twap.ensure_started()
@@ -508,6 +516,16 @@ class LiveMarketService:
                     self._price_to_beat_source = str(
                         stored.get("source") or "open_twap_30s"
                     )
+        # Keep RTDS activity filter on the active market (clear tape on roll).
+        self.activity.set_market(
+            slug=slug,
+            condition_id=condition_id,
+            token_up=token_up,
+            token_down=token_down,
+            start_ms=start_ms,
+            end_ms=end_s * 1000,
+            clear=rolled and prev_market_id is not None,
+        )
         return market
 
     def _record_series_point(self, snap: dict[str, Any]) -> None:
@@ -576,7 +594,12 @@ class LiveMarketService:
         if mid:
             from app.core.trade_volume import attach_volumes_to_series, volumes_for_market_id
 
-            merged = attach_volumes_to_series(merged, volumes_for_market_id(mid))
+            # Live: only attach volume onto real in-bucket samples (no ghost bars).
+            merged = attach_volumes_to_series(
+                merged,
+                volumes_for_market_id(mid),
+                synthesize_missing=False,
+            )
         return {
             "market_id": mid,
             "start_time": start_ms,
@@ -724,13 +747,13 @@ class LiveMarketService:
         return snap
 
     async def holders(self, *, limit: int = 20) -> dict[str, Any]:
-        """Top Up/Down holders for the active market (cached ~0.3s)."""
+        """Top Up/Down holders for the active market (cached ~0.15s)."""
         await self._ensure_market()
         now = time.time()
         if (
             self._holders_cache is not None
             and self._holders_cache.get("condition_id") == self._condition_id
-            and now - self._holders_cache_at < 0.3
+            and now - self._holders_cache_at < 0.15
         ):
             return self._holders_cache
 

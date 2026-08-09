@@ -96,6 +96,7 @@ function DepthRow({
   showTag?: 'Asks' | 'Bids'
   ladder: boolean
 }) {
+  // Depth % of the left track only — PRICE/SHARES/TOTAL stay clear of the bar.
   const width = maxCum > 0 ? Math.min(100, (level.cumShares / maxCum) * 100) : 0
   return (
     <div className={`ob-row ${kind}`}>

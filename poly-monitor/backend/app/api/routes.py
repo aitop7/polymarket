@@ -380,9 +380,44 @@ async def ws_live(websocket: WebSocket) -> None:
                 except Exception:
                     # Don't kill the holders loop on a single Data API failure.
                     pass
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.25)
+
+        async def activity_sender() -> None:
+            while True:
+                try:
+                    trades = svc.drain_activity(limit=40)
+                    if trades:
+                        await send_json({"type": "activity", "trades": trades})
+                except WebSocketDisconnect:
+                    raise
+                except Exception:
+                    pass
+                await asyncio.sleep(0.12)
+
+        async def series_sender() -> None:
+            """Push chart backfill (prices + volume buckets) over WS — no HTTP poll."""
+            from app.live.vps_sync import get_vps_sync
+
+            # Immediate seed once the socket is up.
+            first = True
+            while True:
+                try:
+                    mid = str(svc._market_id or "") or None
+                    if mid:
+                        # Occasional VPS catch-up for parquet (throttled inside client).
+                        await get_vps_sync().ensure_active_market(mid, force=first)
+                    payload = svc.series(mid, lookback_ms=360_000)
+                    await send_json({"type": "series", **payload})
+                    first = False
+                except WebSocketDisconnect:
+                    raise
+                except Exception:
+                    pass
+                await asyncio.sleep(8.0)
 
         holders_task = asyncio.create_task(holders_sender())
+        activity_task = asyncio.create_task(activity_sender())
+        series_task = asyncio.create_task(series_sender())
         try:
             last_start: int | None = None
             while True:
@@ -417,6 +452,12 @@ async def ws_live(websocket: WebSocket) -> None:
                             "down": [],
                         }
                     )
+                    # Fresh chart seed for the new window (WS, not HTTP).
+                    try:
+                        payload = svc.series(str(mid) if mid else None, lookback_ms=360_000)
+                        await send_json({"type": "series", **payload})
+                    except Exception:
+                        pass
                     last_market_id = mid
                     last_start = start if start is not None else last_start
                 snap["interval_s"] = interval_s
@@ -426,8 +467,10 @@ async def ws_live(websocket: WebSocket) -> None:
                 await asyncio.sleep(max(0.0, interval_s - elapsed))
         finally:
             holders_task.cancel()
+            activity_task.cancel()
+            series_task.cancel()
             reader_task.cancel()
-            for task in (holders_task, reader_task):
+            for task in (holders_task, activity_task, series_task, reader_task):
                 try:
                     await task
                 except asyncio.CancelledError:

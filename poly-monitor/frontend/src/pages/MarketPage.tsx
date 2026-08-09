@@ -5,6 +5,7 @@ import {
   formatUsd,
   formatWindowEt,
   type HolderRow,
+  type LiveActivityTrade,
   type LiveHoldersResponse,
   type LiveSeriesPoint,
   type MarketDetail,
@@ -13,6 +14,7 @@ import {
 } from '../api'
 import BtcPricePanel from '../components/BtcPricePanel'
 import ControlSidebar from '../components/ControlSidebar'
+import FeedSidebar from '../components/FeedSidebar'
 import OrderBookPanel, { type BookPayload } from '../components/OrderBookPanel'
 import PriceChart, { type BtcSeriesVisibility, type TimeDomain } from '../components/PriceChart'
 import TradeSidebar from '../components/TradeSidebar'
@@ -36,6 +38,90 @@ function volumeFields(p: {
     down_buy_vol: p.down_buy_vol ?? 0,
     down_sell_vol: p.down_sell_vol ?? 0,
   }
+}
+
+function maxVolumeFields(
+  a: ReturnType<typeof volumeFields>,
+  b: ReturnType<typeof volumeFields>,
+) {
+  return {
+    bn_buy: Math.max(a.bn_buy, b.bn_buy),
+    bn_sell: Math.max(a.bn_sell, b.bn_sell),
+    up_buy_vol: Math.max(a.up_buy_vol, b.up_buy_vol),
+    up_sell_vol: Math.max(a.up_sell_vol, b.up_sell_vol),
+    down_buy_vol: Math.max(a.down_buy_vol, b.down_buy_vol),
+    down_sell_vol: Math.max(a.down_sell_vol, b.down_sell_vol),
+  }
+}
+
+const VOLUME_BUCKET_MS = 5_000
+
+/** Bucket start for a timestamp; exact boundaries belong to the previous bucket. */
+function volumeBucketStart(ts: number): number {
+  const t = Math.floor(ts)
+  let start = Math.floor(t / VOLUME_BUCKET_MS) * VOLUME_BUCKET_MS
+  if (t === start && start > 0) start -= VOLUME_BUCKET_MS
+  return start
+}
+
+/** Bump the forming 5s Up/Down volume bucket from a live activity trade. */
+function applyActivityTradeToSeries(
+  prev: LiveSeriesPoint[],
+  trade: LiveActivityTrade,
+): LiveSeriesPoint[] {
+  const shares = Number(trade.shares) || 0
+  if (shares <= 0) return prev
+  const ts = Number(trade.timestamp) || Date.now()
+  const start = volumeBucketStart(ts)
+  const end = start + VOLUME_BUCKET_MS
+  const isDown = trade.outcome === 'Down' || trade.token === true
+  const isSell = trade.side === 'SELL' || trade.is_sell === true
+  const key = isDown
+    ? isSell
+      ? 'down_sell_vol'
+      : 'down_buy_vol'
+    : isSell
+      ? 'up_sell_vol'
+      : 'up_buy_vol'
+
+  const next = [...prev]
+  let idx = -1
+  for (let i = next.length - 1; i >= 0; i--) {
+    const t = Number(next[i].t)
+    // Same 5s bucket (include legacy points parked at bucket end).
+    if (t > start && t <= end) {
+      idx = i
+      break
+    }
+    if (t === start) {
+      idx = i
+      break
+    }
+  }
+  if (idx < 0) {
+    // Park on bucket start so the bar stays inside the live x-domain (not in the future).
+    const point: LiveSeriesPoint = {
+      t: start,
+      up: null,
+      down: null,
+      btc: null,
+      twap: null,
+      chainlink: null,
+      ...volumeFields({}),
+      [key]: shares,
+    }
+    next.push(point)
+    next.sort((a, b) => a.t - b.t)
+    return next.length > 1200 ? next.slice(-1200) : next
+  }
+  const cur = next[idx]
+  const vols = volumeFields(cur)
+  next[idx] = {
+    ...cur,
+    ...vols,
+    [key]: (vols[key] || 0) + shares,
+  }
+  return next
 }
 
 type Tick = {
@@ -90,6 +176,120 @@ function sortHolders(rows: HolderRow[] | undefined): HolderRow[] {
   })
 }
 
+const HOLDERS_TOUCH_MS = 45_000
+
+function holderTouchKey(side: 'up' | 'down', wallet: string): string {
+  return `${side}:${wallet.toLowerCase()}`
+}
+
+/** Instant holder bump from RTDS activity (Data API holder lists lag). */
+function applyActivityTradeToHolders(
+  prev: LiveHoldersResponse | null,
+  trade: LiveActivityTrade,
+  touched: Map<string, number>,
+): LiveHoldersResponse {
+  const shares = Number(trade.shares) || 0
+  const wallet = String(trade.proxy_wallet || '').trim()
+  const base: LiveHoldersResponse = prev ?? {
+    market_id: null,
+    condition_id: null,
+    updated_at: Date.now(),
+    live: true,
+    up: [],
+    down: [],
+  }
+  if (shares <= 0 || !wallet) return base
+
+  const side: 'up' | 'down' =
+    trade.outcome === 'Down' || trade.token === true ? 'down' : 'up'
+  const isSell = trade.side === 'SELL' || trade.is_sell === true
+  const key = wallet.toLowerCase()
+  const rows = [...(side === 'up' ? base.up : base.down)]
+  const idx = rows.findIndex((r) => r.proxy_wallet.toLowerCase() === key)
+  const delta = isSell ? -shares : shares
+
+  if (idx >= 0) {
+    const nextAmt = Math.max(0, Number(rows[idx].amount) + delta)
+    if (nextAmt <= 1e-9) rows.splice(idx, 1)
+    else {
+      rows[idx] = {
+        ...rows[idx],
+        amount: nextAmt,
+        display_name: rows[idx].display_name || trade.name || wallet,
+        profile_image: rows[idx].profile_image || trade.profile_image || undefined,
+      }
+    }
+  } else if (!isSell) {
+    rows.push({
+      proxy_wallet: wallet,
+      display_name:
+        trade.name ||
+        (wallet.length > 12 ? `${wallet.slice(0, 6)}...${wallet.slice(-4)}` : wallet),
+      amount: shares,
+      profile_image: trade.profile_image || undefined,
+    })
+  } else {
+    return base
+  }
+
+  touched.set(holderTouchKey(side, wallet), Date.now())
+  const sorted = sortHolders(rows).slice(0, 20)
+  return {
+    ...base,
+    updated_at: Date.now(),
+    live: true,
+    up: side === 'up' ? sorted : base.up,
+    down: side === 'down' ? sorted : base.down,
+  }
+}
+
+/** Reconcile Data API snapshot without wiping recent RTDS bumps. */
+function mergeHoldersFromApi(
+  api: LiveHoldersResponse,
+  prev: LiveHoldersResponse | null,
+  touched: Map<string, number>,
+): LiveHoldersResponse {
+  const now = Date.now()
+  const mergeSide = (
+    side: 'up' | 'down',
+    apiRows: HolderRow[],
+    prevRows: HolderRow[],
+  ): HolderRow[] => {
+    const prevMap = new Map(prevRows.map((r) => [r.proxy_wallet.toLowerCase(), r]))
+    const out = new Map<string, HolderRow>()
+    for (const r of apiRows) {
+      const k = r.proxy_wallet.toLowerCase()
+      const local = prevMap.get(k)
+      const touchedAt = touched.get(holderTouchKey(side, k)) ?? 0
+      if (local && now - touchedAt < HOLDERS_TOUCH_MS) {
+        out.set(k, {
+          ...r,
+          amount: local.amount,
+          display_name: local.display_name || r.display_name,
+          profile_image: local.profile_image || r.profile_image,
+        })
+      } else {
+        out.set(k, r)
+      }
+    }
+    for (const [k, local] of prevMap) {
+      if (out.has(k)) continue
+      const touchedAt = touched.get(holderTouchKey(side, k)) ?? 0
+      if (now - touchedAt < HOLDERS_TOUCH_MS && local.amount > 0) out.set(k, local)
+    }
+    return sortHolders([...out.values()]).slice(0, 20)
+  }
+
+  return {
+    market_id: api.market_id ?? prev?.market_id ?? null,
+    condition_id: api.condition_id ?? prev?.condition_id ?? null,
+    updated_at: Date.now(),
+    live: true,
+    up: mergeSide('up', api.up ?? [], prev?.up ?? []),
+    down: mergeSide('down', api.down ?? [], prev?.down ?? []),
+  }
+}
+
 type Props = {
   mode: 'monitor' | 'paper'
 }
@@ -132,6 +332,7 @@ export default function MarketPage({ mode }: Props) {
   const [tick, setTick] = useState<Tick | null>(null)
   const [seriesLive, setSeriesLive] = useState<LiveSeriesPoint[]>([])
   const [activity, setActivity] = useState<FillRow[]>([])
+  const [liveActivityTrades, setLiveActivityTrades] = useState<LiveActivityTrade[]>([])
   const [tab, setTab] = useState<'activity' | 'positions' | 'rules'>('activity')
   const [book, setBook] = useState<BookPayload | null>(null)
   const [side, setSide] = useState<'UP' | 'DOWN'>('UP')
@@ -155,11 +356,13 @@ export default function MarketPage({ mode }: Props) {
   const [liveInterval, setLiveInterval] = useState(0.5)
   const [holders, setHolders] = useState<LiveHoldersResponse | null>(null)
   const [holdersRevision, setHoldersRevision] = useState(0)
-  const [holdersReloading, setHoldersReloading] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const liveWsRef = useRef<WebSocket | null>(null)
   const liveActiveRef = useRef(liveActive)
+  const liveMarketIdRef = useRef('')
   const liveReconnectTimer = useRef<number | null>(null)
+  const liveVolumeRefreshTimer = useRef<number | null>(null)
+  const holdersTouchedRef = useRef<Map<string, number>>(new Map())
   const liveReconnectAttempt = useRef(0)
   const effectiveSplitRef = useRef(effectiveSplit)
   const selectedDateRef = useRef(selectedDate)
@@ -225,6 +428,13 @@ export default function MarketPage({ mode }: Props) {
     if (liveReconnectTimer.current != null) {
       window.clearTimeout(liveReconnectTimer.current)
       liveReconnectTimer.current = null
+    }
+  }
+
+  const clearLiveVolumeRefresh = () => {
+    if (liveVolumeRefreshTimer.current != null) {
+      window.clearInterval(liveVolumeRefreshTimer.current)
+      liveVolumeRefreshTimer.current = null
     }
   }
 
@@ -509,6 +719,7 @@ export default function MarketPage({ mode }: Props) {
   const startLive = (opts?: { soft?: boolean }) => {
     const soft = Boolean(opts?.soft)
     clearLiveReconnectTimer()
+    clearLiveVolumeRefresh()
     stopWs()
     const prev = liveWsRef.current
     liveWsRef.current = null
@@ -524,10 +735,12 @@ export default function MarketPage({ mode }: Props) {
       setSeriesLive([])
       setTick(null)
       setActivity([])
+      setLiveActivityTrades([])
       setBook(null)
       setHolders(null)
       setHoldersRevision(0)
       setLiveMarketId('')
+      liveMarketIdRef.current = ''
       setLiveWindow(null)
       liveReconnectAttempt.current = 0
     }
@@ -537,39 +750,49 @@ export default function MarketPage({ mode }: Props) {
     const ws = new WebSocket(wsUrl('/api/ws/live'))
     liveWsRef.current = ws
 
-    const seedSeries = (marketId?: string | null) => {
-      const reqId = marketId ? String(marketId) : ''
-      api
-        .liveSeries(reqId || undefined, 300_000)
-        .then((res) => {
-          if (liveWsRef.current !== ws) return
-          if (reqId && res.market_id && String(res.market_id) !== reqId) return
-          const points = (res.series ?? [])
-            .filter((p) => p.t != null && Number.isFinite(Number(p.t)))
-            .map((p) => ({
-              t: Number(p.t),
-              up: p.up ?? null,
-              down: p.down ?? null,
-              btc: p.btc ?? null,
-              twap: p.twap ?? null,
-              chainlink: p.chainlink ?? null,
-              ...volumeFields(p),
-            }))
-          if (!points.length) return
-          setSeriesLive((prev) => {
-            // Prefer longer history; keep any newer live ticks past the seed.
-            if (!prev.length) return points
-            const seedLast = points[points.length - 1].t
-            const newer = prev.filter((p) => p.t > seedLast)
-            const byT = new Map<number, LiveSeriesPoint>()
-            for (const p of points) byT.set(p.t, p)
-            for (const p of newer) byT.set(p.t, p)
-            return [...byT.values()].sort((a, b) => a.t - b.t)
-          })
-        })
-        .catch(() => {
-          /* backfill is best-effort */
-        })
+    const applySeriesSeed = (
+      res: {
+        market_id?: string | null
+        series?: LiveSeriesPoint[]
+      },
+      reqId?: string,
+    ) => {
+      if (reqId && res.market_id && String(res.market_id) !== reqId) return
+      const points = (res.series ?? [])
+        .filter((p) => p.t != null && Number.isFinite(Number(p.t)))
+        .map((p) => ({
+          t: Number(p.t),
+          up: p.up ?? null,
+          down: p.down ?? null,
+          btc: p.btc ?? null,
+          twap: p.twap ?? null,
+          chainlink: p.chainlink ?? null,
+          ...volumeFields(p),
+        }))
+      if (!points.length) return
+      setSeriesLive((prev) => {
+        // Seed carries parquet volume; keep larger of seed vs live RTDS bumps.
+        const byT = new Map<number, LiveSeriesPoint>()
+        for (const p of points) byT.set(p.t, p)
+        for (const p of prev) {
+          const seeded = byT.get(p.t)
+          if (seeded) {
+            byT.set(p.t, {
+              ...seeded,
+              up: p.up ?? seeded.up,
+              down: p.down ?? seeded.down,
+              btc: p.btc ?? seeded.btc,
+              twap: p.twap ?? seeded.twap,
+              chainlink: p.chainlink ?? seeded.chainlink,
+              ...maxVolumeFields(volumeFields(seeded), volumeFields(p)),
+            })
+          } else {
+            byT.set(p.t, { ...p, ...volumeFields(p) })
+          }
+        }
+        const merged = [...byT.values()].sort((a, b) => a.t - b.t)
+        return merged.length > 1200 ? merged.slice(-1200) : merged
+      })
     }
 
     ws.onopen = () => {
@@ -577,8 +800,8 @@ export default function MarketPage({ mode }: Props) {
       liveReconnectAttempt.current = 0
       setError(null)
       ws.send(JSON.stringify({ interval_s: interval }))
-      // Seed immediately (buffer/parquet) before ticks accumulate.
-      seedSeries()
+      // Chart backfill arrives via WS `series` messages (no HTTP poll).
+      clearLiveVolumeRefresh()
     }
     ws.onmessage = (ev) => {
       if (liveWsRef.current !== ws) return
@@ -587,17 +810,27 @@ export default function MarketPage({ mode }: Props) {
         setError(msg.message || 'Live feed error')
         return
       }
+      if (msg.type === 'series') {
+        const res = msg as { market_id?: string | null; series?: LiveSeriesPoint[] }
+        applySeriesSeed(res, liveMarketIdRef.current || undefined)
+        return
+      }
       if (msg.type === 'market') {
-        if (msg.market_id) setLiveMarketId(String(msg.market_id))
+        if (msg.market_id) {
+          const mid = String(msg.market_id)
+          liveMarketIdRef.current = mid
+          setLiveMarketId(mid)
+        }
         if (msg.start_time != null && msg.end_time != null) {
           setLiveWindow({ start: Number(msg.start_time), end: Number(msg.end_time) })
         }
         // Clear prior window quotes so Price To Beat doesn't stick across markets.
         setTick(null)
         setSeriesLive([])
+        setLiveActivityTrades([])
         setBook(null)
         setHolders(null)
-        seedSeries(msg.market_id)
+        holdersTouchedRef.current.clear()
         // Closed market just rolled — rebuild TWAP catalog after VPS sync lands.
         window.setTimeout(() => {
           void refreshMarketCatalog({ rebuild: true, preferLatest: true })
@@ -605,15 +838,45 @@ export default function MarketPage({ mode }: Props) {
         return
       }
       if (msg.type === 'holders') {
-        const upSorted = sortHolders(msg.up)
-        const downSorted = sortHolders(msg.down)
-        setHolders({
+        const api: LiveHoldersResponse = {
           market_id: msg.market_id ?? null,
           condition_id: msg.condition_id ?? null,
           updated_at: msg.updated_at ?? Date.now(),
           live: true,
-          up: upSorted,
-          down: downSorted,
+          up: sortHolders(msg.up),
+          down: sortHolders(msg.down),
+        }
+        setHolders((prev) => mergeHoldersFromApi(api, prev, holdersTouchedRef.current))
+        setHoldersRevision((n) => n + 1)
+        return
+      }
+      if (msg.type === 'activity') {
+        const incoming = (msg as { trades?: LiveActivityTrade[] }).trades ?? []
+        if (!incoming.length) return
+        setLiveActivityTrades((prev) => {
+          const byId = new Map<string, LiveActivityTrade>()
+          for (const t of incoming) {
+            if (t?.id) byId.set(String(t.id), t)
+          }
+          for (const t of prev) byId.set(t.id, t)
+          return [...byId.values()]
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .slice(0, 80)
+        })
+        setSeriesLive((prev) => {
+          let next = prev
+          for (const t of incoming) {
+            next = applyActivityTradeToSeries(next, t)
+          }
+          return next
+        })
+        // Holders Data API lags; mirror fills into the board immediately.
+        setHolders((prev) => {
+          let next = prev
+          for (const t of incoming) {
+            next = applyActivityTradeToHolders(next, t, holdersTouchedRef.current)
+          }
+          return next
         })
         setHoldersRevision((n) => n + 1)
         return
@@ -623,7 +886,11 @@ export default function MarketPage({ mode }: Props) {
         if (msg.error) setError(String(msg.error))
         else setError(null)
         setTick(msg)
-        if (msg.market_id) setLiveMarketId(String(msg.market_id))
+        if (msg.market_id) {
+          const mid = String(msg.market_id)
+          liveMarketIdRef.current = mid
+          setLiveMarketId(mid)
+        }
         if (msg.start_time != null && msg.end_time != null) {
           setLiveWindow({ start: Number(msg.start_time), end: Number(msg.end_time) })
         }
@@ -647,12 +914,14 @@ export default function MarketPage({ mode }: Props) {
               btc: msg.btc_price ?? null,
               twap: msg.btc_twap_30s ?? null,
               chainlink: msg.btc_chainlink ?? null,
+              ...volumeFields({}),
             }
             if (!prev.length) return [point]
             const last = prev[prev.length - 1]
             if (last.t === point.t) {
               const next = prev.slice(0, -1)
-              next.push({ ...last, ...point })
+              // Keep volume from the seeded point; tick only updates prices.
+              next.push({ ...last, ...point, ...volumeFields(last) })
               return next
             }
             if (point.t < last.t) {
@@ -660,7 +929,7 @@ export default function MarketPage({ mode }: Props) {
               return prev
             }
             const next = [...prev, point]
-            return next.length > 900 ? next.slice(-900) : next
+            return next.length > 1200 ? next.slice(-1200) : next
           })
         }
       }
@@ -671,6 +940,7 @@ export default function MarketPage({ mode }: Props) {
     }
     ws.onclose = (ev) => {
       if (liveWsRef.current !== ws) return
+      clearLiveVolumeRefresh()
       liveWsRef.current = null
       // Only surface unexpected drops (not clean client close / StrictMode teardown).
       if (!ev.wasClean && ev.code !== 1000 && ev.code !== 1001) {
@@ -686,6 +956,7 @@ export default function MarketPage({ mode }: Props) {
     startLive()
     return () => {
       clearLiveReconnectTimer()
+      clearLiveVolumeRefresh()
       liveActiveRef.current = false
       const ws = liveWsRef.current
       liveWsRef.current = null
@@ -699,27 +970,6 @@ export default function MarketPage({ mode }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const reloadHolders = async () => {
-    if (holdersReloading) return
-    setHoldersReloading(true)
-    try {
-      const res = await api.liveHolders(20)
-      setHolders({
-        market_id: res.market_id ?? null,
-        condition_id: res.condition_id ?? null,
-        updated_at: res.updated_at ?? Date.now(),
-        live: true,
-        up: sortHolders(res.up),
-        down: sortHolders(res.down),
-      })
-      setHoldersRevision((n) => n + 1)
-    } catch {
-      /* keep last good snapshot */
-    } finally {
-      setHoldersReloading(false)
-    }
-  }
-
   const onLiveInterval = (s: number) => {
     const v = Math.max(0.1, Math.min(2, s))
     setLiveInterval(v)
@@ -732,6 +982,7 @@ export default function MarketPage({ mode }: Props) {
   const toggleLive = () => {
     if (liveActive) {
       clearLiveReconnectTimer()
+      clearLiveVolumeRefresh()
       liveActiveRef.current = false
       const ws = liveWsRef.current
       liveWsRef.current = null
@@ -743,8 +994,10 @@ export default function MarketPage({ mode }: Props) {
       }
       setLiveActive(false)
       setLiveMarketId('')
+      liveMarketIdRef.current = ''
       setLiveWindow(null)
       setHolders(null)
+      setLiveActivityTrades([])
       setError(null)
       if (detail) {
         setSeriesLive(
@@ -964,42 +1217,67 @@ export default function MarketPage({ mode }: Props) {
 
   return (
     <div className="workspace">
-      <ControlSidebar
-        mode={mode}
-        liveActive={liveActive}
-        onToggleLive={toggleLive}
-        liveLabel={liveLabel}
-        liveInterval={liveInterval}
-        onLiveInterval={onLiveInterval}
-        collection={collection}
-        onCollection={setCollection}
-        split={split}
-        onSplit={setSplit}
-        indexing={indexing}
-        dateMin={dateMin}
-        dateMax={dateMax}
-        selectedDate={selectedDate}
-        onDate={setSelectedDate}
-        selectedTime={selectedTime}
-        markets={markets}
-        onTime={onTimeChange}
-        formatSlotLabel={formatSlotLabel}
-        speed={speed}
-        onSpeed={setReplaySpeed}
-        playing={playing}
-        paused={paused}
-        onPlay={() => startReplay()}
-        onPause={pauseReplay}
-        onResume={resumeReplay}
-        onStop={stopWs}
-        marketId={marketId}
-        hasPrev={Boolean(neighbors.prev)}
-        hasNext={Boolean(neighbors.next)}
-        onPrev={() => neighbors.prev && setMarketId(neighbors.prev)}
-        onNext={() => neighbors.next && setMarketId(neighbors.next)}
-        strategy={strategy}
-        onStrategy={setStrategy}
-      />
+      <aside className="workspace-rail workspace-rail-left">
+        <TradeSidebar
+          mode={mode}
+          tradeAction={tradeAction}
+          onTradeAction={setTradeAction}
+          side={side}
+          onSide={setSide}
+          onTrade={onTrade}
+          upPrice={up}
+          downPrice={down}
+          upHasAsk={book == null ? true : (book.up?.asks?.length ?? 0) > 0}
+          downHasAsk={book == null ? true : (book.down?.asks?.length ?? 0) > 0}
+          upHasBid={book == null ? true : (book.up?.bids?.length ?? 0) > 0}
+          downHasBid={book == null ? true : (book.down?.bids?.length ?? 0) > 0}
+          cash={tick?.portfolio?.cash}
+          heldShares={
+            side === 'UP' ? tick?.portfolio?.up_shares ?? 0 : tick?.portfolio?.down_shares ?? 0
+          }
+          tradeDisabled={liveActive || mode !== 'paper' || (!playing && !sessionId)}
+          monitorHint={liveActive || mode === 'monitor'}
+          showOutcome={showOutcomeCard}
+          outcome={historyOutcome}
+          outcomeSubtitle={outcomeSubtitle}
+        />
+        <ControlSidebar
+          mode={mode}
+          liveActive={liveActive}
+          onToggleLive={toggleLive}
+          liveLabel={liveLabel}
+          liveInterval={liveInterval}
+          onLiveInterval={onLiveInterval}
+          collection={collection}
+          onCollection={setCollection}
+          split={split}
+          onSplit={setSplit}
+          indexing={indexing}
+          dateMin={dateMin}
+          dateMax={dateMax}
+          selectedDate={selectedDate}
+          onDate={setSelectedDate}
+          selectedTime={selectedTime}
+          markets={markets}
+          onTime={onTimeChange}
+          formatSlotLabel={formatSlotLabel}
+          speed={speed}
+          onSpeed={setReplaySpeed}
+          playing={playing}
+          paused={paused}
+          onPlay={() => startReplay()}
+          onPause={pauseReplay}
+          onResume={resumeReplay}
+          onStop={stopWs}
+          marketId={marketId}
+          hasPrev={Boolean(neighbors.prev)}
+          hasNext={Boolean(neighbors.next)}
+          onPrev={() => neighbors.prev && setMarketId(neighbors.prev)}
+          onNext={() => neighbors.next && setMarketId(neighbors.next)}
+          strategy={strategy}
+          onStrategy={setStrategy}
+        />
+      </aside>
 
       <div className="workspace-main">
         {error && <p className="error">{error}</p>}
@@ -1042,6 +1320,8 @@ export default function MarketPage({ mode }: Props) {
             xDomain={sharedXDomain}
             hoverTime={sharedHoverTime}
             onHoverTimeChange={setSharedHoverTime}
+            live={liveActive}
+            nowMs={liveActive ? nowMs : undefined}
           />
           <PriceChart
             data={chartData}
@@ -1062,6 +1342,8 @@ export default function MarketPage({ mode }: Props) {
             xDomain={sharedXDomain}
             hoverTime={sharedHoverTime}
             onHoverTimeChange={setSharedHoverTime}
+            live={liveActive}
+            nowMs={liveActive ? nowMs : undefined}
           />
         </div>
 
@@ -1140,33 +1422,13 @@ export default function MarketPage({ mode }: Props) {
         </div>
       </div>
 
-      <TradeSidebar
-        mode={mode}
-        tradeAction={tradeAction}
-        onTradeAction={setTradeAction}
-        side={side}
-        onSide={setSide}
-        onTrade={onTrade}
-        upPrice={up}
-        downPrice={down}
-        upHasAsk={book == null ? true : (book.up?.asks?.length ?? 0) > 0}
-        downHasAsk={book == null ? true : (book.down?.asks?.length ?? 0) > 0}
-        upHasBid={book == null ? true : (book.up?.bids?.length ?? 0) > 0}
-        downHasBid={book == null ? true : (book.down?.bids?.length ?? 0) > 0}
-        cash={tick?.portfolio?.cash}
-        heldShares={
-          side === 'UP' ? tick?.portfolio?.up_shares ?? 0 : tick?.portfolio?.down_shares ?? 0
-        }
-        tradeDisabled={liveActive || mode !== 'paper' || (!playing && !sessionId)}
-        monitorHint={liveActive || mode === 'monitor'}
+      <FeedSidebar
         liveHolders={liveActive}
         holders={holders}
         holdersRevision={holdersRevision}
-        onReloadHolders={reloadHolders}
-        holdersReloading={holdersReloading}
-        showOutcome={showOutcomeCard}
-        outcome={historyOutcome}
-        outcomeSubtitle={outcomeSubtitle}
+        liveActivity={liveActive}
+        activityTrades={liveActivityTrades}
+        nowMs={liveActive ? nowMs : undefined}
       />
     </div>
   )

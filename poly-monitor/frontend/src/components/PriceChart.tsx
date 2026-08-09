@@ -11,6 +11,7 @@ import {
   YAxis,
 } from 'recharts'
 import { formatCents } from '../api'
+import ChartCollapseButton from './ChartCollapseButton'
 
 export type BtcSeriesKey = 'twap' | 'chainlink' | 'binance'
 
@@ -323,6 +324,7 @@ export default function PriceChart({
   } | null>(null)
   const [hoverZone, setHoverZone] = useState<'price' | 'time' | 'plot'>('plot')
   const [localHoverTime, setLocalHoverTime] = useState<number | null>(null)
+  const [collapsed, setCollapsed] = useState(false)
   const hoverTime = onHoverTimeChange ? (hoverTimeProp ?? null) : localHoverTime
   const setHoverTime = onHoverTimeChange ?? setLocalHoverTime
 
@@ -463,6 +465,8 @@ export default function PriceChart({
 
   const onPointerDown = (ev: React.PointerEvent) => {
     if (ev.button !== 0) return
+    // Prevent browser focus ring on the chart SVG / wrapper.
+    ev.preventDefault()
     const zone = hitZone(ev.clientX, ev.clientY)
     setHoverZone(zone)
     ;(ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId)
@@ -551,14 +555,21 @@ export default function PriceChart({
   }
 
   return (
-    <div className="chart-block">
+    <div className={`chart-block${collapsed ? ' chart-block-collapsed' : ''}`}>
       <div className="chart-header">
         <div className="chart-header-left">
-          {title && <div className="chart-title">{title}</div>}
-          <ChartHeaderTip tip={hoverTip} />
+          <div className="chart-title-row">
+            <ChartCollapseButton
+              collapsed={collapsed}
+              onToggle={() => setCollapsed((v) => !v)}
+              label={title || (showBtc ? 'BTC price' : 'Up / Down price')}
+            />
+            {title && <div className="chart-title">{title}</div>}
+          </div>
+          {!collapsed && <ChartHeaderTip tip={hoverTip} />}
         </div>
         <div className="chart-header-right">
-          {showBtc && onSeriesVisibleChange ? (
+          {!collapsed && showBtc && onSeriesVisibleChange ? (
             <div className="chart-series-toggles" role="group" aria-label="BTC series visibility">
               {SERIES_META.map((s) => (
                 <label
@@ -578,6 +589,7 @@ export default function PriceChart({
           ) : null}
         </div>
       </div>
+      {!collapsed && (
       <div
         className={`chart-wrap chart-wrap-zoom chart-cursor-${hoverZone}`}
         ref={wrapRef}
@@ -786,6 +798,7 @@ export default function PriceChart({
           </button>
         )}
       </div>
+      )}
     </div>
   )
 }

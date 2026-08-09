@@ -1,5 +1,3 @@
-import type { LiveHoldersResponse } from '../api'
-import HoldersPanel from './HoldersPanel'
 import OutcomeCard from './OutcomeCard'
 import TradeCard from './TradeCard'
 
@@ -20,11 +18,6 @@ type Props = {
   heldShares?: number
   tradeDisabled: boolean
   monitorHint?: boolean
-  liveHolders?: boolean
-  holders?: LiveHoldersResponse | null
-  holdersRevision?: number
-  onReloadHolders?: () => void | Promise<void>
-  holdersReloading?: boolean
   /** History stopped: show settled outcome instead of trade card */
   showOutcome?: boolean
   outcome?: 'Up' | 'Down' | 'not_closed' | null
@@ -49,18 +42,13 @@ export default function TradeSidebar(props: Props) {
     heldShares,
     tradeDisabled,
     monitorHint,
-    liveHolders = false,
-    holders = null,
-    holdersRevision = 0,
-    onReloadHolders,
-    holdersReloading = false,
     showOutcome = false,
     outcome = null,
     outcomeSubtitle = '',
   } = props
 
   return (
-    <aside className="control-sidebar control-sidebar-right">
+    <div className="trade-stack">
       {showOutcome ? (
         <OutcomeCard outcome={outcome} subtitle={outcomeSubtitle} />
       ) : (
@@ -82,13 +70,6 @@ export default function TradeSidebar(props: Props) {
           tradeDisabled={tradeDisabled}
         />
       )}
-      <HoldersPanel
-        enabled={liveHolders}
-        data={holders}
-        revision={holdersRevision}
-        onReload={onReloadHolders}
-        reloading={holdersReloading}
-      />
-    </aside>
+    </div>
   )
 }

@@ -1,12 +1,10 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { HolderRow, LiveHoldersResponse } from '../api'
 
 type Props = {
   enabled: boolean
   data: LiveHoldersResponse | null
-  revision: number
-  onReload?: () => void | Promise<void>
-  reloading?: boolean
+  revision?: number
 }
 
 function truncateWallet(wallet: string): string {
@@ -54,66 +52,99 @@ function HolderAvatar({ row }: { row: HolderRow }) {
   )
 }
 
+/** Whole shares as integers; one decimal only when needed (e.g. 12.5). */
 function formatShares(n: number): string {
   if (!Number.isFinite(n)) return '—'
-  return n.toLocaleString(undefined, { maximumFractionDigits: 0 })
+  const rounded = Math.round(n * 10) / 10
+  const hasFrac = Math.abs(rounded - Math.round(rounded)) > 1e-9
+  return rounded.toLocaleString(undefined, {
+    minimumFractionDigits: hasFrac ? 1 : 0,
+    maximumFractionDigits: hasFrac ? 1 : 0,
+  })
 }
+
+function formatDelta(n: number): string {
+  if (!Number.isFinite(n) || Math.abs(n) < 1e-9) return ''
+  const sign = n > 0 ? '+' : ''
+  return `${sign}${formatShares(n)}`
+}
+
+type HolderFlash = {
+  dir: 'up' | 'down'
+  token: number
+  delta: number
+}
+
+const FLASH_MS = 1500
 
 function HoldersColumn({
   title,
   rows,
   tone,
-  revision,
 }: {
   title: string
   rows: HolderRow[]
   tone: 'up' | 'down'
-  revision: number
 }) {
-  const listRef = useRef<HTMLUListElement>(null)
-  const prevTops = useRef(new Map<string, number>())
-  const prevRanks = useRef(new Map<string, number>())
   const sorted = useMemo(() => sortHolders(rows), [rows])
+  const prevAmounts = useRef(new Map<string, number>())
+  const flashTimers = useRef(new Map<string, number>())
+  const [flashes, setFlashes] = useState(() => new Map<string, HolderFlash>())
 
-  useLayoutEffect(() => {
-    const list = listRef.current
-    if (!list) return
-    const nodes = list.querySelectorAll<HTMLElement>('[data-wallet]')
-    const nextTops = new Map<string, number>()
-    const nextRanks = new Map<string, number>()
+  useEffect(() => {
+    const prev = prevAmounts.current
+    const seen = new Set<string>()
+    const deltas: { k: string; dir: 'up' | 'down'; delta: number }[] = []
 
-    nodes.forEach((el, index) => {
-      const wallet = el.dataset.wallet
-      if (!wallet) return
-      const top = el.getBoundingClientRect().top
-      nextTops.set(wallet, top)
-      nextRanks.set(wallet, index)
-
-      const prevTop = prevTops.current.get(wallet)
-      const prevRank = prevRanks.current.get(wallet)
-      if (prevTop != null) {
-        const dy = prevTop - top
-        if (Math.abs(dy) > 0.5) {
-          el.style.transition = 'none'
-          el.style.transform = `translateY(${dy}px)`
-          void el.offsetHeight
-          el.style.transition = 'transform 480ms cubic-bezier(0.22, 1, 0.36, 1)'
-          el.style.transform = 'translateY(0)'
+    for (const row of sorted) {
+      const k = row.proxy_wallet.toLowerCase()
+      seen.add(k)
+      const amount = Number(row.amount) || 0
+      const before = prev.get(k)
+      if (before == null) {
+        if (prev.size > 0 && amount > 0) {
+          deltas.push({ k, dir: 'up', delta: amount })
         }
+      } else if (Math.abs(before - amount) > 1e-6) {
+        const delta = amount - before
+        deltas.push({ k, dir: delta > 0 ? 'up' : 'down', delta })
       }
+      prev.set(k, amount)
+    }
 
-      el.classList.remove('holders-rank-up', 'holders-rank-down')
-      if (prevRank != null && prevRank !== index) {
-        el.classList.add(index < prevRank ? 'holders-rank-up' : 'holders-rank-down')
-        window.setTimeout(() => {
-          el.classList.remove('holders-rank-up', 'holders-rank-down')
-        }, 700)
+    for (const k of [...prev.keys()]) {
+      if (!seen.has(k)) prev.delete(k)
+    }
+
+    if (!deltas.length) return
+    setFlashes((prevFlashes) => {
+      const next = new Map(prevFlashes)
+      for (const { k, dir, delta } of deltas) {
+        const token = (next.get(k)?.token ?? 0) + 1
+        next.set(k, { dir, token, delta })
+        const oldTimer = flashTimers.current.get(k)
+        if (oldTimer != null) window.clearTimeout(oldTimer)
+        const timer = window.setTimeout(() => {
+          setFlashes((cur) => {
+            const n = new Map(cur)
+            const f = n.get(k)
+            if (f && f.token === token) n.delete(k)
+            return n
+          })
+          flashTimers.current.delete(k)
+        }, FLASH_MS)
+        flashTimers.current.set(k, timer)
       }
+      return next
     })
+  }, [sorted])
 
-    prevTops.current = nextTops
-    prevRanks.current = nextRanks
-  }, [sorted, revision])
+  useEffect(() => {
+    return () => {
+      for (const t of flashTimers.current.values()) window.clearTimeout(t)
+      flashTimers.current.clear()
+    }
+  }, [])
 
   return (
     <section className="holders-col">
@@ -121,66 +152,56 @@ function HoldersColumn({
         <h3>{title}</h3>
         <span>SHARES</span>
       </header>
-      <ul className="holders-list" ref={listRef}>
+      <ul className="holders-list">
         {sorted.length === 0 && <li className="holders-empty">No holders yet</li>}
-        {sorted.map((row) => (
-          <li
-            key={`${tone}-${row.proxy_wallet}`}
-            data-wallet={row.proxy_wallet}
-            className="holders-row"
-          >
-            <HolderAvatar row={row} />
-            <span className="holders-name" title={row.proxy_wallet}>
-              {row.display_name || truncateWallet(row.proxy_wallet)}
-            </span>
-            <span className={`holders-shares ${tone}`}>{formatShares(row.amount)}</span>
-          </li>
-        ))}
+        {sorted.map((row) => {
+          const flash = flashes.get(row.proxy_wallet.toLowerCase())
+          return (
+            <li
+              key={
+                flash
+                  ? `${tone}-${row.proxy_wallet}-${flash.token}`
+                  : `${tone}-${row.proxy_wallet}`
+              }
+              className={`holders-row${flash ? ` holders-flash-${flash.dir}` : ''}`}
+            >
+              <HolderAvatar row={row} />
+              <span className="holders-name" title={row.proxy_wallet}>
+                {row.display_name || truncateWallet(row.proxy_wallet)}
+              </span>
+              <span className="holders-shares-wrap">
+                <span className={`holders-shares ${tone}`}>{formatShares(row.amount)}</span>
+                {flash && (
+                  <span key={flash.token} className={`holders-delta ${flash.dir}`}>
+                    {formatDelta(flash.delta)}
+                  </span>
+                )}
+              </span>
+            </li>
+          )
+        })}
       </ul>
     </section>
   )
 }
 
-export default function HoldersPanel({ enabled, data, revision, onReload, reloading = false }: Props) {
+export default function HoldersPanel({ enabled, data }: Props) {
   if (!enabled) return null
 
   return (
     <div className="holders-panel">
-      <div className="holders-toolbar">
+      <div className="holders-panel-header">
+        <div className="holders-panel-title">Top holders</div>
         <div className="holders-live-badge" aria-live="polite">
           <span className="holders-live-dot" />
           Live
         </div>
-        {onReload && (
-          <button
-            type="button"
-            className={`holders-reload-btn${reloading ? ' spinning' : ''}`}
-            onClick={() => void onReload()}
-            disabled={reloading}
-            title="Reload holders"
-            aria-label="Reload holders"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path
-                d="M4.5 12a7.5 7.5 0 0 1 12.7-5.4M19.5 12a7.5 7.5 0 0 1-12.7 5.4"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-              />
-              <path
-                d="M17.2 3.8v4.2h-4.2M6.8 20.2v-4.2h4.2"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-        )}
       </div>
-      <div className="holders-grid">
-        <HoldersColumn title="Up holders" rows={data?.up ?? []} tone="up" revision={revision} />
-        <HoldersColumn title="Down holders" rows={data?.down ?? []} tone="down" revision={revision} />
+      <div className="holders-scroll">
+        <div className="holders-grid">
+          <HoldersColumn title="Up holders" rows={data?.up ?? []} tone="up" />
+          <HoldersColumn title="Down holders" rows={data?.down ?? []} tone="down" />
+        </div>
       </div>
     </div>
   )

@@ -108,11 +108,13 @@ def attach_volumes_to_series(
     buckets: dict[int, dict[str, float]],
     *,
     bucket_ms: int = VOLUME_BUCKET_MS,
+    synthesize_missing: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Place each 5s bucket's volume on the last series point inside that bucket.
     Other points get 0 so the volume chart shows one bar per 5 seconds.
-    Bar timestamp = bucket end (start + bucket_ms) when no series point lands in-bucket.
+    When synthesize_missing is True, buckets with no in-window price sample attach to
+    the nearest series point; live charts set this False to avoid early ghost bars.
     """
     if not series:
         return series
@@ -133,9 +135,12 @@ def attach_volumes_to_series(
             start = start - bucket_ms
         last_idx[start] = i
 
+    times = [int(p["t"]) for p in series] if synthesize_missing else []
     for start, vols in buckets.items():
         i = last_idx.get(int(start))
         if i is None:
+            if not synthesize_missing:
+                continue
             # No price sample in this 5s window — synthesize at bucket end if inside series span
             end_t = int(start) + bucket_ms
             t0 = int(series[0]["t"])
@@ -143,7 +148,6 @@ def attach_volumes_to_series(
             if end_t < t0 or int(start) > t1:
                 continue
             # Attach to nearest series point at or after bucket end, else last
-            times = [int(p["t"]) for p in series]
             j = bisect.bisect_left(times, end_t)
             if j >= len(series):
                 j = len(series) - 1

@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import ChartCollapseButton from './ChartCollapseButton'
 import {
   Bar,
   CartesianGrid,
@@ -28,10 +29,19 @@ type Props = {
   xDomain: TimeDomain
   hoverTime?: number | null
   onHoverTimeChange?: (t: number | null) => void
+  /** Live market: wait for several real bars; forming 5s bar grows in height as trades land. */
+  live?: boolean
+  /** Wall clock (ms) — pins the forming live volume bar to "now". */
+  nowMs?: number
 }
 
 const Y_AXIS_WIDTH = 72
 const CHART_MARGIN = { top: 4, right: 8, left: 4, bottom: 28 }
+const VOLUME_BUCKET_MS = 5_000
+/** Don't paint live volume until this many real buckets exist. */
+const LIVE_MIN_BARS = 3
+/** Approx plot width used to size bars from visible time span. */
+const PLOT_WIDTH_PX = 720
 
 function formatTimeTick(ms: number): string {
   try {
@@ -89,6 +99,7 @@ function buySellPair(
         height={height}
         fill={kind === 'buy' ? '#10b981' : '#ef4444'}
         fillOpacity={opacity}
+        stroke="none"
       />
     )
   }
@@ -105,6 +116,13 @@ function buySellPair(
       {sell > 0 && makeRect('sell', sellH, 0.7)}
     </>
   )
+}
+
+/** Draw at our time-domain barSize; center on Recharts' slot (ignore its fluctuating band width). */
+function barDrawBox(x: number, width: number, barSize: number): { bx: number; w: number } {
+  const w = Math.max(2, barSize)
+  const bx = x + (width > 0 ? width / 2 : 0) - w / 2
+  return { bx, w }
 }
 
 /** Buy + sell both above zero at the same x; smaller bar under, larger on top. */
@@ -125,8 +143,7 @@ function BinanceBuySellShape(props: {
   // dataKey=range bar spans 0 → range; bottom edge is the zero axis.
   const y0 = y + height
   const pxPerUnit = height / R
-  const w = Math.min(barSize, width > 0 ? width : barSize)
-  const bx = x + (width > 0 ? (width - w) / 2 : 0)
+  const { bx, w } = barDrawBox(x, width, barSize)
 
   return (
     <g>{buySellPair(buy, sell, pxPerUnit, bx, w, y0, 'up', 'bn')}</g>
@@ -174,8 +191,7 @@ function OutcomesBuySellShape(props: {
   // Positive placeholder: bottom edge is y=0. Draw Down into the negative half.
   const y0 = y + height
   const pxPerUnit = height / R
-  const w = Math.min(barSize, width > 0 ? width : barSize)
-  const bx = x + (width > 0 ? (width - w) / 2 : 0)
+  const { bx, w } = barDrawBox(x, width, barSize)
   // Thin grey band on the zero axis so Up (above) / Down (below) read as split.
   const axisGap = 1
 
@@ -183,7 +199,7 @@ function OutcomesBuySellShape(props: {
     <g>
       {buySellPair(upBuy, upSell, pxPerUnit, bx, w, y0, 'up', 'up', axisGap)}
       {buySellPair(downBuy, downSell, pxPerUnit, bx, w, y0, 'down', 'dn', axisGap)}
-      <rect x={bx} y={y0 - 0.5} width={w} height={1} fill="#d1d5db" />
+      <rect x={bx} y={y0 - 0.5} width={w} height={1} fill="#d1d5db" stroke="none" />
     </g>
   )
 }
@@ -195,16 +211,39 @@ export default function VolumeChart({
   xDomain,
   hoverTime,
   onHoverTimeChange,
+  live = false,
 }: Props) {
+  const [collapsed, setCollapsed] = useState(false)
+
+  // Wider when zoomed in (fewer 5s slots visible); thinner when zoomed out.
+  // ~92% of slot width so neighboring 5s bars sit close with a thin gap.
+  const barSize = useMemo(() => {
+    const span = Math.max(1, xDomain[1] - xDomain[0])
+    const slots = Math.max(1, span / VOLUME_BUCKET_MS)
+    return Math.round(Math.min(56, Math.max(10, (PLOT_WIDTH_PX / slots) * 0.92)))
+  }, [xDomain])
+
   // Backend attaches one 5s volume sample per bucket; drop empty slots for clearer bars.
+  // Live: fold samples into fixed 5s slots so the current bar stays put and grows in height.
   const chartData = useMemo(() => {
-    const rows = data.map((d) => {
+    type Row = {
+      t: number
+      range: number
+      buyTip?: number
+      sellTip?: number
+      upBuyTip?: number
+      upSellTip?: number
+      downBuyTip?: number
+      downSellTip?: number
+      _has: boolean
+    }
+
+    const toRow = (d: Omit<VolumePoint, 't'>, t: number): Row => {
       if (mode === 'binance') {
         const buy = Number(d.bn_buy) || 0
         const sell = Number(d.bn_sell) || 0
         return {
-          t: d.t,
-          // Placeholder for Bar layout; custom shape overlays buy/sell above zero.
+          t,
           range: Math.max(buy, sell, 1e-9),
           buyTip: buy,
           sellTip: sell,
@@ -216,8 +255,7 @@ export default function VolumeChart({
       const downBuy = Number(d.down_buy_vol) || 0
       const downSell = Number(d.down_sell_vol) || 0
       return {
-        t: d.t,
-        // Placeholder for positive half; custom shape also draws Down below axis.
+        t,
         range: Math.max(upBuy, upSell, downBuy, downSell, 1e-9),
         upBuyTip: upBuy,
         upSellTip: upSell,
@@ -225,14 +263,72 @@ export default function VolumeChart({
         downSellTip: downSell,
         _has: upBuy + upSell + downBuy + downSell > 0,
       }
-    })
+    }
+
+    if (!live) {
+      const rows = data.map((d) => toRow(d, d.t))
+      const nonempty = rows.filter((r) => r._has)
+      return nonempty.length ? nonempty : rows
+    }
+
+    // Aggregate by bucket start; volume is usually on one series point per bucket (use max).
+    const byStart = new Map<
+      number,
+      {
+        bn_buy: number
+        bn_sell: number
+        up_buy_vol: number
+        up_sell_vol: number
+        down_buy_vol: number
+        down_sell_vol: number
+      }
+    >()
+    for (const d of data) {
+      const t = Math.floor(Number(d.t))
+      if (!Number.isFinite(t)) continue
+      // Match backend: a point exactly on a bucket boundary belongs to the previous bucket.
+      let start = Math.floor(t / VOLUME_BUCKET_MS) * VOLUME_BUCKET_MS
+      if (t === start && start > 0) start -= VOLUME_BUCKET_MS
+      const cur = byStart.get(start) ?? {
+        bn_buy: 0,
+        bn_sell: 0,
+        up_buy_vol: 0,
+        up_sell_vol: 0,
+        down_buy_vol: 0,
+        down_sell_vol: 0,
+      }
+      cur.bn_buy = Math.max(cur.bn_buy, Number(d.bn_buy) || 0)
+      cur.bn_sell = Math.max(cur.bn_sell, Number(d.bn_sell) || 0)
+      cur.up_buy_vol = Math.max(cur.up_buy_vol, Number(d.up_buy_vol) || 0)
+      cur.up_sell_vol = Math.max(cur.up_sell_vol, Number(d.up_sell_vol) || 0)
+      cur.down_buy_vol = Math.max(cur.down_buy_vol, Number(d.down_buy_vol) || 0)
+      cur.down_sell_vol = Math.max(cur.down_sell_vol, Number(d.down_sell_vol) || 0)
+      byStart.set(start, cur)
+    }
+
+    // Plot at bucket start (always <= now once the bucket has begun) with fixed 5s spacing.
+    const rows: Row[] = []
+    for (const [start, vols] of [...byStart.entries()].sort((a, b) => a[0] - b[0])) {
+      rows.push(toRow(vols, start))
+    }
     const nonempty = rows.filter((r) => r._has)
-    return nonempty.length ? nonempty : rows
-  }, [data, mode])
+    // Ignore sparse early volume until several real buckets exist.
+    if (nonempty.length < LIVE_MIN_BARS) return []
+    return nonempty
+  }, [data, mode, live])
+
+  // Only bars in the visible time window — keeps Y scale from off-screen tall bars.
+  const visibleData = useMemo(() => {
+    const [x0, x1] = xDomain
+    return chartData.filter((d) => {
+      const t = Number(d.t)
+      return Number.isFinite(t) && t >= x0 && t <= x1
+    })
+  }, [chartData, xDomain])
 
   const yDomain = useMemo((): [number, number] => {
     let hi = 0
-    for (const d of chartData) {
+    for (const d of visibleData) {
       if (mode === 'binance') {
         hi = Math.max(hi, Number(d.buyTip) || 0, Number(d.sellTip) || 0)
       } else {
@@ -245,12 +341,14 @@ export default function VolumeChart({
         )
       }
     }
+    if (hi === 0) {
+      return mode === 'binance' ? [0, 0.01] : [-10, 10]
+    }
     const pad = Math.max(hi * 0.12, mode === 'binance' ? 0.001 : 1)
-    if (hi === 0) return mode === 'binance' ? [0, 0.01] : [-10, 10]
     if (mode === 'binance') return [0, hi + pad]
     // Symmetric so Up (above) and Down (below) share the same scale.
     return [-(hi + pad), hi + pad]
-  }, [chartData, mode])
+  }, [visibleData, mode])
 
   const timeTicks = useMemo(() => {
     const [a, b] = xDomain
@@ -259,19 +357,11 @@ export default function VolumeChart({
     return Array.from({ length: n }, (_, i) => a + (span * i) / (n - 1))
   }, [xDomain])
 
-  // Wide bars for 5s buckets (~70% of slot width, capped).
-  const barSize = useMemo(() => {
-    const span = Math.max(1, xDomain[1] - xDomain[0])
-    const slots = Math.max(1, span / 5_000)
-    const plotW = 560
-    return Math.round(Math.min(40, Math.max(14, (plotW / slots) * 0.78)))
-  }, [xDomain])
-
   const tip = useMemo(() => {
-    if (hoverTime == null || !chartData.length) return null
-    let best = chartData[0]
+    if (hoverTime == null || !visibleData.length) return null
+    let best = visibleData[0]
     let bestDist = Math.abs(best.t - hoverTime)
-    for (const p of chartData) {
+    for (const p of visibleData) {
       const dist = Math.abs(p.t - hoverTime)
       if (dist < bestDist) {
         best = p
@@ -279,9 +369,9 @@ export default function VolumeChart({
       }
     }
     return best
-  }, [chartData, hoverTime])
+  }, [visibleData, hoverTime])
 
-  const hasAny = chartData.some((d) =>
+  const hasAny = visibleData.some((d) =>
     mode === 'binance'
       ? (Number(d.buyTip) || 0) > 0 || (Number(d.sellTip) || 0) > 0
       : (Number(d.upBuyTip) || 0) +
@@ -319,84 +409,112 @@ export default function VolumeChart({
     return Shape
   }, [barSize])
 
+  const chartLabel =
+    title || (mode === 'binance' ? 'Binance BTC volume' : 'Up / Down volume')
+
   return (
-    <div className="chart-block chart-block-volume">
+    <div
+      className={`chart-block chart-block-volume${
+        collapsed ? ' chart-block-collapsed' : ''
+      }`}
+    >
       <div className="chart-header chart-header-volume">
         <div className="chart-header-left">
-          {title && <div className="chart-title">{title}</div>}
-          <div className="chart-header-tip chart-volume-tip">
-            {tip ? (
-              mode === 'binance' ? (
-                <span className="chart-header-tip-prices">
-                  <span className="chart-header-tip-price" style={{ color: '#10b981' }}>
-                    Buy {formatVol(Number(tip.buyTip) || 0, 'binance')} BTC
-                  </span>
-                  <span className="chart-header-tip-price" style={{ color: '#ef4444' }}>
-                    Sell {formatVol(Number(tip.sellTip) || 0, 'binance')} BTC
-                  </span>
-                </span>
-              ) : (
-                <span className="chart-header-tip-prices">
-                  <span className="chart-header-tip-price">
-                    Up{' '}
-                    <span style={{ color: '#10b981' }}>
-                      buy {formatVol(Number(tip.upBuyTip) || 0, 'outcomes')}
-                    </span>
-                    {' / '}
-                    <span style={{ color: '#ef4444' }}>
-                      sell {formatVol(Number(tip.upSellTip) || 0, 'outcomes')}
-                    </span>
-                  </span>
-                  <span className="chart-header-tip-price">
-                    Down{' '}
-                    <span style={{ color: '#10b981' }}>
-                      buy {formatVol(Number(tip.downBuyTip) || 0, 'outcomes')}
-                    </span>
-                    {' / '}
-                    <span style={{ color: '#ef4444' }}>
-                      sell {formatVol(Number(tip.downSellTip) || 0, 'outcomes')}
-                    </span>
-                  </span>
-                </span>
-              )
-            ) : (
-              <span className="chart-header-tip-empty">
-                {hasAny ? 'Hover chart for volume' : 'No trade volume in window'}
-              </span>
-            )}
+          <div className="chart-title-row">
+            <ChartCollapseButton
+              collapsed={collapsed}
+              onToggle={() => setCollapsed((v) => !v)}
+              label={chartLabel}
+            />
+            {title && <div className="chart-title">{title}</div>}
           </div>
-        </div>
-        <div className="chart-volume-legend" aria-hidden>
-          {mode === 'binance' ? (
-            <>
-              <span>
-                <i style={{ background: '#10b981' }} /> Buy
-              </span>
-              <span>
-                <i style={{ background: '#ef4444' }} /> Sell
-              </span>
-            </>
-          ) : (
-            <>
-              <span>
-                <i style={{ background: '#10b981' }} /> Buy
-              </span>
-              <span>
-                <i style={{ background: '#ef4444' }} /> Sell
-              </span>
-              <span className="chart-volume-legend-note">Up ↑ / Down ↓</span>
-            </>
+          {!collapsed && (
+            <div className="chart-header-tip chart-volume-tip">
+              {tip ? (
+                mode === 'binance' ? (
+                  <span className="chart-header-tip-prices">
+                    <span className="chart-header-tip-price" style={{ color: '#10b981' }}>
+                      Buy {formatVol(Number(tip.buyTip) || 0, 'binance')} BTC
+                    </span>
+                    <span className="chart-header-tip-price" style={{ color: '#ef4444' }}>
+                      Sell {formatVol(Number(tip.sellTip) || 0, 'binance')} BTC
+                    </span>
+                  </span>
+                ) : (
+                  <span className="chart-header-tip-prices">
+                    <span className="chart-header-tip-price">
+                      Up{' '}
+                      <span style={{ color: '#10b981' }}>
+                        buy {formatVol(Number(tip.upBuyTip) || 0, 'outcomes')}
+                      </span>
+                      {' / '}
+                      <span style={{ color: '#ef4444' }}>
+                        sell {formatVol(Number(tip.upSellTip) || 0, 'outcomes')}
+                      </span>
+                    </span>
+                    <span className="chart-header-tip-price">
+                      Down{' '}
+                      <span style={{ color: '#10b981' }}>
+                        buy {formatVol(Number(tip.downBuyTip) || 0, 'outcomes')}
+                      </span>
+                      {' / '}
+                      <span style={{ color: '#ef4444' }}>
+                        sell {formatVol(Number(tip.downSellTip) || 0, 'outcomes')}
+                      </span>
+                    </span>
+                  </span>
+                )
+              ) : (
+                <span className="chart-header-tip-empty">
+                  {live && !hasAny
+                    ? 'Waiting for volume bars…'
+                    : hasAny
+                      ? 'Hover chart for volume'
+                      : 'No trade volume in window'}
+                </span>
+              )}
+            </div>
           )}
         </div>
+        {!collapsed && (
+          <div className="chart-volume-legend" aria-hidden>
+            {mode === 'binance' ? (
+              <>
+                <span>
+                  <i style={{ background: '#10b981' }} /> Buy
+                </span>
+                <span>
+                  <i style={{ background: '#ef4444' }} /> Sell
+                </span>
+              </>
+            ) : (
+              <>
+                <span>
+                  <i style={{ background: '#10b981' }} /> Buy
+                </span>
+                <span>
+                  <i style={{ background: '#ef4444' }} /> Sell
+                </span>
+                <span className="chart-volume-legend-note">Up ↑ / Down ↓</span>
+              </>
+            )}
+          </div>
+        )}
       </div>
+      {!collapsed && (
       <div
         className={`chart-wrap chart-wrap-volume${
           mode === 'outcomes' ? ' chart-wrap-volume-outcomes' : ''
         }`}
+        tabIndex={-1}
+        onMouseDown={(e) => {
+          // Keep click from focusing the SVG (browser black focus rect).
+          e.preventDefault()
+        }}
       >
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
-            data={chartData}
+            data={visibleData}
             margin={CHART_MARGIN}
             syncId="market-price-charts"
             barCategoryGap="8%"
@@ -425,6 +543,7 @@ export default function VolumeChart({
             <YAxis
               orientation="right"
               domain={yDomain}
+              allowDataOverflow
               width={Y_AXIS_WIDTH}
               tick={{ fontSize: 10, fill: '#9ca3af' }}
               axisLine={false}
@@ -439,13 +558,15 @@ export default function VolumeChart({
               dataKey="range"
               isAnimationActive={false}
               barSize={barSize}
-              maxBarSize={48}
+              maxBarSize={64}
               shape={(mode === 'binance' ? binanceShape : outcomesShape) as never}
               fill="#10b981"
+              stroke="none"
             />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
+      )}
     </div>
   )
 }
