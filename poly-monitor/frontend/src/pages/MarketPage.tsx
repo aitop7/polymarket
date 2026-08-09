@@ -364,6 +364,8 @@ export default function MarketPage({ mode }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [indexing, setIndexing] = useState(false)
   const [paused, setPaused] = useState(false)
+  /** Scrub position for idle preview / sticky seek; charts & feed follow when set. */
+  const [previewTs, setPreviewTs] = useState<number | null>(null)
   const [liveActive, setLiveActive] = useState(true)
   const [liveMarketId, setLiveMarketId] = useState<string>('')
   const [liveWindow, setLiveWindow] = useState<{ start: number; end: number } | null>(null)
@@ -661,6 +663,7 @@ export default function MarketPage({ mode }: Props) {
         setTick(null)
         setActivity([])
         setPlaying(false)
+        setPreviewTs(null)
         if (d.start_time) {
           const etDate = new Intl.DateTimeFormat('en-CA', {
             timeZone: 'America/New_York',
@@ -686,6 +689,7 @@ export default function MarketPage({ mode }: Props) {
     wsRef.current = null
     setPlaying(false)
     setPaused(false)
+    setPreviewTs(null)
     if (detail && !liveActive) {
       setSeriesLive(
         detail.series.map((p) => ({
@@ -715,6 +719,7 @@ export default function MarketPage({ mode }: Props) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'resume' }))
       setPaused(false)
+      setPreviewTs(null)
     }
   }
 
@@ -726,15 +731,53 @@ export default function MarketPage({ mode }: Props) {
     }
   }
 
+  const seekReplay = (timestampMs: number) => {
+    if (liveActive || !Number.isFinite(timestampMs)) return
+    const start = detail?.start_time
+    const end = detail?.end_time
+    let ts = Math.floor(timestampMs)
+    if (start != null) ts = Math.max(start, ts)
+    if (end != null) ts = Math.min(end, ts)
+
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN && (playing || paused)) {
+      ws.send(JSON.stringify({ type: 'seek', timestamp: ts }))
+      setPaused(true)
+      setPreviewTs(ts)
+      return
+    }
+    // Idle: scrub charts/feed; Play will start from this time.
+    setPreviewTs(ts)
+    setTick((prev) =>
+      prev
+        ? { ...prev, timestamp: ts }
+        : ({
+            type: 'tick',
+            timestamp: ts,
+            btc_price: null,
+            btc_open: detail?.btc_open_price ?? null,
+            up_price: 0.5,
+            down_price: 0.5,
+            remaining_seconds: end != null ? Math.max(0, (end - ts) / 1000) : 0,
+            elapsed_seconds: start != null ? Math.max(0, (ts - start) / 1000) : 0,
+          } as Tick),
+    )
+  }
+
   const startReplay = async () => {
     if (!marketId || liveActive) return
-    stopWs()
+    const startAt = previewTs
+    wsRef.current?.close()
+    wsRef.current = null
+    setPlaying(false)
+    setPaused(false)
     setActivity([])
     // Keep detail.series (with volumes) + social tape; chart/feed scrub to playhead.
     setSeriesLive([])
     setTick(null)
     setError(null)
     setPaused(false)
+    // Keep previewTs until first tick so playhead doesn't jump to start.
 
     let sid: string | null = null
     if (mode === 'paper') {
@@ -765,6 +808,7 @@ export default function MarketPage({ mode }: Props) {
           session_id: sid,
           starting_cash: 1000,
           params: { threshold: 0.05, size_usd: 10, once_per_market: true },
+          ...(startAt != null ? { start_timestamp: startAt } : {}),
         }),
       )
     }
@@ -781,15 +825,22 @@ export default function MarketPage({ mode }: Props) {
       if (msg.type === 'tick' || msg.type === 'tick_end') {
         const t = msg as Tick
         setTick(t)
+        if (msg.seek) {
+          setPaused(true)
+          setPreviewTs(t.timestamp)
+        } else {
+          setPreviewTs(null)
+        }
         if (t.fills?.length) {
           setActivity((a) => [...t.fills!, ...a].slice(0, 100))
         }
-        if (t.type === 'tick_end' || (t.index != null && t.index % 5 === 0)) {
+        if (t.type === 'tick_end' || (t.index != null && t.index % 5 === 0) || msg.seek) {
           api.book(marketId, t.timestamp).then((b) => setBook(b as BookPayload)).catch(() => {})
         }
         if (t.type === 'tick_end') {
           setPlaying(false)
           setPaused(false)
+          setPreviewTs(t.timestamp)
         }
       }
       if (msg.type === 'done') {
@@ -1161,14 +1212,16 @@ export default function MarketPage({ mode }: Props) {
     return () => window.clearInterval(id)
   }, [liveActive])
 
-  // History replay: scrub charts/feed to the current tick (like live).
+  // History: scrub charts/feed to preview seek, else active replay tick.
   const playheadTs = useMemo(() => {
     if (liveActive) return null
-    if (!(playing || paused)) return null
-    if (tick?.timestamp != null && Number.isFinite(tick.timestamp)) return tick.timestamp
-    if (detail?.start_time != null) return detail.start_time
+    if (previewTs != null && Number.isFinite(previewTs)) return previewTs
+    if (playing || paused) {
+      if (tick?.timestamp != null && Number.isFinite(tick.timestamp)) return tick.timestamp
+      if (detail?.start_time != null) return detail.start_time
+    }
     return null
-  }, [liveActive, playing, paused, tick?.timestamp, detail?.start_time])
+  }, [liveActive, previewTs, playing, paused, tick?.timestamp, detail?.start_time])
 
   const historySeriesFull = useMemo(() => {
     return (detail?.series ?? []).map((p) => ({
@@ -1229,10 +1282,10 @@ export default function MarketPage({ mode }: Props) {
     return [nowMs - DEFAULT_X_SPAN_MS, nowMs]
   }, [liveActive, liveWindow, detail, chartData, nowMs])
 
-  // Live / history play: trailing window. Historical idle: full 5m market.
+  // Live / history play (or scrub): trailing window. Idle full-market: whole 5m.
   const xDefaultDomain = useMemo((): TimeDomain => {
     const [f0, f1] = xFullDomain
-    if (!liveActive && !playing && !paused) {
+    if (!liveActive && !playing && !paused && playheadTs == null) {
       const end = Number.isFinite(f1) && f1 > f0 ? f1 : f0 + 300_000
       const start = Number.isFinite(f0) ? f0 : end - 300_000
       return [start, end]
@@ -1395,6 +1448,10 @@ export default function MarketPage({ mode }: Props) {
             onNext={() => neighbors.next && setMarketId(neighbors.next)}
             strategy={strategy}
             onStrategy={setStrategy}
+            marketStartMs={detail?.start_time}
+            marketEndMs={detail?.end_time}
+            playheadMs={playheadTs}
+            onSeek={seekReplay}
           />
         )}
       </aside>

@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MarketSummary } from '../api'
 
 function outcomeTone(m: MarketSummary): 'up' | 'down' | 'pending' {
@@ -11,6 +12,53 @@ function outcomeLabel(tone: 'up' | 'down' | 'pending'): string {
   if (tone === 'up') return 'Up'
   if (tone === 'down') return 'Down'
   return '—'
+}
+
+function formatClock(ms: number): string {
+  const sec = Math.max(0, Math.floor(ms / 1000))
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function IconPrev() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+      <path fill="currentColor" d="M6 6h2v12H6V6zm3.5 6 8.5 6V6l-8.5 6z" />
+    </svg>
+  )
+}
+
+function IconNext() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+      <path fill="currentColor" d="M16 6h2v12h-2V6zM6 18l8.5-6L6 6v12z" />
+    </svg>
+  )
+}
+
+function IconPlay() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden>
+      <path fill="currentColor" d="M8 5v14l11-7L8 5z" />
+    </svg>
+  )
+}
+
+function IconPause() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden>
+      <path fill="currentColor" d="M6 5h4v14H6V5zm8 0h4v14h-4V5z" />
+    </svg>
+  )
+}
+
+function IconStop() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+      <path fill="currentColor" d="M6 6h12v12H6V6z" />
+    </svg>
+  )
 }
 
 type Props = {
@@ -48,6 +96,12 @@ type Props = {
   onNext: () => void
   strategy: string
   onStrategy: (s: string) => void
+  /** Market window for timeline scrubbing */
+  marketStartMs?: number | null
+  marketEndMs?: number | null
+  /** Current playhead (ms); null = idle / full market */
+  playheadMs?: number | null
+  onSeek?: (timestampMs: number) => void
 }
 
 export default function ControlSidebar(props: Props) {
@@ -86,10 +140,57 @@ export default function ControlSidebar(props: Props) {
     onNext,
     strategy,
     onStrategy,
+    marketStartMs,
+    marketEndMs,
+    playheadMs,
+    onSeek,
   } = props
 
   const histDisabled = liveActive || indexing
   const beforeTwap = collection === 'before_twap'
+  const start = marketStartMs != null && Number.isFinite(marketStartMs) ? marketStartMs : null
+  const end = marketEndMs != null && Number.isFinite(marketEndMs) ? marketEndMs : null
+  const span = start != null && end != null && end > start ? end - start : 0
+  const activeReplay = playing || paused
+
+  const [dragTs, setDragTs] = useState<number | null>(null)
+  const dragging = useRef(false)
+
+  const displayTs = dragTs ?? playheadMs ?? start
+  const progress =
+    span > 0 && displayTs != null && start != null
+      ? Math.min(1, Math.max(0, (displayTs - start) / span))
+      : 0
+
+  useEffect(() => {
+    if (!dragging.current) setDragTs(null)
+  }, [playheadMs])
+
+  const elapsedLabel = useMemo(() => {
+    if (start == null || displayTs == null) return '0:00'
+    return formatClock(displayTs - start)
+  }, [start, displayTs])
+
+  const durationLabel = useMemo(() => {
+    if (span <= 0) return '5:00'
+    return formatClock(span)
+  }, [span])
+
+  const seekDisabled = histDisabled || !marketId || span <= 0 || !onSeek
+
+  const onSliderInput = (value: number) => {
+    if (start == null || span <= 0) return
+    const ts = Math.round(start + (value / 1000) * span)
+    setDragTs(ts)
+  }
+
+  const commitSeek = (value: number) => {
+    if (start == null || span <= 0 || !onSeek) return
+    const ts = Math.round(start + (value / 1000) * span)
+    dragging.current = false
+    setDragTs(null)
+    onSeek(ts)
+  }
 
   return (
     <div className="control-sidebar control-sidebar-embedded">
@@ -205,17 +306,125 @@ export default function ControlSidebar(props: Props) {
         )}
       </div>
 
-      <div className="sidebar-section sidebar-section-last">
-        <div className="sidebar-heading">Playback</div>
-        <label className="sidebar-label">Speed</label>
-        <select value={speed} onChange={(e) => onSpeed(Number(e.target.value))} disabled={liveActive}>
-          <option value={1}>1x · Normal</option>
-          <option value={5}>5x</option>
-          <option value={10}>10x</option>
-          <option value={30}>30x</option>
-          <option value={60}>60x</option>
-          <option value={120}>120x</option>
-        </select>
+      <div className="sidebar-section sidebar-section-last playback-section">
+        <div className="sidebar-heading playback-heading">
+          <span>Playback</span>
+          {activeReplay && (
+            <span className={`playback-status${paused ? ' paused' : ''}`}>
+              {paused ? 'Paused' : 'Playing'}
+            </span>
+          )}
+        </div>
+
+        <div className="playback-transport">
+          <button
+            type="button"
+            className="playback-icon-btn"
+            onClick={onPrev}
+            disabled={!hasPrev || histDisabled}
+            title="Previous market"
+            aria-label="Previous market"
+          >
+            <IconPrev />
+          </button>
+
+          {!playing ? (
+            <button
+              type="button"
+              className="playback-icon-btn primary"
+              onClick={onPlay}
+              disabled={!marketId || histDisabled}
+              title="Play"
+              aria-label="Play"
+            >
+              <IconPlay />
+            </button>
+          ) : paused ? (
+            <button
+              type="button"
+              className="playback-icon-btn primary"
+              onClick={onResume}
+              disabled={liveActive}
+              title="Resume"
+              aria-label="Resume"
+            >
+              <IconPlay />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="playback-icon-btn primary"
+              onClick={onPause}
+              disabled={liveActive}
+              title="Pause"
+              aria-label="Pause"
+            >
+              <IconPause />
+            </button>
+          )}
+
+          <button
+            type="button"
+            className="playback-icon-btn danger"
+            onClick={onStop}
+            disabled={liveActive || (!playing && !paused && playheadMs == null)}
+            title="Stop"
+            aria-label="Stop"
+          >
+            <IconStop />
+          </button>
+
+          <button
+            type="button"
+            className="playback-icon-btn"
+            onClick={onNext}
+            disabled={!hasNext || histDisabled}
+            title="Next market"
+            aria-label="Next market"
+          >
+            <IconNext />
+          </button>
+
+          <select
+            className="playback-speed"
+            value={speed}
+            onChange={(e) => onSpeed(Number(e.target.value))}
+            disabled={liveActive}
+            title="Playback speed"
+            aria-label="Playback speed"
+          >
+            <option value={1}>1×</option>
+            <option value={5}>5×</option>
+            <option value={10}>10×</option>
+            <option value={30}>30×</option>
+            <option value={60}>60×</option>
+            <option value={120}>120×</option>
+          </select>
+        </div>
+
+        <div className="playback-timeline">
+          <span className="playback-time">{elapsedLabel}</span>
+          <input
+            type="range"
+            className="playback-scrubber"
+            min={0}
+            max={1000}
+            step={1}
+            value={Math.round(progress * 1000)}
+            disabled={seekDisabled}
+            aria-label="Seek in market"
+            style={{
+              background: `linear-gradient(to right, var(--accent) ${progress * 100}%, #e5e7eb ${progress * 100}%)`,
+            }}
+            onPointerDown={() => {
+              dragging.current = true
+            }}
+            onChange={(e) => onSliderInput(Number(e.target.value))}
+            onPointerUp={(e) => commitSeek(Number((e.target as HTMLInputElement).value))}
+            onKeyUp={(e) => commitSeek(Number((e.target as HTMLInputElement).value))}
+          />
+          <span className="playback-time">{durationLabel}</span>
+        </div>
 
         {mode === 'paper' && (
           <>
@@ -231,54 +440,6 @@ export default function ControlSidebar(props: Props) {
             </select>
           </>
         )}
-
-        <div className="sidebar-btn-row">
-          {!playing ? (
-            <button
-              type="button"
-              className="sidebar-btn primary"
-              onClick={onPlay}
-              disabled={!marketId || histDisabled}
-            >
-              Play
-            </button>
-          ) : paused ? (
-            <button type="button" className="sidebar-btn primary" onClick={onResume} disabled={liveActive}>
-              Resume
-            </button>
-          ) : (
-            <button type="button" className="sidebar-btn" onClick={onPause} disabled={liveActive}>
-              Pause
-            </button>
-          )}
-          <button
-            type="button"
-            className="sidebar-btn danger"
-            onClick={onStop}
-            disabled={liveActive || (!playing && !paused)}
-          >
-            Stop
-          </button>
-        </div>
-
-        <div className="sidebar-btn-row">
-          <button
-            type="button"
-            className="sidebar-btn"
-            onClick={onPrev}
-            disabled={!hasPrev || histDisabled}
-          >
-            ← Prev
-          </button>
-          <button
-            type="button"
-            className="sidebar-btn"
-            onClick={onNext}
-            disabled={!hasNext || histDisabled}
-          >
-            Next →
-          </button>
-        </div>
       </div>
     </div>
   )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
+import numpy as np
 import pandas as pd
 
 from app.core.data import FEATURE_COLUMNS, load_market_frame
@@ -156,44 +157,50 @@ class ReplaySession:
             return None
         return self.df.iloc[self.index]
 
-    def step(self) -> dict[str, Any] | None:
-        if self.done or self.index >= len(self.df):
-            if not self.done:
-                self._finish()
-            return None
+    def seek_to(self, timestamp_ms: int) -> None:
+        """Jump playhead to the first row at/after timestamp (view scrub; skips fills)."""
+        if self.df.empty or "timestamp" not in self.df.columns:
+            return
+        ts = self.df["timestamp"].to_numpy(dtype="int64", copy=False)
+        idx = int(np.searchsorted(ts, int(timestamp_ms), side="left"))
+        self.index = max(0, min(idx, len(self.df) - 1))
+        self.done = False
 
+    def _build_tick(self, *, apply_orders: bool) -> dict[str, Any] | None:
+        if self.index >= len(self.df):
+            return None
         row = self.df.iloc[self.index]
         ctx = _tick_from_row(row, market_id=self.market_id, idx=self.index, portfolio=self.portfolio)
         fills_out: list[dict[str, Any]] = []
 
-        # Manual orders first
-        while self.pending_manual:
-            intent = self.pending_manual.pop(0)
-            fill = self.portfolio.apply_intent(
-                intent,
-                market_id=self.market_id,
-                timestamp=ctx.timestamp,
-                up_price=ctx.up_price,
-                down_price=ctx.down_price,
-                source="manual",
-            )
-            if fill:
-                fills_out.append(fill.to_dict())
-
-        if self.strategy is not None:
-            for intent in self.strategy.on_tick(ctx) or []:
+        if apply_orders:
+            while self.pending_manual:
+                intent = self.pending_manual.pop(0)
                 fill = self.portfolio.apply_intent(
                     intent,
                     market_id=self.market_id,
                     timestamp=ctx.timestamp,
                     up_price=ctx.up_price,
                     down_price=ctx.down_price,
-                    source="strategy",
+                    source="manual",
                 )
                 if fill:
-                    fills_out.append({**fill.to_dict(), "model_p_up": ctx.model_p_up})
+                    fills_out.append(fill.to_dict())
 
-        tick = {
+            if self.strategy is not None:
+                for intent in self.strategy.on_tick(ctx) or []:
+                    fill = self.portfolio.apply_intent(
+                        intent,
+                        market_id=self.market_id,
+                        timestamp=ctx.timestamp,
+                        up_price=ctx.up_price,
+                        down_price=ctx.down_price,
+                        source="strategy",
+                    )
+                    if fill:
+                        fills_out.append({**fill.to_dict(), "model_p_up": ctx.model_p_up})
+
+        return {
             "type": "tick",
             "market_id": self.market_id,
             "index": self.index,
@@ -230,6 +237,20 @@ class ReplaySession:
             "fills": fills_out,
             "winner": ctx.winner,
         }
+
+    def peek_tick(self) -> dict[str, Any] | None:
+        """Emit tick at current index without advancing (used after seek)."""
+        return self._build_tick(apply_orders=False)
+
+    def step(self) -> dict[str, Any] | None:
+        if self.done or self.index >= len(self.df):
+            if not self.done:
+                self._finish()
+            return None
+
+        tick = self._build_tick(apply_orders=True)
+        if tick is None:
+            return None
         self.index += 1
         if self.index >= len(self.df):
             settle = self._finish()

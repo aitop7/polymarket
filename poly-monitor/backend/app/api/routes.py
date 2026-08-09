@@ -540,6 +540,12 @@ async def ws_replay(websocket: WebSocket) -> None:
                 starting_cash=starting_cash,
                 speed=speed,
             )
+            try:
+                start_ts = int(init["start_timestamp"]) if init.get("start_timestamp") is not None else None
+            except (TypeError, ValueError):
+                start_ts = None
+            if start_ts is not None:
+                session.seek_to(start_ts)
             if init.get("paper"):
                 sid = str(uuid.uuid4())
                 _PAPER[sid] = session
@@ -559,6 +565,17 @@ async def ws_replay(websocket: WebSocket) -> None:
                     session.paused = False
                 elif typ == "speed":
                     session.speed = max(0.1, float(msg.get("speed") or session.speed))
+                elif typ == "seek":
+                    try:
+                        ts = int(msg.get("timestamp") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    session.seek_to(ts)
+                    session.paused = True
+                    tick = session.peek_tick()
+                    if tick is not None:
+                        tick["seek"] = True
+                        await websocket.send_json(tick)
                 elif typ == "order":
                     side = Side(str(msg.get("side", "UP")).upper())
                     action = Action(str(msg.get("action", "BUY")).upper())

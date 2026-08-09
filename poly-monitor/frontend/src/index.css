@@ -929,6 +929,171 @@ select {
   padding-bottom: 0;
 }
 
+.playback-section {
+  padding-top: 0.15rem;
+}
+
+.playback-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.playback-status {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #059669;
+  background: rgba(16, 185, 129, 0.12);
+  border-radius: 999px;
+  padding: 0.12rem 0.45rem;
+}
+
+.playback-status.paused {
+  color: #b45309;
+  background: #fffbeb;
+}
+
+.playback-transport {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.playback-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.playback-icon-btn:hover:not(:disabled) {
+  background: #f3f4f6;
+  border-color: #d1d5db;
+}
+
+.playback-icon-btn.primary {
+  width: 2.25rem;
+  height: 2.25rem;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.playback-icon-btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.playback-icon-btn.danger {
+  color: #b91c1c;
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.playback-icon-btn.danger:hover:not(:disabled) {
+  background: #fee2e2;
+}
+
+.playback-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.playback-speed {
+  margin-left: auto !important;
+  width: auto !important;
+  min-width: 3.6rem;
+  padding: 0.28rem 0.4rem !important;
+  font-size: 0.78rem !important;
+  font-weight: 700 !important;
+  border-radius: 8px !important;
+  line-height: 1.2;
+}
+
+.playback-timeline {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.playback-time {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: var(--muted);
+  min-width: 2.1rem;
+}
+
+.playback-time:last-child {
+  text-align: right;
+}
+
+.playback-scrubber {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  outline: none;
+  cursor: pointer;
+  margin: 0;
+}
+
+.playback-scrubber:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.playback-scrubber::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.playback-scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.35);
+  cursor: pointer;
+}
+
+.playback-scrubber::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.35);
+  cursor: pointer;
+}
+
+.playback-scrubber::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+
 /* Polymarket-style trade card */
 .trade-card {
   margin-top: 0.35rem;
