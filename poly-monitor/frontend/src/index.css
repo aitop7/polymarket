@@ -145,6 +145,33 @@ select {
   margin-top: 0;
 }
 
+.live-exit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.55rem 0.7rem;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(15, 17, 23, 0.04);
+}
+
+.live-exit-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #ef4444;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.live-exit-bar .sidebar-btn {
+  flex-shrink: 0;
+  margin: 0;
+}
+
 .control-sidebar {
   background: #fff;
   border: 1px solid var(--border);
@@ -1341,6 +1368,8 @@ select {
   z-index: 16;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
   padding: 0.55rem 0.15rem 0.7rem;
   margin: 0 -0.15rem;
   background: var(--bg);
@@ -1352,6 +1381,70 @@ select {
   align-items: center;
   gap: 0.75rem;
   min-width: 0;
+  flex: 1;
+}
+
+.btc-panel-identity-text {
+  min-width: 0;
+}
+
+.btc-panel-outcome {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 0.1rem;
+  flex-shrink: 0;
+  text-align: right;
+  padding-left: 1rem;
+  border-left: 1px solid var(--border);
+}
+
+.btc-outcome-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9ca3af;
+}
+
+.btc-outcome-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 1.85rem;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+  color: var(--text);
+}
+
+.btc-outcome-arrow {
+  font-size: 1.15rem;
+  line-height: 1;
+  transform: translateY(-0.04em);
+}
+
+.btc-panel-outcome.up .btc-outcome-value {
+  color: #059669;
+}
+
+.btc-panel-outcome.down .btc-outcome-value {
+  color: #dc2626;
+}
+
+.btc-panel-outcome.pending .btc-outcome-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #6b7280;
+}
+
+.btc-resolved-at {
+  margin-top: 0.12rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 550;
+  white-space: nowrap;
 }
 
 .btc-logo {

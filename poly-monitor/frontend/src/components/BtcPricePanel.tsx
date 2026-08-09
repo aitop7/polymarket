@@ -1,4 +1,4 @@
-import { formatUsd } from '../api'
+import { formatResolvedEt, formatUsd } from '../api'
 
 type Props = {
   title?: string
@@ -8,6 +8,9 @@ type Props = {
   /** Chainlink 30s TWAP (resolution feed) */
   twapPrice: number | null | undefined
   remainingSeconds: number | null | undefined
+  /** History: resolved outcome from meta */
+  outcome?: 'Up' | 'Down' | 'not_closed' | null
+  resolvedAt?: number | null
 }
 
 function pad2(n: number): string {
@@ -21,6 +24,8 @@ export default function BtcPricePanel({
   priceToBeat,
   twapPrice,
   remainingSeconds,
+  outcome = null,
+  resolvedAt = null,
 }: Props) {
   const delta =
     twapPrice != null && priceToBeat != null ? twapPrice - priceToBeat : null
@@ -28,6 +33,9 @@ export default function BtcPricePanel({
   const rem = remainingSeconds != null ? Math.max(0, remainingSeconds) : null
   const mins = rem != null ? Math.floor(rem / 60) : null
   const secs = rem != null ? Math.floor(rem % 60) : null
+  const resolved = outcome === 'Up' || outcome === 'Down'
+  const resolvedLabel =
+    resolvedAt != null && Number.isFinite(resolvedAt) ? formatResolvedEt(resolvedAt) : ''
 
   return (
     <section className="btc-panel">
@@ -36,7 +44,7 @@ export default function BtcPricePanel({
           <div className="btc-logo" aria-hidden>
             ₿
           </div>
-          <div>
+          <div className="btc-panel-identity-text">
             <h1 className="btc-panel-title">
               {title}
               {marketId ? <span className="btc-market-id">({marketId})</span> : null}
@@ -44,6 +52,28 @@ export default function BtcPricePanel({
             <div className="btc-panel-sub">{windowLabel}</div>
           </div>
         </div>
+        {outcome != null && (
+          <div
+            className={`btc-panel-outcome ${resolved ? (outcome === 'Up' ? 'up' : 'down') : 'pending'}`}
+          >
+            <div className="btc-outcome-label">Outcome</div>
+            <div className="btc-outcome-value">
+              {resolved ? (
+                <>
+                  <span className="btc-outcome-arrow" aria-hidden>
+                    {outcome === 'Up' ? '▲' : '▼'}
+                  </span>
+                  {outcome}
+                </>
+              ) : (
+                'Not closed'
+              )}
+            </div>
+            {resolved && resolvedLabel ? (
+              <div className="btc-resolved-at">Resolved {resolvedLabel}</div>
+            ) : null}
+          </div>
+        )}
       </div>
 
       <div className="btc-panel-stats">

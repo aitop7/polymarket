@@ -1,4 +1,3 @@
-import OutcomeCard from './OutcomeCard'
 import TradeCard from './TradeCard'
 
 type Props = {
@@ -18,10 +17,6 @@ type Props = {
   heldShares?: number
   tradeDisabled: boolean
   monitorHint?: boolean
-  /** History stopped: show settled outcome instead of trade card */
-  showOutcome?: boolean
-  outcome?: 'Up' | 'Down' | 'not_closed' | null
-  outcomeSubtitle?: string
 }
 
 export default function TradeSidebar(props: Props) {
@@ -42,34 +37,27 @@ export default function TradeSidebar(props: Props) {
     heldShares,
     tradeDisabled,
     monitorHint,
-    showOutcome = false,
-    outcome = null,
-    outcomeSubtitle = '',
   } = props
 
   return (
     <div className="trade-stack">
-      {showOutcome ? (
-        <OutcomeCard outcome={outcome} subtitle={outcomeSubtitle} />
-      ) : (
-        <TradeCard
-          monitorHint={monitorHint ?? mode === 'monitor'}
-          tradeAction={tradeAction}
-          onTradeAction={onTradeAction}
-          side={side}
-          onSide={onSide}
-          upPrice={upPrice}
-          downPrice={downPrice}
-          upHasAsk={upHasAsk}
-          downHasAsk={downHasAsk}
-          upHasBid={upHasBid}
-          downHasBid={downHasBid}
-          cash={cash}
-          heldShares={heldShares}
-          onTrade={onTrade}
-          tradeDisabled={tradeDisabled}
-        />
-      )}
+      <TradeCard
+        monitorHint={monitorHint ?? mode === 'monitor'}
+        tradeAction={tradeAction}
+        onTradeAction={onTradeAction}
+        side={side}
+        onSide={onSide}
+        upPrice={upPrice}
+        downPrice={downPrice}
+        upHasAsk={upHasAsk}
+        downHasAsk={downHasAsk}
+        upHasBid={upHasBid}
+        downHasBid={downHasBid}
+        cash={cash}
+        heldShares={heldShares}
+        onTrade={onTrade}
+        tradeDisabled={tradeDisabled}
+      />
     </div>
   )
 }
