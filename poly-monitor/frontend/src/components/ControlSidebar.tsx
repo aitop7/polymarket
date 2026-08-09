@@ -1,5 +1,18 @@
 import type { MarketSummary } from '../api'
 
+function outcomeTone(m: MarketSummary): 'up' | 'down' | 'pending' {
+  if (m.winner === 1) return 'up'
+  if (m.winner === 0) return 'down'
+  if (m.closed === false) return 'pending'
+  return 'pending'
+}
+
+function outcomeLabel(tone: 'up' | 'down' | 'pending'): string {
+  if (tone === 'up') return 'Up'
+  if (tone === 'down') return 'Down'
+  return '—'
+}
+
 type Props = {
   mode: 'monitor' | 'paper'
   liveActive: boolean
@@ -143,20 +156,41 @@ export default function ControlSidebar(props: Props) {
         />
 
         <label className="sidebar-label">Time window (ET)</label>
-        <select
-          value={selectedTime}
-          disabled={!markets.length || histDisabled}
-          onChange={(e) => onTime(e.target.value)}
+        <div
+          className={`time-window-list${histDisabled || !markets.length ? ' disabled' : ''}`}
+          role="listbox"
+          aria-label="Time window"
+          aria-disabled={histDisabled || !markets.length}
         >
-          {markets.length === 0 && (
-            <option value="">{indexing ? 'Loading slots…' : 'No markets this day'}</option>
+          {markets.length === 0 ? (
+            <div className="time-window-empty">
+              {indexing ? 'Loading slots…' : 'No markets this day'}
+            </div>
+          ) : (
+            markets.map((m) => {
+              const tone = outcomeTone(m)
+              const active = (m.time_et || '') === selectedTime
+              return (
+                <button
+                  key={m.market_id}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  className={`time-window-item${active ? ' active' : ''}`}
+                  disabled={histDisabled}
+                  onClick={() => onTime(m.time_et || '')}
+                >
+                  <span className="time-window-label">
+                    {formatSlotLabel(m.time_et || '', m.start_time, m.end_time)}
+                  </span>
+                  <span className={`time-window-badge ${tone}`} title={`Outcome: ${outcomeLabel(tone)}`}>
+                    {tone === 'up' ? '▲ Up' : tone === 'down' ? '▼ Down' : '—'}
+                  </span>
+                </button>
+              )
+            })
           )}
-          {markets.map((m) => (
-            <option key={m.market_id} value={m.time_et || ''}>
-              {formatSlotLabel(m.time_et || '', m.start_time, m.end_time)}
-            </option>
-          ))}
-        </select>
+        </div>
 
         {indexing ? (
           <div className="sidebar-badge">Indexing calendar…</div>

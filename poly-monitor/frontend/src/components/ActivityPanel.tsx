@@ -2,6 +2,7 @@ import type { LiveActivityTrade } from '../api'
 
 type Props = {
   enabled?: boolean
+  live?: boolean
   trades: LiveActivityTrade[]
   nowMs?: number
 }
@@ -49,7 +50,12 @@ function explorerUrl(tx?: string | null): string | null {
   return `https://polygonscan.com/tx/${tx}`
 }
 
-export default function ActivityPanel({ enabled = false, trades, nowMs: nowProp }: Props) {
+export default function ActivityPanel({
+  enabled = false,
+  live = false,
+  trades,
+  nowMs: nowProp,
+}: Props) {
   const nowMs = nowProp ?? Date.now()
   if (!enabled) {
     return (
@@ -57,7 +63,7 @@ export default function ActivityPanel({ enabled = false, trades, nowMs: nowProp 
         <div className="activity-panel-header">
           <div className="activity-panel-title">Activity</div>
         </div>
-        <p className="activity-panel-empty">Switch to live to see market trades</p>
+        <p className="activity-panel-empty">No market selected</p>
       </section>
     )
   }
@@ -66,12 +72,14 @@ export default function ActivityPanel({ enabled = false, trades, nowMs: nowProp 
     <section className="activity-panel">
       <div className="activity-panel-header">
         <div className="activity-panel-title">Activity</div>
-        <div className="activity-live-badge" aria-label="Live">
-          <i /> Live
-        </div>
+        {live ? (
+          <div className="activity-live-badge" aria-label="Live">
+            <i /> Live
+          </div>
+        ) : null}
       </div>
       {trades.length === 0 ? (
-        <p className="activity-panel-empty">Waiting for trades…</p>
+        <p className="activity-panel-empty">{live ? 'Waiting for trades…' : 'No trades found'}</p>
       ) : (
         <ul className="activity-tape">
           {trades.map((t) => {

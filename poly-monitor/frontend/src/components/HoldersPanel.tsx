@@ -3,6 +3,7 @@ import type { HolderRow, LiveHoldersResponse } from '../api'
 
 type Props = {
   enabled: boolean
+  live?: boolean
   data: LiveHoldersResponse | null
   revision?: number
 }
@@ -185,17 +186,19 @@ function HoldersColumn({
   )
 }
 
-export default function HoldersPanel({ enabled, data }: Props) {
+export default function HoldersPanel({ enabled, live = false, data }: Props) {
   if (!enabled) return null
 
   return (
     <div className="holders-panel">
       <div className="holders-panel-header">
         <div className="holders-panel-title">Top holders</div>
-        <div className="holders-live-badge" aria-live="polite">
-          <span className="holders-live-dot" />
-          Live
-        </div>
+        {live ? (
+          <div className="holders-live-badge" aria-live="polite">
+            <span className="holders-live-dot" />
+            Live
+          </div>
+        ) : null}
       </div>
       <div className="holders-scroll">
         <div className="holders-grid">

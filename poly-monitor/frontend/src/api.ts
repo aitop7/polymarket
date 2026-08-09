@@ -111,6 +111,25 @@ export const api = {
       cache: 'no-store',
     })
   },
+  marketHolders: (marketId: string, limit = 20) => {
+    const q = new URLSearchParams({
+      limit: String(Math.max(1, Math.min(20, limit))),
+      _ts: String(Date.now()),
+    })
+    return json<LiveHoldersResponse>(`/api/markets/${encodeURIComponent(marketId)}/holders?${q}`, {
+      cache: 'no-store',
+    })
+  },
+  marketActivity: (marketId: string, limit = 1500) => {
+    const q = new URLSearchParams({
+      limit: String(Math.max(1, Math.min(2000, limit))),
+      _ts: String(Date.now()),
+    })
+    return json<{ market_id?: string; condition_id?: string | null; trades: LiveActivityTrade[] }>(
+      `/api/markets/${encodeURIComponent(marketId)}/activity?${q}`,
+      { cache: 'no-store' },
+    )
+  },
 }
 
 export type LiveSeriesPoint = {

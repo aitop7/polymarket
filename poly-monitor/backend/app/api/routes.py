@@ -181,6 +181,26 @@ def get_book(market_id: str, t: int | None = None, split: str | None = None) -> 
     return book_at(df, t)
 
 
+@router.get("/markets/{market_id}/holders")
+async def get_market_holders(
+    market_id: str, limit: int = Query(20, ge=1, le=20)
+) -> dict[str, Any]:
+    """Top Up/Down holders for a history (or any) TWAP market via Data API."""
+    from app.core.market_social import market_holders
+
+    return await market_holders(market_id, limit=limit)
+
+
+@router.get("/markets/{market_id}/activity")
+async def get_market_activity(
+    market_id: str, limit: int = Query(1500, ge=1, le=2000)
+) -> dict[str, Any]:
+    """Trade tape for a history market (paginated Data API; full 5m window)."""
+    from app.core.market_social import market_activity
+
+    return await market_activity(market_id, limit=limit)
+
+
 @router.get("/markets/{market_id}/neighbors")
 def get_neighbors(market_id: str, split: str | None = None) -> dict[str, Any]:
     meta = market_summary(market_id, split=split)
@@ -189,7 +209,8 @@ def get_neighbors(market_id: str, split: str | None = None) -> dict[str, Any]:
     from pathlib import Path
 
     if meta["split"] == TWAP_SPLIT:
-        idx = build_market_index(TWAP_SPLIT)
+        # Same history filter as the picker — no Next into the live window.
+        idx = filter_history_markets(TWAP_SPLIT, build_market_index(TWAP_SPLIT))
         ids = [str(r["market_id"]) for r in idx]
     else:
         d = settings.features_dir / meta["split"]

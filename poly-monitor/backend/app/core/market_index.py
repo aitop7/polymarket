@@ -213,7 +213,17 @@ def filter_history_markets(split: str, rows: list[dict[str, Any]]) -> list[dict[
     if split != TWAP_SPLIT:
         return rows
     now_ms = int(time.time() * 1000)
-    return [r for r in rows if int(r.get("end_time") or 0) <= now_ms]
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        start = int(r.get("start_time") or 0)
+        end = int(r.get("end_time") or 0)
+        # Only completed windows (ended); never the active live slot.
+        if end <= 0 or end > now_ms:
+            continue
+        if start <= now_ms < end:
+            continue
+        out.append(r)
+    return out
 
 
 def list_dates(split: str) -> list[str]:

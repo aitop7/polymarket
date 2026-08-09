@@ -3,26 +3,26 @@ import ActivityPanel from './ActivityPanel'
 import HoldersPanel from './HoldersPanel'
 
 type Props = {
-  liveHolders?: boolean
+  enabled?: boolean
+  live?: boolean
   holders?: LiveHoldersResponse | null
   holdersRevision?: number
-  liveActivity?: boolean
   activityTrades?: LiveActivityTrade[]
   nowMs?: number
 }
 
 export default function FeedSidebar({
-  liveHolders = false,
+  enabled = true,
+  live = false,
   holders = null,
   holdersRevision = 0,
-  liveActivity = false,
   activityTrades = [],
   nowMs,
 }: Props) {
   return (
     <aside className="workspace-rail workspace-rail-right">
-      <HoldersPanel enabled={liveHolders} data={holders} revision={holdersRevision} />
-      <ActivityPanel enabled={liveActivity} trades={activityTrades} nowMs={nowMs} />
+      <HoldersPanel enabled={enabled} live={live} data={holders} revision={holdersRevision} />
+      <ActivityPanel enabled={enabled} live={live} trades={activityTrades} nowMs={nowMs} />
     </aside>
   )
 }

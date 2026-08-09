@@ -242,6 +242,30 @@ function applyActivityTradeToHolders(
   }
 }
 
+/** Rebuild top holders from activity trades up to a playhead (history replay). */
+function holdersFromActivity(
+  trades: LiveActivityTrade[],
+  playheadTs: number,
+  meta: { market_id: string | null; condition_id: string | null },
+): LiveHoldersResponse {
+  const chron = [...trades]
+    .filter((t) => Number(t.timestamp) <= playheadTs)
+    .sort((a, b) => Number(a.timestamp) - Number(b.timestamp))
+  let h: LiveHoldersResponse = {
+    market_id: meta.market_id,
+    condition_id: meta.condition_id,
+    updated_at: playheadTs,
+    live: true,
+    up: [],
+    down: [],
+  }
+  const touched = new Map<string, number>()
+  for (const t of chron) {
+    h = applyActivityTradeToHolders(h, t, touched)
+  }
+  return { ...h, live: true, updated_at: playheadTs }
+}
+
 /** Reconcile Data API snapshot without wiping recent RTDS bumps. */
 function mergeHoldersFromApi(
   api: LiveHoldersResponse,
@@ -372,24 +396,49 @@ export default function MarketPage({ mode }: Props) {
   selectedDateRef.current = selectedDate
   selectedTimeRef.current = selectedTime
 
+  /** Drop the in-progress live window from history lists. */
+  const filterHistoryMarkets = (list: MarketSummary[], now = Date.now()) =>
+    list.filter((m) => {
+      const start = Number(m.start_time) || 0
+      const end = Number(m.end_time) || 0
+      if (end <= 0 || end > now) return false
+      if (start <= now && now < end) return false
+      return true
+    })
+
+  const neighborsFromMarkets = (list: MarketSummary[], mid: string) => {
+    const chron = [...list].sort((a, b) => (a.start_time || 0) - (b.start_time || 0))
+    const i = chron.findIndex((m) => m.market_id === mid)
+    if (i < 0) return { prev: null as string | null, next: null as string | null }
+    return {
+      prev: i > 0 ? chron[i - 1].market_id : null,
+      next: i + 1 < chron.length ? chron[i + 1].market_id : null,
+    }
+  }
+
   const applyMarketsList = (list: MarketSummary[]) => {
-    if (!list.length) {
+    const ordered = filterHistoryMarkets(list).sort(
+      (a, b) => (b.start_time || 0) - (a.start_time || 0),
+    )
+    if (!ordered.length) {
       setMarkets([])
       setSelectedTime('')
       setMarketId('')
+      setNeighbors({ prev: null, next: null })
       return
     }
-    const ordered = [...list].sort((a, b) => (b.start_time || 0) - (a.start_time || 0))
     setMarkets(ordered)
     setMarketId((prev) => {
       const keep = ordered.find((m) => m.market_id === prev)
       if (keep) {
         setSelectedTime(keep.time_et || '')
+        setNeighbors(neighborsFromMarkets(ordered, keep.market_id))
         return prev
       }
       const still = ordered.find((m) => (m.time_et || '') === selectedTimeRef.current)
       const pick = still || ordered[0]
       setSelectedTime(pick.time_et || '')
+      setNeighbors(neighborsFromMarkets(ordered, pick.market_id))
       return pick.market_id
     })
   }
@@ -414,8 +463,10 @@ export default function MarketPage({ mode }: Props) {
       if (!liveActiveRef.current) {
         applyMarketsList(res.markets)
       } else {
-        // Keep in-memory list warm for when user exits live.
-        const ordered = [...res.markets].sort((a, b) => (b.start_time || 0) - (a.start_time || 0))
+        // Keep in-memory list warm for when user exits live (still hide current window).
+        const ordered = filterHistoryMarkets(res.markets).sort(
+          (a, b) => (b.start_time || 0) - (a.start_time || 0),
+        )
         setMarkets(ordered)
       }
     } catch {
@@ -541,6 +592,53 @@ export default function MarketPage({ mode }: Props) {
     }).catch((e) => setError(String(e)))
   }
 
+  // Keep Prev/Next aligned with the filtered history list (no jump into live).
+  useEffect(() => {
+    if (liveActive || !marketId || !markets.length) return
+    setNeighbors(neighborsFromMarkets(markets, marketId))
+  }, [liveActive, marketId, markets])
+
+  // History: load top holders + activity tape for the selected market.
+  useEffect(() => {
+    if (liveActive || !marketId) return
+    let cancelled = false
+    setHolders(null)
+    setLiveActivityTrades([])
+    holdersTouchedRef.current.clear()
+    Promise.all([api.marketHolders(marketId, 20), api.marketActivity(marketId, 1500)])
+      .then(([h, a]) => {
+        if (cancelled) return
+        setHolders({
+          market_id: h.market_id ?? marketId,
+          condition_id: h.condition_id ?? null,
+          updated_at: h.updated_at ?? Date.now(),
+          live: false,
+          up: sortHolders(h.up),
+          down: sortHolders(h.down),
+        })
+        setHoldersRevision((n) => n + 1)
+        // Keep full window tape for playhead scrubbing (Data API newest-first pages).
+        setLiveActivityTrades(
+          [...(a.trades ?? [])].sort((x, y) => y.timestamp - x.timestamp),
+        )
+      })
+      .catch(() => {
+        if (cancelled) return
+        setHolders({
+          market_id: marketId,
+          condition_id: null,
+          updated_at: Date.now(),
+          live: false,
+          up: [],
+          down: [],
+        })
+        setLiveActivityTrades([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [liveActive, marketId])
+
   useEffect(() => {
     if (liveActive || !marketId) return
     setError(null)
@@ -632,7 +730,9 @@ export default function MarketPage({ mode }: Props) {
     if (!marketId || liveActive) return
     stopWs()
     setActivity([])
+    // Keep detail.series (with volumes) + social tape; chart/feed scrub to playhead.
     setSeriesLive([])
+    setTick(null)
     setError(null)
     setPaused(false)
 
@@ -681,17 +781,6 @@ export default function MarketPage({ mode }: Props) {
       if (msg.type === 'tick' || msg.type === 'tick_end') {
         const t = msg as Tick
         setTick(t)
-        setSeriesLive((prev) => [
-          ...prev,
-          {
-            t: t.timestamp,
-            up: t.up_price,
-            down: t.down_price,
-            btc: t.btc_price,
-            twap: t.btc_twap_30s ?? t.btc_price ?? null,
-            chainlink: t.btc_chainlink ?? null,
-          },
-        ])
         if (t.fills?.length) {
           setActivity((a) => [...t.fills!, ...a].slice(0, 100))
         }
@@ -1066,15 +1155,22 @@ export default function MarketPage({ mode }: Props) {
       ? tick?.remaining_seconds
       : null
 
-  // Wall-clock tick so the live timeline scrolls smoothly between WS updates.
+  // Wall-clock tick: live charts (100ms) + history activity "ago" labels (1s).
   useEffect(() => {
-    if (!liveActive) return
-    const id = window.setInterval(() => setNowMs(Date.now()), 100)
+    const id = window.setInterval(() => setNowMs(Date.now()), liveActive ? 100 : 1000)
     return () => window.clearInterval(id)
   }, [liveActive])
 
-  const chartData = useMemo(() => {
-    if (seriesLive.length) return seriesLive
+  // History replay: scrub charts/feed to the current tick (like live).
+  const playheadTs = useMemo(() => {
+    if (liveActive) return null
+    if (!(playing || paused)) return null
+    if (tick?.timestamp != null && Number.isFinite(tick.timestamp)) return tick.timestamp
+    if (detail?.start_time != null) return detail.start_time
+    return null
+  }, [liveActive, playing, paused, tick?.timestamp, detail?.start_time])
+
+  const historySeriesFull = useMemo(() => {
     return (detail?.series ?? []).map((p) => ({
       t: p.t,
       up: p.up ?? 0,
@@ -1084,7 +1180,38 @@ export default function MarketPage({ mode }: Props) {
       chainlink: p.chainlink ?? null,
       ...volumeFields(p),
     }))
-  }, [seriesLive, detail])
+  }, [detail])
+
+  const chartData = useMemo(() => {
+    if (liveActive) return seriesLive
+    if (playheadTs != null) {
+      if (historySeriesFull.length) {
+        return historySeriesFull.filter((p) => p.t <= playheadTs)
+      }
+      return seriesLive.filter((p) => p.t <= playheadTs)
+    }
+    if (historySeriesFull.length) return historySeriesFull
+    return seriesLive
+  }, [liveActive, seriesLive, historySeriesFull, playheadTs])
+
+  const displayActivityTrades = useMemo(() => {
+    if (liveActive || playheadTs == null) return liveActivityTrades
+    return liveActivityTrades.filter((t) => Number(t.timestamp) <= playheadTs)
+  }, [liveActive, playheadTs, liveActivityTrades])
+
+  const displayHolders = useMemo(() => {
+    if (liveActive || playheadTs == null) return holders
+    return holdersFromActivity(liveActivityTrades, playheadTs, {
+      market_id: marketId || holders?.market_id || null,
+      condition_id: holders?.condition_id ?? null,
+    })
+  }, [liveActive, playheadTs, holders, liveActivityTrades, marketId])
+
+  // Activity "Xs ago" uses market clock: playhead while replaying, else window end.
+  const feedNowMs = liveActive
+    ? nowMs
+    : (playheadTs ?? detail?.end_time ?? detail?.start_time ?? nowMs)
+  const feedLive = liveActive || playing || paused
 
   const xFullDomain = useMemo((): TimeDomain => {
     if (liveActive && liveWindow) {
@@ -1102,21 +1229,26 @@ export default function MarketPage({ mode }: Props) {
     return [nowMs - DEFAULT_X_SPAN_MS, nowMs]
   }, [liveActive, liveWindow, detail, chartData, nowMs])
 
-  // Live: trailing fixed-span window. Historical idle/paused: full 5m market.
+  // Live / history play: trailing window. Historical idle: full 5m market.
   const xDefaultDomain = useMemo((): TimeDomain => {
     const [f0, f1] = xFullDomain
-    if (!liveActive && (!playing || paused)) {
+    if (!liveActive && !playing && !paused) {
       const end = Number.isFinite(f1) && f1 > f0 ? f1 : f0 + 300_000
       const start = Number.isFinite(f0) ? f0 : end - 300_000
       return [start, end]
     }
-    const latestData = chartData.length > 0 ? chartData[chartData.length - 1].t : f0
+    const latestData =
+      playheadTs != null
+        ? playheadTs
+        : chartData.length > 0
+          ? chartData[chartData.length - 1].t
+          : f0
     const end = liveActive
       ? Math.min(f1, Math.max(latestData, nowMs))
       : Math.min(f1, Math.max(f0 + 1, latestData))
     const start = end - DEFAULT_X_SPAN_MS
     return [start, end]
-  }, [xFullDomain, chartData, liveActive, nowMs, playing, paused])
+  }, [xFullDomain, chartData, liveActive, nowMs, playing, paused, playheadTs])
 
   // When following live, always use the sliding default window.
   useEffect(() => {
@@ -1413,12 +1545,12 @@ export default function MarketPage({ mode }: Props) {
       </div>
 
       <FeedSidebar
-        liveHolders={liveActive}
-        holders={holders}
+        enabled={liveActive || Boolean(marketId)}
+        live={feedLive}
+        holders={displayHolders}
         holdersRevision={holdersRevision}
-        liveActivity={liveActive}
-        activityTrades={liveActivityTrades}
-        nowMs={liveActive ? nowMs : undefined}
+        activityTrades={displayActivityTrades}
+        nowMs={feedNowMs}
       />
     </div>
   )
