@@ -1349,8 +1349,8 @@ export default function MarketPage({ mode }: Props) {
 
   const liveLabel = liveActive
     ? liveMarketId
-      ? `LIVE · ${liveMarketId}${remaining != null ? ` · ${Math.max(0, Math.floor(remaining))}s` : ''}`
-      : 'LIVE · connecting…'
+      ? `${liveMarketId}${remaining != null ? ` · ${Math.max(0, Math.floor(remaining))}s left` : ''}`
+      : 'Connecting…'
     : undefined
 
   const onTrade = (opts: { size_usd?: number; shares?: number }) => {
@@ -1383,75 +1383,66 @@ export default function MarketPage({ mode }: Props) {
   return (
     <div className="workspace">
       <aside className="workspace-rail workspace-rail-left">
-        {liveActive ? (
-          <>
-            <div className="live-exit-bar">
-              <span className="live-exit-label">{liveLabel || 'LIVE'}</span>
-              <button type="button" className="sidebar-btn" onClick={toggleLive}>
-                Exit live
-              </button>
-            </div>
-            <TradeSidebar
-              mode={mode}
-              tradeAction={tradeAction}
-              onTradeAction={setTradeAction}
-              side={side}
-              onSide={setSide}
-              onTrade={onTrade}
-              upPrice={up}
-              downPrice={down}
-              upHasAsk={book == null ? true : (book.up?.asks?.length ?? 0) > 0}
-              downHasAsk={book == null ? true : (book.down?.asks?.length ?? 0) > 0}
-              upHasBid={book == null ? true : (book.up?.bids?.length ?? 0) > 0}
-              downHasBid={book == null ? true : (book.down?.bids?.length ?? 0) > 0}
-              cash={tick?.portfolio?.cash}
-              heldShares={
-                side === 'UP' ? tick?.portfolio?.up_shares ?? 0 : tick?.portfolio?.down_shares ?? 0
-              }
-              tradeDisabled={liveActive || mode !== 'paper' || (!playing && !sessionId)}
-              monitorHint={liveActive || mode === 'monitor'}
-            />
-          </>
-        ) : (
-          <ControlSidebar
+        <ControlSidebar
+          mode={mode}
+          liveActive={liveActive}
+          onToggleLive={toggleLive}
+          liveLabel={liveLabel}
+          liveInterval={liveInterval}
+          onLiveInterval={onLiveInterval}
+          collection={collection}
+          onCollection={setCollection}
+          split={split}
+          onSplit={setSplit}
+          indexing={indexing}
+          dateMin={dateMin}
+          dateMax={dateMax}
+          selectedDate={selectedDate}
+          onDate={setSelectedDate}
+          selectedTime={selectedTime}
+          markets={markets}
+          onTime={onTimeChange}
+          formatSlotLabel={formatSlotLabel}
+          speed={speed}
+          onSpeed={setReplaySpeed}
+          playing={playing}
+          paused={paused}
+          onPlay={() => startReplay()}
+          onPause={pauseReplay}
+          onResume={resumeReplay}
+          onStop={stopWs}
+          marketId={marketId}
+          hasPrev={Boolean(neighbors.prev)}
+          hasNext={Boolean(neighbors.next)}
+          onPrev={() => neighbors.prev && setMarketId(neighbors.prev)}
+          onNext={() => neighbors.next && setMarketId(neighbors.next)}
+          strategy={strategy}
+          onStrategy={setStrategy}
+          marketStartMs={detail?.start_time}
+          marketEndMs={detail?.end_time}
+          playheadMs={playheadTs}
+          onSeek={seekReplay}
+        />
+        {liveActive && (
+          <TradeSidebar
             mode={mode}
-            liveActive={liveActive}
-            onToggleLive={toggleLive}
-            liveLabel={liveLabel}
-            liveInterval={liveInterval}
-            onLiveInterval={onLiveInterval}
-            collection={collection}
-            onCollection={setCollection}
-            split={split}
-            onSplit={setSplit}
-            indexing={indexing}
-            dateMin={dateMin}
-            dateMax={dateMax}
-            selectedDate={selectedDate}
-            onDate={setSelectedDate}
-            selectedTime={selectedTime}
-            markets={markets}
-            onTime={onTimeChange}
-            formatSlotLabel={formatSlotLabel}
-            speed={speed}
-            onSpeed={setReplaySpeed}
-            playing={playing}
-            paused={paused}
-            onPlay={() => startReplay()}
-            onPause={pauseReplay}
-            onResume={resumeReplay}
-            onStop={stopWs}
-            marketId={marketId}
-            hasPrev={Boolean(neighbors.prev)}
-            hasNext={Boolean(neighbors.next)}
-            onPrev={() => neighbors.prev && setMarketId(neighbors.prev)}
-            onNext={() => neighbors.next && setMarketId(neighbors.next)}
-            strategy={strategy}
-            onStrategy={setStrategy}
-            marketStartMs={detail?.start_time}
-            marketEndMs={detail?.end_time}
-            playheadMs={playheadTs}
-            onSeek={seekReplay}
+            tradeAction={tradeAction}
+            onTradeAction={setTradeAction}
+            side={side}
+            onSide={setSide}
+            onTrade={onTrade}
+            upPrice={up}
+            downPrice={down}
+            upHasAsk={book == null ? true : (book.up?.asks?.length ?? 0) > 0}
+            downHasAsk={book == null ? true : (book.down?.asks?.length ?? 0) > 0}
+            upHasBid={book == null ? true : (book.up?.bids?.length ?? 0) > 0}
+            downHasBid={book == null ? true : (book.down?.bids?.length ?? 0) > 0}
+            cash={tick?.portfolio?.cash}
+            heldShares={
+              side === 'UP' ? tick?.portfolio?.up_shares ?? 0 : tick?.portfolio?.down_shares ?? 0
+            }
+            tradeDisabled={liveActive || mode !== 'paper' || (!playing && !sessionId)}
+            monitorHint={liveActive || mode === 'monitor'}
           />
         )}
       </aside>

@@ -193,70 +193,166 @@ export default function ControlSidebar(props: Props) {
   }
 
   return (
-    <div className="control-sidebar control-sidebar-embedded">
-      <div className="sidebar-section">
-        <div className="sidebar-heading">Mode</div>
-        <button
-          type="button"
-          className={`sidebar-btn full ${liveActive ? 'primary live-on' : ''}`}
-          onClick={onToggleLive}
-        >
-          {liveActive ? 'Exit live' : 'Live market'}
-        </button>
-        {liveActive && (
-          <div className="sidebar-badge live-badge">{liveLabel || 'LIVE · view only'}</div>
+    <div className={`control-sidebar control-sidebar-embedded${liveActive ? ' live-mode' : ''}`}>
+      <div className={`sidebar-section mode-section${liveActive ? ' sidebar-section-last' : ''}`}>
+        <div className="sidebar-heading mode-heading">
+          <span>Mode</span>
+          <span className={`mode-current-pill${liveActive ? ' live' : ''}`}>
+            {liveActive ? (
+              <>
+                <i /> Live
+              </>
+            ) : (
+              'History'
+            )}
+          </span>
+        </div>
+
+        {liveActive ? (
+          <button type="button" className="mode-nav-btn history" onClick={onToggleLive}>
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden>
+              <path
+                fill="currentColor"
+                d="M13 3a9 9 0 1 0 8.95 10h-2.02A7 7 0 1 1 13 5V3zm1 0v8.6l5.4 3.2-.9 1.5L12 12V3h2z"
+              />
+            </svg>
+            <span className="mode-nav-copy">
+              <strong>History</strong>
+              <small>Browse past markets</small>
+            </span>
+            <span className="mode-nav-chevron" aria-hidden>
+              →
+            </span>
+          </button>
+        ) : (
+          <button type="button" className="mode-nav-btn live" onClick={onToggleLive}>
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden>
+              <path
+                fill="currentColor"
+                d="M12 5a7 7 0 0 1 7 7c0 3.3-2.3 6.1-5.4 6.8L12 22l-1.6-3.2A7 7 0 0 1 5 12a7 7 0 0 1 7-7zm0 2a5 5 0 1 0 .01 10.01A5 5 0 0 0 12 7zm0 2.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"
+              />
+            </svg>
+            <span className="mode-nav-copy">
+              <strong>Live market</strong>
+              <small>Watch current window</small>
+            </span>
+            <span className="mode-nav-chevron" aria-hidden>
+              →
+            </span>
+          </button>
         )}
-        <label className="sidebar-label">Fetch interval</label>
-        <select
-          value={liveInterval}
-          onChange={(e) => onLiveInterval(Number(e.target.value))}
-        >
-          <option value={0.1}>0.1s</option>
-          <option value={0.2}>0.2s</option>
-          <option value={0.5}>0.5s</option>
-          <option value={1}>1s</option>
-          <option value={1.5}>1.5s</option>
-          <option value={2}>2s</option>
-        </select>
+
+        {liveActive && (
+          <>
+            <div className="mode-field-row">
+              <span className="mode-field-label">Fetch</span>
+              <select
+                className="mode-field-control"
+                value={liveInterval}
+                onChange={(e) => onLiveInterval(Number(e.target.value))}
+                aria-label="Fetch interval"
+              >
+                <option value={0.1}>0.1s</option>
+                <option value={0.2}>0.2s</option>
+                <option value={0.5}>0.5s</option>
+                <option value={1}>1s</option>
+                <option value={1.5}>1.5s</option>
+                <option value={2}>2s</option>
+              </select>
+            </div>
+            {liveLabel && (
+              <div className="mode-live-meta" title={liveLabel}>
+                {liveLabel}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
-      <div className="sidebar-section">
-        <div className="sidebar-heading">Data</div>
-        <label className="sidebar-label">Collection</label>
-        <select
-          value={collection}
-          onChange={(e) => onCollection(e.target.value as 'before_twap' | 'twap')}
-          disabled={histDisabled}
-        >
-          <option value="twap">TWAP</option>
-          <option value="before_twap">before TWAP</option>
-        </select>
+      {!liveActive && (
+      <>
+      <div className="sidebar-section data-section">
+        <div className="sidebar-heading data-heading">
+          <span>Data</span>
+          {indexing ? (
+            <span className="data-status indexing">Indexing…</span>
+          ) : (
+            dateMin &&
+            dateMax &&
+            !liveActive && <span className="data-status">{markets.length} slots</span>
+          )}
+        </div>
+
+        <div className="data-segment" role="group" aria-label="Collection">
+          <button
+            type="button"
+            className={`data-segment-btn${collection === 'twap' ? ' active' : ''}`}
+            disabled={histDisabled}
+            onClick={() => onCollection('twap')}
+            aria-pressed={collection === 'twap'}
+          >
+            TWAP
+          </button>
+          <button
+            type="button"
+            className={`data-segment-btn${collection === 'before_twap' ? ' active' : ''}`}
+            disabled={histDisabled}
+            onClick={() => onCollection('before_twap')}
+            aria-pressed={collection === 'before_twap'}
+          >
+            Before
+          </button>
+        </div>
+
         {beforeTwap ? (
-          <>
-            <label className="sidebar-label">Dataset</label>
-            <select value={split} onChange={(e) => onSplit(e.target.value)} disabled={histDisabled}>
+          <div className="data-field-row">
+            <span className="data-field-label">Split</span>
+            <select
+              className="data-field-control"
+              value={split}
+              onChange={(e) => onSplit(e.target.value)}
+              disabled={histDisabled}
+              aria-label="Dataset split"
+            >
               <option value="validation">Validation</option>
               <option value="test">Test</option>
               <option value="train">Train</option>
             </select>
-          </>
+          </div>
         ) : (
-          <div className="sidebar-meta" title="E:\DataSets\poly\live">
-            E:\DataSets\poly\live
+          <div className="data-path" title="E:\DataSets\poly\live">
+            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden>
+              <path
+                fill="currentColor"
+                d="M10 4H4a2 2 0 0 0-2 2v12c0 1.1.9 2 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"
+              />
+            </svg>
+            <span>E:\DataSets\poly\live</span>
           </div>
         )}
 
-        <label className="sidebar-label">Date (ET)</label>
-        <input
-          type="date"
-          value={selectedDate}
-          min={dateMin || undefined}
-          max={dateMax || undefined}
-          disabled={!dateMin || liveActive}
-          onChange={(e) => onDate(e.target.value)}
-        />
+        <div className="data-field-row">
+          <span className="data-field-label">Date</span>
+          <input
+            className="data-field-control"
+            type="date"
+            value={selectedDate}
+            min={dateMin || undefined}
+            max={dateMax || undefined}
+            disabled={!dateMin || liveActive}
+            onChange={(e) => onDate(e.target.value)}
+            aria-label="Date ET"
+          />
+        </div>
 
-        <label className="sidebar-label">Time window (ET)</label>
+        <div className="data-windows-head">
+          <span>Window (ET)</span>
+          {dateMin && dateMax && !liveActive && (
+            <span className="data-windows-range">
+              {dateMin.slice(5)} → {dateMax.slice(5)}
+            </span>
+          )}
+        </div>
         <div
           className={`time-window-list${histDisabled || !markets.length ? ' disabled' : ''}`}
           role="listbox"
@@ -292,18 +388,6 @@ export default function ControlSidebar(props: Props) {
             })
           )}
         </div>
-
-        {indexing ? (
-          <div className="sidebar-badge">Indexing calendar…</div>
-        ) : (
-          dateMin &&
-          dateMax &&
-          !liveActive && (
-            <div className="sidebar-meta">
-              {dateMin} → {dateMax}
-            </div>
-          )
-        )}
       </div>
 
       <div className="sidebar-section sidebar-section-last playback-section">
@@ -441,6 +525,8 @@ export default function ControlSidebar(props: Props) {
           </>
         )}
       </div>
+      </>
+      )}
     </div>
   )
 }
