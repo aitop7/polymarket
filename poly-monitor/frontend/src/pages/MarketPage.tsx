@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
+  formatResolvedEt,
   formatUsd,
   formatWindowEt,
   type HolderRow,
@@ -15,8 +16,27 @@ import ControlSidebar from '../components/ControlSidebar'
 import OrderBookPanel, { type BookPayload } from '../components/OrderBookPanel'
 import PriceChart, { type BtcSeriesVisibility, type TimeDomain } from '../components/PriceChart'
 import TradeSidebar from '../components/TradeSidebar'
+import VolumeChart from '../components/VolumeChart'
 
 const DEFAULT_X_SPAN_MS = 180_000
+
+function volumeFields(p: {
+  bn_buy?: number | null
+  bn_sell?: number | null
+  up_buy_vol?: number | null
+  up_sell_vol?: number | null
+  down_buy_vol?: number | null
+  down_sell_vol?: number | null
+}) {
+  return {
+    bn_buy: p.bn_buy ?? 0,
+    bn_sell: p.bn_sell ?? 0,
+    up_buy_vol: p.up_buy_vol ?? 0,
+    up_sell_vol: p.up_sell_vol ?? 0,
+    down_buy_vol: p.down_buy_vol ?? 0,
+    down_sell_vol: p.down_sell_vol ?? 0,
+  }
+}
 
 type Tick = {
   type: string
@@ -328,6 +348,7 @@ export default function MarketPage({ mode }: Props) {
             btc: p.btc,
             twap: p.twap ?? null,
             chainlink: p.chainlink ?? null,
+            ...volumeFields(p),
           })),
         )
         setTick(null)
@@ -367,6 +388,7 @@ export default function MarketPage({ mode }: Props) {
           btc: p.btc,
           twap: p.twap ?? null,
           chainlink: p.chainlink ?? null,
+          ...volumeFields(p),
         })),
       )
       setTick(null)
@@ -531,6 +553,7 @@ export default function MarketPage({ mode }: Props) {
               btc: p.btc ?? null,
               twap: p.twap ?? null,
               chainlink: p.chainlink ?? null,
+              ...volumeFields(p),
             }))
           if (!points.length) return
           setSeriesLive((prev) => {
@@ -732,6 +755,7 @@ export default function MarketPage({ mode }: Props) {
             btc: p.btc,
             twap: p.twap ?? null,
             chainlink: p.chainlink ?? null,
+            ...volumeFields(p),
           })),
         )
         setTick(null)
@@ -806,6 +830,7 @@ export default function MarketPage({ mode }: Props) {
       btc: p.btc,
       twap: p.twap ?? null,
       chainlink: p.chainlink ?? null,
+      ...volumeFields(p),
     }))
   }, [seriesLive, detail])
 
@@ -885,10 +910,22 @@ export default function MarketPage({ mode }: Props) {
     return 'not_closed'
   }, [liveActive, playing, detail])
 
-  const outcomeSubtitle =
-    detail != null
-      ? `Bitcoin Up or Down - ${formatWindowEt(detail.start_time, detail.end_time)}`
-      : windowLabel
+  const outcomeSubtitle = useMemo(() => {
+    const window =
+      detail != null
+        ? `Bitcoin Up or Down - ${formatWindowEt(detail.start_time, detail.end_time)}`
+        : windowLabel
+    const resolvedMs = detail?.resolved_at
+    if (
+      resolvedMs != null &&
+      Number.isFinite(resolvedMs) &&
+      (historyOutcome === 'Up' || historyOutcome === 'Down')
+    ) {
+      const when = formatResolvedEt(resolvedMs)
+      return when ? `${window}\nResolved ${when}` : window
+    }
+    return window
+  }, [detail, windowLabel, historyOutcome])
 
   const showOutcomeCard = !liveActive && !playing && !paused
 
@@ -998,6 +1035,14 @@ export default function MarketPage({ mode }: Props) {
             hoverTime={sharedHoverTime}
             onHoverTimeChange={setSharedHoverTime}
           />
+          <VolumeChart
+            data={chartData}
+            mode="binance"
+            title="Binance BTC volume"
+            xDomain={sharedXDomain}
+            hoverTime={sharedHoverTime}
+            onHoverTimeChange={setSharedHoverTime}
+          />
           <PriceChart
             data={chartData}
             mode="outcomes"
@@ -1007,6 +1052,14 @@ export default function MarketPage({ mode }: Props) {
             onXDomainReset={onChartXDomainReset}
             xFullDomain={xFullDomain}
             xDefaultDomain={xDefaultDomain}
+            hoverTime={sharedHoverTime}
+            onHoverTimeChange={setSharedHoverTime}
+          />
+          <VolumeChart
+            data={chartData}
+            mode="outcomes"
+            title="Up / Down volume"
+            xDomain={sharedXDomain}
             hoverTime={sharedHoverTime}
             onHoverTimeChange={setSharedHoverTime}
           />

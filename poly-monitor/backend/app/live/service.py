@@ -573,6 +573,10 @@ class LiveMarketService:
         # Drop open-book 1¢/99¢ stubs and break absurd one-tick flips.
         merged = scrub_leading_outcome_extremes(merged)
         merged = break_outcome_jumps(merged)
+        if mid:
+            from app.core.trade_volume import attach_volumes_to_series, volumes_for_market_id
+
+            merged = attach_volumes_to_series(merged, volumes_for_market_id(mid))
         return {
             "market_id": mid,
             "start_time": start_ms,

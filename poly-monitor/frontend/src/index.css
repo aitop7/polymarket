@@ -213,6 +213,7 @@ select {
   font-weight: 500;
   color: #6b7280;
   line-height: 1.35;
+  white-space: pre-line;
 }
 
 .holders-panel {
@@ -1483,6 +1484,61 @@ select {
   border-top: 1px solid var(--border);
 }
 
+.chart-block-volume {
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: none;
+}
+
+.chart-block + .chart-block-volume {
+  margin-top: 0.25rem;
+  padding-top: 0.15rem;
+  border-top: none;
+}
+
+.chart-block-volume + .chart-block {
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+
+.chart-header-volume {
+  min-height: 2.2rem;
+  margin-bottom: 0.2rem;
+}
+
+
+.chart-volume-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.85rem;
+  align-items: center;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.chart-volume-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+.chart-volume-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.chart-volume-legend-note {
+  color: #9ca3af;
+  font-size: 0.68rem;
+}
+
+.chart-volume-tip {
+  min-height: 1.2rem;
+}
+
 .chart-title {
   font-size: 0.78rem;
   font-weight: 650;
@@ -1635,6 +1691,14 @@ select {
   position: relative;
   height: 260px;
   width: 100%;
+}
+
+.chart-wrap.chart-wrap-volume {
+  height: 110px;
+}
+
+.chart-wrap.chart-wrap-volume-outcomes {
+  height: 220px;
 }
 
 .chart-wrap > .recharts-responsive-container {

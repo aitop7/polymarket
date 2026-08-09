@@ -9,6 +9,8 @@ export type MarketSummary = {
   winner: number | null
   /** From meta.json for TWAP/live; true when market resolved/closed. */
   closed?: boolean | null
+  /** Epoch ms when Gamma/UMA reported resolution (meta.resolved_at). */
+  resolved_at?: number | null
   btc_open_price: number | null
   has_features: boolean
   has_training: boolean
@@ -16,15 +18,24 @@ export type MarketSummary = {
   time_et?: string
 }
 
+export type SeriesVolumeFields = {
+  bn_buy?: number | null
+  bn_sell?: number | null
+  up_buy_vol?: number | null
+  up_sell_vol?: number | null
+  down_buy_vol?: number | null
+  down_sell_vol?: number | null
+}
+
 export type MarketDetail = MarketSummary & {
-  series: {
+  series: ({
     t: number
     btc: number | null
     up: number | null
     down: number | null
     twap?: number | null
     chainlink?: number | null
-  }[]
+  } & SeriesVolumeFields)[]
   first: { timestamp: number; btc_price: number | null; up_price: number; down_price: number }
   last: { timestamp: number; btc_price: number | null; up_price: number; down_price: number }
 }
@@ -109,7 +120,7 @@ export type LiveSeriesPoint = {
   btc?: number | null
   twap?: number | null
   chainlink?: number | null
-}
+} & SeriesVolumeFields
 
 export type LiveSeriesResponse = {
   market_id?: string | null
@@ -241,6 +252,25 @@ export function formatWindow(startMs: number, endMs: number): string {
     minute: '2-digit',
   }
   return `${s.toLocaleString(undefined, opts)} – ${e.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
+}
+
+/** e.g. "Aug 8, 12:44:13 PM ET" */
+export function formatResolvedEt(ms: number): string {
+  try {
+    return (
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+      }).format(new Date(ms)) + ' ET'
+    )
+  } catch {
+    return ''
+  }
 }
 
 /** Polymarket-style window: "August 7, 12:50-12:55AM ET" */

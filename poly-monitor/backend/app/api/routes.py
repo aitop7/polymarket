@@ -152,7 +152,7 @@ def get_market(market_id: str, split: str | None = None) -> dict[str, Any]:
     last_q = quotes_from_row(df.iloc[-1])
     return {
         **meta,
-        "series": series_for_chart(df),
+        "series": series_for_chart(df, market_id=str(market_id)),
         "first": {
             "timestamp": int(df.iloc[0]["timestamp"]),
             "btc_price": float(df.iloc[0]["btc_price"]) if "btc_price" in df.columns else None,

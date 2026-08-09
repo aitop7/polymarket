@@ -281,10 +281,16 @@ def _chart_up_buy(row: Any) -> float | None:
 
 
 
-def series_for_chart(df: pd.DataFrame, *, max_points: int = 300) -> list[dict[str, Any]]:
+def series_for_chart(
+    df: pd.DataFrame,
+    *,
+    max_points: int = 300,
+    market_id: str | None = None,
+) -> list[dict[str, Any]]:
     if df.empty:
         return []
     from app.core.pricing import quotes_from_up_buy
+    from app.core.trade_volume import attach_volumes_to_series, volumes_for_market_id
     from app.live.fetch_live_series import break_outcome_jumps, scrub_leading_outcome_extremes
 
     step = max(1, len(df) // max_points)
@@ -326,6 +332,8 @@ def series_for_chart(df: pd.DataFrame, *, max_points: int = 300) -> list[dict[st
         if len(vals) >= 5 and (max(vals) - min(vals)) < 1.0:
             for p in out:
                 p[key] = None
+    if market_id:
+        out = attach_volumes_to_series(out, volumes_for_market_id(str(market_id)))
     return out
 
 
