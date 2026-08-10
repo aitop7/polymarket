@@ -221,33 +221,50 @@ class TwapFeed:
                 await asyncio.sleep(2.0)
 
     async def _session(self) -> None:
-        async with websockets.connect(
-            RTDS_URL,
-            ping_interval=None,
-            ping_timeout=None,
-            max_size=2**20,
-        ) as ws:
-            await ws.send(json.dumps(SUBSCRIBE))
-            self._error = None
-            ping_at = time.monotonic()
-            while self._running:
-                timeout = max(0.1, 5.0 - (time.monotonic() - ping_at))
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
-                except asyncio.TimeoutError:
-                    await ws.send("PING")
+        # websockets defaults to proxy=True (system HTTP(S)_PROXY). That is required
+        # on some networks, but a broken local proxy yields InvalidProxyMessage —
+        # fall back to a direct connect so Current Price can recover.
+        last_exc: Exception | None = None
+        for proxy in (True, None):
+            try:
+                async with websockets.connect(
+                    RTDS_URL,
+                    ping_interval=None,
+                    ping_timeout=None,
+                    open_timeout=8,
+                    max_size=2**20,
+                    proxy=proxy,
+                ) as ws:
+                    await ws.send(json.dumps(SUBSCRIBE))
+                    self._error = None
                     ping_at = time.monotonic()
-                    continue
+                    while self._running:
+                        timeout = max(0.1, 5.0 - (time.monotonic() - ping_at))
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                        except asyncio.TimeoutError:
+                            await ws.send("PING")
+                            ping_at = time.monotonic()
+                            continue
 
-                if isinstance(raw, bytes):
-                    raw = raw.decode("utf-8", errors="ignore")
-                if raw.strip() == "PONG":
-                    continue
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                self._handle_message(msg)
+                        if isinstance(raw, bytes):
+                            raw = raw.decode("utf-8", errors="ignore")
+                        if raw.strip() == "PONG":
+                            continue
+                        try:
+                            msg = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        self._handle_message(msg)
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                self._error = str(exc)
+                continue
+        if last_exc is not None:
+            self._error = str(last_exc)
 
     def _handle_message(self, msg: Any) -> None:
         if not isinstance(msg, dict):
@@ -266,16 +283,22 @@ class TwapFeed:
 
         value = payload.get("value")
         # Prefer Chainlink full-accuracy E18 when present (docs: `value` is display-only).
+        # Guard: if E18 decode disagrees wildly with `value`, trust `value`.
         raw_full = payload.get("full_accuracy_value")
+        value_f: float | None = None
+        try:
+            if value is not None:
+                value_f = float(value)
+        except (TypeError, ValueError):
+            value_f = None
         if raw_full is not None:
             try:
-                value = float(raw_full) / 1e18
+                full_f = float(raw_full) / 1e18
+                if value_f is None or abs(full_f - value_f) <= max(1.0, abs(value_f) * 1e-4):
+                    value_f = full_f
             except (TypeError, ValueError):
                 pass
-        try:
-            price = float(value) if value is not None else None
-        except (TypeError, ValueError):
-            price = None
+        price = value_f
         if price is None:
             return
 

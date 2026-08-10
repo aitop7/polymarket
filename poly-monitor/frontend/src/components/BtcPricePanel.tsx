@@ -7,6 +7,8 @@ type Props = {
   priceToBeat: number | null | undefined
   /** Chainlink 30s TWAP (resolution feed) */
   twapPrice: number | null | undefined
+  /** Live RTDS error when Current Price has no TWAP sample */
+  twapError?: string | null
   remainingSeconds: number | null | undefined
   /** History: resolved outcome from meta */
   outcome?: 'Up' | 'Down' | 'not_closed' | null
@@ -23,6 +25,7 @@ export default function BtcPricePanel({
   windowLabel,
   priceToBeat,
   twapPrice,
+  twapError = null,
   remainingSeconds,
   outcome = null,
   resolvedAt = null,
@@ -100,6 +103,11 @@ export default function BtcPricePanel({
               `$${formatUsd(twapPrice, 2)}`
             )}
           </div>
+          {twapPrice == null && twapError ? (
+            <div className="btc-stat-hint btc-twap-error" title={twapError}>
+              TWAP feed: {twapError.length > 64 ? `${twapError.slice(0, 64)}…` : twapError}
+            </div>
+          ) : null}
         </div>
 
         <div className="btc-countdown" aria-label="Time remaining">

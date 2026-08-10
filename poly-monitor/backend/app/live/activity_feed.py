@@ -145,6 +145,7 @@ class ActivityFeed:
             RTDS_URL,
             ping_interval=None,
             ping_timeout=None,
+            open_timeout=8,
             max_size=2**22,
         ) as ws:
             await ws.send(json.dumps(SUBSCRIBE))

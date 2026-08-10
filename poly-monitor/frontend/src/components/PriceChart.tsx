@@ -351,16 +351,11 @@ export default function PriceChart({
     return i || j < mapped.length ? mapped.slice(i, j) : mapped
   }, [data, mode])
 
-  // When TWAP is frozen/missing (stalled RTDS), plot Binance so the chart isn't blank.
+  // Prefer TWAP; only fall back to Binance when Current Price has no samples at all.
   const plotVisible = useMemo((): BtcSeriesVisibility => {
     if (!showBtc) return seriesVisible
-    const twapVals = chartData
-      .map((d) => d.twap)
-      .filter((v): v is number => v != null && Number.isFinite(v))
-    const twapSpan =
-      twapVals.length >= 2 ? Math.max(...twapVals) - Math.min(...twapVals) : 0
-    const twapDead = twapVals.length < 2 || twapSpan < 1
-    if (!twapDead) return seriesVisible
+    const hasTwap = chartData.some((d) => d.twap != null && Number.isFinite(Number(d.twap)))
+    if (hasTwap || !seriesVisible.twap) return seriesVisible
     const hasBinance = chartData.some((d) => d.btc != null && Number.isFinite(Number(d.btc)))
     if (!hasBinance) return seriesVisible
     return { ...seriesVisible, twap: false, binance: true }

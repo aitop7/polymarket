@@ -27,6 +27,31 @@ VALID_SOURCES = frozenset(
 # Sample farther than this from start_time is provisional (early lock).
 GOOD_SAMPLE_MAX_DELTA_MS = 1_500
 
+# Authoritative open lock = Polymarket RTDS Chainlink 30s TWAP.
+# Binance-computed / meta are provisional and must never block RTDS.
+PTB_SOURCE_RANK: dict[str, int] = {
+    "open_twap_30s": 40,
+    "prev_close_twap_30s": 40,
+    "twap_30s": 35,
+    "open_twap_30s_computed": 10,
+    "prev_close_twap_30s_computed": 10,
+    "twap_30s_computed": 10,
+    "fetch_live_meta": 5,
+}
+
+
+def source_rank(source: str | None) -> int:
+    return int(PTB_SOURCE_RANK.get(str(source or ""), 0))
+
+
+def is_provisional_source(source: str | None) -> bool:
+    """True when lock is not Polymarket RTDS Chainlink TWAP."""
+    return source_rank(source) < PTB_SOURCE_RANK["open_twap_30s"]
+
+
+def is_rtds_source(source: str | None) -> bool:
+    return source_rank(source) >= PTB_SOURCE_RANK["open_twap_30s"]
+
 
 def _load() -> dict[str, Any]:
     if not _STORE_PATH.is_file():
@@ -95,11 +120,10 @@ def set_price_to_beat(
     """
     Persist PTB. Returns True if written.
 
-    Overwrites when:
-      - overwrite=True, or
-      - no existing row, or
-      - new sample is closer to window_start than the stored one
-    Never replaces a fetch_live_meta lock unless overwrite=True.
+    Priority:
+      1) overwrite=True
+      2) higher-ranked source (RTDS Chainlink beats Binance-computed / meta)
+      3) same rank → closer observed_ts to window start wins
     """
     data = _load()
     key = str(int(window_start_ms))
@@ -108,28 +132,19 @@ def set_price_to_beat(
 
     if existing is not None and existing.get("price") is not None and not overwrite:
         existing_source = str(existing.get("source") or "")
-        # RTDS open_twap may replace a fetch_live / Binance provisional lock when closer.
-        allow_replace_meta = (
-            existing_source == "fetch_live_meta"
-            and source in {"open_twap_30s", "open_twap_30s_computed"}
-            and is_good_sample(start, observed_ts)
-        )
-        if existing_source == "fetch_live_meta" and not allow_replace_meta:
-            return False
+        new_rank = source_rank(source)
+        old_rank = source_rank(existing_source)
         old_ts = existing.get("observed_ts")
         old_delta = sample_delta_ms(start, old_ts if old_ts is not None else None)
         new_delta = sample_delta_ms(start, observed_ts)
-        # Keep existing if it is at least as close to T0.
-        if (
-            not allow_replace_meta
-            and old_delta is not None
-            and (new_delta is None or new_delta >= old_delta)
-        ):
+
+        if new_rank < old_rank:
             return False
-        if allow_replace_meta and old_delta is not None and new_delta is not None:
-            # Only replace meta when RTDS is strictly closer (or equal + RTDS).
-            if new_delta > old_delta:
+        if new_rank == old_rank:
+            # Same quality — keep the sample closer to T0.
+            if old_delta is not None and (new_delta is None or new_delta >= old_delta):
                 return False
+        # new_rank > old_rank → always allow (RTDS replaces computed/meta)
 
     data[key] = {
         "price": float(price),

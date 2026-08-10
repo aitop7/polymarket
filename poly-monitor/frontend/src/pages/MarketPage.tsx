@@ -1048,15 +1048,21 @@ export default function MarketPage({ mode }: Props) {
           setLiveWindow({ start: Number(msg.start_time), end: Number(msg.end_time) })
         }
         if (msg.book) setBook(msg.book as BookPayload)
-        if (msg.up_price != null && msg.down_price != null) {
+        // Always record live chart points (TWAP can update even when outcomes are stubbed).
+        {
           setSeriesLive((prev) => {
-            let up: number | null = msg.up_price!
-            let down: number | null = msg.down_price!
+            let up: number | null = msg.up_price ?? null
+            let down: number | null = msg.down_price ?? null
             // Until we have a real mid-market quote, ignore 1¢/99¢ open stubs.
             const hasRealOutcome = prev.some(
               (p) => p.up != null && p.up > 0.02 && p.up < 0.98,
             )
-            if (!hasRealOutcome && (up <= 0.02 || up >= 0.98 || down <= 0.02 || down >= 0.98)) {
+            if (
+              up != null &&
+              down != null &&
+              !hasRealOutcome &&
+              (up <= 0.02 || up >= 0.98 || down <= 0.02 || down >= 0.98)
+            ) {
               up = null
               down = null
             }
@@ -1071,17 +1077,44 @@ export default function MarketPage({ mode }: Props) {
             }
             if (!prev.length) return [point]
             const last = prev[prev.length - 1]
+            const mergePrice = (
+              next: number | null | undefined,
+              prevVal: number | null | undefined,
+            ): number | null =>
+              next != null && Number.isFinite(next)
+                ? next
+                : prevVal != null && Number.isFinite(prevVal)
+                  ? prevVal
+                  : null
             if (last.t === point.t) {
               const next = prev.slice(0, -1)
               // Keep volume from the seeded point; tick only updates prices.
-              next.push({ ...last, ...point, ...volumeFields(last) })
+              // Never wipe a known TWAP/chainlink/btc with a transient null.
+              next.push({
+                ...last,
+                ...point,
+                up: mergePrice(point.up, last.up),
+                down: mergePrice(point.down, last.down),
+                btc: mergePrice(point.btc, last.btc),
+                twap: mergePrice(point.twap, last.twap),
+                chainlink: mergePrice(point.chainlink, last.chainlink),
+                ...volumeFields(last),
+              })
               return next
             }
             if (point.t < last.t) {
               // Rare clock skew / late seed overlap — ignore older live tick.
               return prev
             }
-            const next = [...prev, point]
+            const nextPoint: LiveSeriesPoint = {
+              ...point,
+              up: mergePrice(point.up, null),
+              down: mergePrice(point.down, null),
+              btc: mergePrice(point.btc, last.btc),
+              twap: mergePrice(point.twap, last.twap),
+              chainlink: mergePrice(point.chainlink, last.chainlink),
+            }
+            const next = [...prev, nextPoint]
             return next.length > 1200 ? next.slice(-1200) : next
           })
         }
@@ -1207,7 +1240,16 @@ export default function MarketPage({ mode }: Props) {
   }, [detail])
 
   const twap = liveActive
-    ? tick?.btc_twap_30s ?? null
+    ? // Prefer live RTDS TWAP; if TWAP stalls, fall through to Chainlink spot (not sticky series).
+      (tick?.btc_twap_30s != null &&
+      tick?.btc_twap_ts != null &&
+      nowMs - Number(tick.btc_twap_ts) <= 12_000
+        ? tick.btc_twap_30s
+        : null) ??
+      tick?.btc_twap_30s ??
+      tick?.btc_chainlink ??
+      [...seriesLive].reverse().find((p) => p.twap != null)?.twap ??
+      null
     : playing || paused
       ? tick?.btc_twap_30s ?? tick?.btc_price ?? null
       : finalHistoryPrice
@@ -1483,6 +1525,7 @@ export default function MarketPage({ mode }: Props) {
           windowLabel={windowLabel}
           priceToBeat={beat}
           twapPrice={twap}
+          twapError={liveActive ? tick?.btc_twap_error ?? null : null}
           remainingSeconds={
             remaining ??
             (liveActive

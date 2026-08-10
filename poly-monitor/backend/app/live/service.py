@@ -25,8 +25,8 @@ from app.live.twap_feed import get_twap_feed
 
 _UPDOWN_SLUG_RE = re.compile(r"(?i)^btc-updown-5m-(\d+)$")
 
-# Don't lock PTB before the open boundary; refine while near open.
-_PTB_REFINE_MS = 15_000
+# Don't lock PTB before the open boundary; keep refining near open for RTDS.
+_PTB_REFINE_MS = 45_000
 _SERIES_MAX = 900
 
 
@@ -136,11 +136,19 @@ class LiveMarketService:
         self._series_market_id: str | None = None
         self._holders_cache: dict[str, Any] | None = None
         self._holders_cache_at = 0.0
+        self._ptb_refine_task: asyncio.Task[None] | None = None
         # Start RTDS early so open TWAP (Price to Beat) is ready at market open.
         self.twap.ensure_started()
         self.activity.ensure_started()
 
     async def close(self) -> None:
+        if self._ptb_refine_task is not None and not self._ptb_refine_task.done():
+            self._ptb_refine_task.cancel()
+            try:
+                await self._ptb_refine_task
+            except asyncio.CancelledError:
+                pass
+            self._ptb_refine_task = None
         self.twap.stop()
         self.activity.stop()
         await self.clients.close()
@@ -291,7 +299,7 @@ class LiveMarketService:
         )
 
     async def _fetch_open_price(
-        self, window_start_ms: int, *, wait_s: float = 3.0
+        self, window_start_ms: int, *, wait_s: float = 3.0, allow_computed: bool = True
     ) -> tuple[float, str, int] | None:
         """
         Price To Beat / btc_open = Polymarket Chainlink 30s TWAP at start_time.
@@ -300,6 +308,7 @@ class LiveMarketService:
                  topic crypto_prices_twap_thirty, filter btc/usd
                  sample closest to market start_time (prefer at/before T0)
         Fallback: Binance REST aggTrades BTCUSDT TWAP over [start−30s, start]
+                  (provisional only — never final vs Polymarket; skipped on tick path)
         """
         start_ms = int(window_start_ms)
         hit = await self.twap.resolve_twap_at(start_ms, wait_s=wait_s)
@@ -307,12 +316,15 @@ class LiveMarketService:
             price, obs_ts = hit
             return float(price), "open_twap_30s", int(obs_ts)
 
+        # Last resort only — Binance ≠ Polymarket Chainlink (and can be slow).
+        if not allow_computed:
+            return None
         computed = await self.clients.compute_twap_30s_ending_at(start_ms)
         if computed is not None:
             return float(computed), "open_twap_30s_computed", start_ms
         return None
 
-    async def _maybe_capture_open_twap_for_next(self) -> None:
+    async def _maybe_capture_open_twap_for_next(self, *, wait_s: float = 0.0) -> None:
         """After current window end, capture open TWAP for the next market."""
         if self._window_end_ms is None:
             return
@@ -323,44 +335,59 @@ class LiveMarketService:
         if now_ms < start or now_ms > start + _PTB_REFINE_MS:
             return
         stored = ptb_store.get_price_to_beat(start)
-        if stored is not None and ptb_store.is_good_sample(start, stored.get("observed_ts")):
+        if (
+            stored is not None
+            and ptb_store.is_rtds_source(stored.get("source"))
+            and ptb_store.is_good_sample(start, stored.get("observed_ts"))
+        ):
             return
-        wait_s = 3.0 if now_ms <= start + 5_000 else 0.5
-        fetched = await self._fetch_open_price(start, wait_s=wait_s)
+        fetched = await self._fetch_open_price(
+            start, wait_s=wait_s, allow_computed=wait_s > 0
+        )
         if fetched is None:
             return
         price, source, obs_ts = fetched
+        # Skip writing provisional Binance on top of nothing if we can still wait for RTDS.
+        if ptb_store.is_provisional_source(source) and now_ms <= start + 10_000:
+            return
         ptb_store.set_price_to_beat(
             start, price, source=source, observed_ts=obs_ts
         )
 
-    async def _resolve_price_to_beat(self, window_start_ms: int) -> None:
+    async def _resolve_price_to_beat(
+        self, window_start_ms: int, *, wait_s: float = 0.0, allow_computed: bool = False
+    ) -> None:
         """
         Price To Beat = Chainlink 30s TWAP nearest window start (same as Polymarket).
 
-        Prefer live RTDS samples. fetch_live meta is a fallback only — never blocks
-        a closer RTDS lock (meta often uses a provisional/Binance value).
+        Prefer live RTDS samples. Binance-computed / fetch_live meta are provisional
+        and must never permanently block an RTDS lock.
+
+        wait_s/allow_computed must stay 0 on the live tick path so Current Price
+        (TWAP) keeps updating at the configured fetch interval.
         """
         start_ms = int(window_start_ms)
         now_ms = int(time.time() * 1000)
 
         stored = ptb_store.get_price_to_beat(start_ms)
-        good = (
+        stored_source = str((stored or {}).get("source") or "")
+        provisional = stored is None or ptb_store.is_provisional_source(stored_source)
+        good_rtds = (
             stored is not None
+            and ptb_store.is_rtds_source(stored_source)
             and ptb_store.is_good_sample(start_ms, stored.get("observed_ts"))
-            and str(stored.get("source") or "") != "fetch_live_meta"
         )
         refining = 0 <= (now_ms - start_ms) <= _PTB_REFINE_MS
-        meta_only = (
-            stored is not None and str(stored.get("source") or "") == "fetch_live_meta"
-        )
 
-        if stored is not None and good and not refining and not meta_only:
+        # Finalized RTDS lock — only re-check during the refine window.
+        if good_rtds and not refining:
             self._price_to_beat = float(stored["price"])
-            self._price_to_beat_source = str(
-                stored.get("source") or "open_twap_30s"
-            )
+            self._price_to_beat_source = stored_source or "open_twap_30s"
             return
+
+        if stored is not None and self._price_to_beat is None:
+            self._price_to_beat = float(stored["price"])
+            self._price_to_beat_source = stored_source or "open_twap_30s"
 
         if now_ms < start_ms:
             # Not open yet — surface provisional values but do not hard-lock early.
@@ -371,58 +398,110 @@ class LiveMarketService:
                 px, obs = meta_hit
                 self._price_to_beat = float(px)
                 self._price_to_beat_source = (
-                    "open_twap_30s" if obs is not None and obs != start_ms else "fetch_live_meta"
-                )
-            elif stored is not None:
-                self._price_to_beat = float(stored["price"])
-                self._price_to_beat_source = str(
-                    stored.get("source") or "open_twap_30s"
+                    "open_twap_30s"
+                    if obs is not None and obs != start_ms
+                    else "fetch_live_meta"
                 )
             return
 
-        wait_s = 4.0 if now_ms - start_ms < 8_000 else (1.0 if refining or meta_only else 0.0)
-        fetched = await self._fetch_open_price(start_ms, wait_s=wait_s)
-        if fetched is not None:
-            price, source, obs_ts = fetched
-            wrote = ptb_store.set_price_to_beat(
-                start_ms, price, source=source, observed_ts=obs_ts
+        # Non-blocking RTDS sample (and optional Binance) — never stall ticks.
+        if provisional or refining or self._price_to_beat is None:
+            fetched = await self._fetch_open_price(
+                start_ms, wait_s=wait_s, allow_computed=allow_computed
             )
-            if wrote or self._price_to_beat is None or meta_only:
-                self._price_to_beat = price
-                self._price_to_beat_source = source
-                return
+            if fetched is not None:
+                price, source, obs_ts = fetched
+                if ptb_store.is_rtds_source(source) or provisional or self._price_to_beat is None:
+                    wrote = ptb_store.set_price_to_beat(
+                        start_ms, price, source=source, observed_ts=obs_ts
+                    )
+                    if wrote or self._price_to_beat is None or (
+                        provisional and ptb_store.is_rtds_source(source)
+                    ):
+                        self._price_to_beat = price
+                        self._price_to_beat_source = source
+                        if ptb_store.is_rtds_source(source):
+                            return
 
-        # Fallbacks when RTDS missed the open boundary.
-        meta_hit = self._lookup_fetch_live_open(
-            market_id=self._market_id, window_start_ms=start_ms
-        )
-        if meta_hit is not None and (
-            self._price_to_beat is None
-            or meta_only
-            or not good
-        ):
-            px, obs = meta_hit
-            source = (
-                "open_twap_30s"
-                if obs is not None and ptb_store.is_good_sample(start_ms, obs)
-                else "fetch_live_meta"
+        # Fallbacks when RTDS missed the open boundary (tick path: in-memory only).
+        if (self._price_to_beat is None or provisional) and wait_s > 0:
+            meta_hit = self._lookup_fetch_live_open(
+                market_id=self._market_id, window_start_ms=start_ms
             )
-            self._apply_ptb(px, source, obs if obs is not None else start_ms)
-            return
+            if meta_hit is not None:
+                px, obs = meta_hit
+                source = (
+                    "open_twap_30s"
+                    if obs is not None and ptb_store.is_good_sample(start_ms, obs)
+                    else "fetch_live_meta"
+                )
+                # Never let meta overwrite a better in-memory RTDS value.
+                if self._price_to_beat is None or ptb_store.is_provisional_source(
+                    self._price_to_beat_source
+                ):
+                    self._apply_ptb(px, source, obs if obs is not None else start_ms)
+                    return
 
-        if stored is not None:
+        if stored is not None and self._price_to_beat is None:
             self._price_to_beat = float(stored["price"])
-            self._price_to_beat_source = str(
-                stored.get("source") or "open_twap_30s"
-            )
+            self._price_to_beat_source = stored_source or "open_twap_30s"
+
+    async def _refine_ptb_background(self, window_start_ms: int) -> None:
+        """Retry RTDS open lock without blocking the live tick loop."""
+        start_ms = int(window_start_ms)
+        try:
+            # One off-tick disk lookup for fetch_live meta (never on snapshot path).
+            if self._price_to_beat is None or ptb_store.is_provisional_source(
+                self._price_to_beat_source
+            ):
+                meta_hit = await asyncio.to_thread(
+                    self._lookup_fetch_live_open,
+                    market_id=self._market_id,
+                    window_start_ms=start_ms,
+                )
+                if meta_hit is not None and (
+                    self._price_to_beat is None
+                    or ptb_store.is_provisional_source(self._price_to_beat_source)
+                ):
+                    px, obs = meta_hit
+                    source = (
+                        "open_twap_30s"
+                        if obs is not None and ptb_store.is_good_sample(start_ms, obs)
+                        else "fetch_live_meta"
+                    )
+                    self._apply_ptb(px, source, obs if obs is not None else start_ms)
+
+            for i in range(20):
+                wait_s = 2.0 if i < 8 else 0.5
+                allow_computed = i >= 6
+                await self._resolve_price_to_beat(
+                    start_ms, wait_s=wait_s, allow_computed=allow_computed
+                )
+                stored = ptb_store.get_price_to_beat(start_ms)
+                if (
+                    stored is not None
+                    and ptb_store.is_rtds_source(stored.get("source"))
+                    and ptb_store.is_good_sample(start_ms, stored.get("observed_ts"))
+                ):
+                    self._price_to_beat = float(stored["price"])
+                    self._price_to_beat_source = str(stored.get("source") or "open_twap_30s")
+                    return
+                await asyncio.sleep(2.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
 
     async def _lock_price_to_beat(self, *, btc: float | None) -> None:
         # Kept for call sites; ignores live `btc` so reload cannot overwrite PTB.
         del btc
-        await self._maybe_capture_open_twap_for_next()
+        # Non-blocking on tick path — never stall live TWAP / Current Price updates.
+        await self._maybe_capture_open_twap_for_next(wait_s=0.0)
         if self._window_start_ms is None:
             return
-        await self._resolve_price_to_beat(self._window_start_ms)
+        await self._resolve_price_to_beat(
+            self._window_start_ms, wait_s=0.0, allow_computed=False
+        )
 
     async def _ensure_market(self, *, force: bool = False) -> dict[str, Any] | None:
         now = time.time()
@@ -489,33 +568,24 @@ class LiveMarketService:
             self._fetch_live_open_px = None
             self._fetch_live_open_for = None
             self._fetch_live_open_obs = None
-            # Prefer a good RTDS lock; fetch_live meta is provisional only.
+            # Prefer a good RTDS lock; fetch_live / Binance-computed are provisional only.
             stored = ptb_store.get_price_to_beat(start_ms)
             if (
                 stored is not None
+                and ptb_store.is_rtds_source(stored.get("source"))
                 and ptb_store.is_good_sample(start_ms, stored.get("observed_ts"))
-                and str(stored.get("source") or "") != "fetch_live_meta"
             ):
                 self._price_to_beat = float(stored["price"])
                 self._price_to_beat_source = str(
                     stored.get("source") or "open_twap_30s"
                 )
-            else:
-                meta_hit = self._lookup_fetch_live_open(
-                    market_id=market_id, window_start_ms=start_ms
+            elif stored is not None:
+                # Disk/parquet lookup is deferred to background refine — scanning
+                # fetch_live on the tick path freezes Current Price updates.
+                self._price_to_beat = float(stored["price"])
+                self._price_to_beat_source = str(
+                    stored.get("source") or "open_twap_30s"
                 )
-                if meta_hit is not None:
-                    px, obs = meta_hit
-                    if obs is not None and ptb_store.is_good_sample(start_ms, obs):
-                        self._apply_ptb(px, "open_twap_30s", obs)
-                    else:
-                        self._price_to_beat = float(px)
-                        self._price_to_beat_source = "fetch_live_meta"
-                elif stored is not None:
-                    self._price_to_beat = float(stored["price"])
-                    self._price_to_beat_source = str(
-                        stored.get("source") or "open_twap_30s"
-                    )
         # Keep RTDS activity filter on the active market (clear tape on roll).
         self.activity.set_market(
             slug=slug,
@@ -526,6 +596,14 @@ class LiveMarketService:
             end_ms=end_s * 1000,
             clear=rolled and prev_market_id is not None,
         )
+        if rolled:
+            # Refine PTB from RTDS in the background — never block live ticks.
+            if self._ptb_refine_task is not None and not self._ptb_refine_task.done():
+                self._ptb_refine_task.cancel()
+            self._ptb_refine_task = asyncio.create_task(
+                self._refine_ptb_background(start_ms),
+                name=f"ptb-refine-{start_ms}",
+            )
         return market
 
     def _record_series_point(self, snap: dict[str, Any]) -> None:
