@@ -360,6 +360,10 @@ class DataApiTrades:
                             "takerOnly": str(taker_only).lower(),
                         },
                     )
+                    # Data API rejects large offsets (~10k+) with 400 — end of feed.
+                    if resp.status_code == 400:
+                        batch = []
+                        break
                     resp.raise_for_status()
                     raw = resp.json()
                     batch = raw if isinstance(raw, list) else []
