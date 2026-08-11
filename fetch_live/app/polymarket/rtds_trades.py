@@ -166,27 +166,27 @@ class RtdsTrades:
             return None
 
         asset = str(trade.get("asset") or trade.get("asset_id") or "")
-        is_down: bool | None = None
+        is_up: bool | None = None
         if self._token_up and asset == str(self._token_up):
-            is_down = False
+            is_up = True
         elif self._token_down and asset == str(self._token_down):
-            is_down = True
+            is_up = False
         else:
             outcome = str(trade.get("outcome") or "").strip().lower()
             if outcome in {"up", "yes"}:
-                is_down = False
+                is_up = True
             elif outcome in {"down", "no"}:
-                is_down = True
+                is_up = False
             else:
                 try:
-                    is_down = int(trade.get("outcomeIndex")) == 1
+                    is_up = int(trade.get("outcomeIndex")) == 0
                 except (TypeError, ValueError):
                     return None
-        if is_down is None:
+        if is_up is None:
             return None
 
         side_raw = str(trade.get("side") or "BUY").upper()
-        side = side_raw in {"SELL", "S"}
+        is_buy = side_raw not in {"SELL", "S"}
         try:
             price = float(trade.get("price") or 0)
             size = float(trade.get("size") or 0)
@@ -198,13 +198,15 @@ class RtdsTrades:
             or trade.get("proxy_wallet")
             or trade.get("wallet")
             or ""
-        )
+        ).strip().lower()
+        # RTDS activity stream is the aggressive / visible fill → taker.
         return {
             "timestamp": ts,
-            "wallet": wallet,
-            "token": bool(is_down),
-            "side": bool(side),
-            "price": price,
-            "shares": max(0, min(int(round(size)), 2**32 - 1)),
             "transaction_hash": tx,
+            "wallet": wallet,
+            "is_up": bool(is_up),
+            "is_buy": bool(is_buy),
+            "is_taker": True,
+            "price": price,
+            "shares": round(max(0.0, float(size)), 2),
         }

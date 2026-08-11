@@ -100,11 +100,15 @@ SCHEMAS: dict[str, pa.Schema] = {
     "trades": pa.schema(
         [
             pa.field("timestamp", pa.int64()),
+            pa.field("transaction_hash", pa.string()),
             pa.field("wallet", pa.string()),
-            pa.field("token", pa.bool_()),  # 0=UP, 1=DOWN
-            pa.field("side", pa.bool_()),  # 0=BUY, 1=SELL
-            pa.field("price", pa.float32()),
-            pa.field("shares", pa.uint32()),
+            pa.field("is_up", pa.bool_()),  # true=Up, false=Down
+            pa.field("is_buy", pa.bool_()),  # true=Buy, false=Sell
+            pa.field("is_taker", pa.bool_()),  # true=Taker, false=Maker
+            pa.field("price", pa.float64()),
+            pa.field("shares", pa.float64()),
+            # Distinguishes identical Orbscan fills (same wallet/price/size).
+            pa.field("fill_index", pa.int32()),
         ]
     ),
 }

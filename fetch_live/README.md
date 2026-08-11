@@ -69,7 +69,12 @@ Endpoints (Bearer token required when `FETCH_LIVE_API_TOKEN` is set):
 | `GET /health` | liveness + data_dir |
 | `GET /markets?after_start_ms=` | catalog (incremental) |
 | `GET /markets/{id}` | meta + file sizes |
+| `GET /markets/{id}/files/{name}` | single file download |
 | `GET /markets/{id}/archive` | zip of market dir |
+
+Full request/response docs: **[API.md](API.md)**. Live OpenAPI: `http://HOST:8787/docs`.
+
+For a dedicated OpenAPI service (typed `/meta`, JSON `/tables/{table}`, optional upstream sync), see sibling **[`../data_service`](../data_service)** (drop-in compatible with poly-monitor `VPS_SYNC_URL`).
 
 Local poly-monitor pulls these into `FETCH_LIVE_DATA_DIR` (see poly-monitor `.env`).
 
@@ -93,4 +98,20 @@ data/
 
 `binance_price_orderbook.parquet`: Binance mid (`Binance_BTC`) plus ask/bid BTC quantity in USD-distance bands from mid (widths 0.1, 0.2, …, 51.2 → `ask_0_1` … `ask_511_1023`, plus out-of-range `ask_1023_` / `bid_1023_`).
 
-`trades.parquet` is streamed from Polymarket RTDS (`activity` / `trades`) with `proxyWallet`. CLOB WS is used for live order books only. Data API `/trades` seeds on market start and gap-fills on market end.
+`trades.parquet` is streamed from Polymarket RTDS (`activity` / `trades`) plus Data API
+gap-fill. Each row is **one wallet’s fill** (taker or maker). One `transaction_hash` can
+appear on several rows.
+
+| Column | Meaning |
+|--------|---------|
+| `timestamp` | fill time (ms) |
+| `transaction_hash` | Polygon tx id |
+| `wallet` | proxy wallet for this fill |
+| `is_up` | true = Up outcome, false = Down (**per fill**, Orbscan outcome) |
+| `is_buy` | true = Buy, false = Sell (**per fill**, Orbscan action) |
+| `is_taker` | true = Taker, false = Maker |
+| `price` / `shares` / `fill_index` | **per-fill** price and size; `fill_index` distinguishes identical legs (same wallet/price/shares) so Orbscan duplicate maker fills are kept |
+
+CLOB WS is used for live order books only. Data API `/trades` seeds on market start and
+gap-fills on market end (`takerOnly=false` + taker-set classification). Rows follow
+**Orbscan** semantics: each action is its own row (wallets are not collapsed).

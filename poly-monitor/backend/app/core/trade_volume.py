@@ -31,7 +31,8 @@ def load_volume_buckets(
     """
     Fixed-width buckets of executed trade volume (default 5s).
     Binance: quantity (BTC); taker buy = not buyer_is_maker, taker sell = buyer_is_maker.
-    Polymarket (fetch_live): token False=UP True=DOWN; side False=BUY True=SELL; shares.
+    Polymarket (fetch_live): is_up / is_buy / is_taker; volume counts taker rows only.
+    Legacy files: token False=UP True=DOWN; side False=BUY True=SELL.
     Keys are bucket start timestamps.
     """
     if market_dir is None or not market_dir.is_dir():
@@ -74,10 +75,9 @@ def load_volume_buckets(
     tr_path = market_dir / "trades.parquet"
     if tr_path.is_file():
         try:
-            df = pd.read_parquet(
-                tr_path, columns=["timestamp", "token", "side", "shares"]
-            )
+            df = pd.read_parquet(tr_path)
             if not df.empty and "timestamp" in df.columns and "shares" in df.columns:
+                use_new = "is_up" in df.columns and "is_buy" in df.columns
                 for row in df.itertuples(index=False):
                     try:
                         ts = int(getattr(row, "timestamp"))
@@ -86,17 +86,35 @@ def load_volume_buckets(
                         continue
                     if shares <= 0:
                         continue
-                    token = bool(getattr(row, "token", False))
-                    side = bool(getattr(row, "side", False))
-                    b = bucket(ts)
-                    if not token and not side:
-                        b[UP_BUY] += shares
-                    elif not token and side:
-                        b[UP_SELL] += shares
-                    elif token and not side:
-                        b[DOWN_BUY] += shares
+                    if use_new:
+                        # Avoid double-counting maker+taker pairs.
+                        if "is_taker" in df.columns and not bool(
+                            getattr(row, "is_taker", True)
+                        ):
+                            continue
+                        is_up = bool(getattr(row, "is_up", False))
+                        is_buy = bool(getattr(row, "is_buy", False))
+                        b = bucket(ts)
+                        if is_up and is_buy:
+                            b[UP_BUY] += shares
+                        elif is_up and not is_buy:
+                            b[UP_SELL] += shares
+                        elif not is_up and is_buy:
+                            b[DOWN_BUY] += shares
+                        else:
+                            b[DOWN_SELL] += shares
                     else:
-                        b[DOWN_SELL] += shares
+                        token = bool(getattr(row, "token", False))
+                        side = bool(getattr(row, "side", False))
+                        b = bucket(ts)
+                        if not token and not side:
+                            b[UP_BUY] += shares
+                        elif not token and side:
+                            b[UP_SELL] += shares
+                        elif token and not side:
+                            b[DOWN_BUY] += shares
+                        else:
+                            b[DOWN_SELL] += shares
         except Exception:
             pass
 

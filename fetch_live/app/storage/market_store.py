@@ -61,7 +61,11 @@ class MarketStore:
                 "orderbooks",
                 dedupe=dedupe_by_timestamp,
             ),
-            "trades": ParquetBuffer(table_path(self.dir, "trades"), "trades"),
+            "trades": ParquetBuffer(
+                table_path(self.dir, "trades"),
+                "trades",
+                dedupe=lambda rows: rows,  # never collapse identical Orbscan fills
+            ),
         }
         # Internal dedupe keys not written to parquet
         self._seen_agg_ids: set[int] = set()
@@ -136,62 +140,195 @@ class MarketStore:
         self.append("orderbooks", row)
 
     def upsert_pm_trade(self, row: dict[str, Any], *, tx_hash: str = "") -> None:
-        """Insert/update Polymarket fill by transaction hash (RTDS / Data API)."""
+        """Insert/replace one fill row (Orbscan: same wallet may have many rows)."""
         ts = int(row["timestamp"])
-        # Same conditionId may print before official open; reject only after end
-        # or more than one window early.
         if ts >= self.end_ms:
             return
         if ts < self.start_ms - 300_000:
             return
-        key = (tx_hash or str(row.get("transaction_hash") or "")).strip().lower()
+        tx = (tx_hash or str(row.get("transaction_hash") or "")).strip()
+        wallet = str(row.get("wallet") or "").strip().lower()
+        is_up = bool(row.get("is_up"))
+        is_buy = bool(row.get("is_buy"))
+        is_taker = bool(row.get("is_taker", True))
+        try:
+            price = round(float(row["price"]), 6)
+        except (TypeError, ValueError):
+            price = 0.0
+        try:
+            shares = round(max(0.0, float(row["shares"])), 2)
+        except (TypeError, ValueError):
+            shares = 0.0
+        key = str(row.get("fill_key") or "").strip()
         if not key:
-            key = (
-                f"notx:{ts}:{row.get('token')}:{row.get('side')}:"
-                f"{row.get('price')}:{row.get('shares')}"
+            from app.polymarket.data_api_trades import assign_fill_keys
+
+            keyed = assign_fill_keys(
+                [
+                    {
+                        "timestamp": ts,
+                        "transaction_hash": tx,
+                        "wallet": wallet,
+                        "is_up": is_up,
+                        "is_buy": is_buy,
+                        "is_taker": is_taker,
+                        "price": price,
+                        "shares": shares,
+                    }
+                ]
             )
+            key = str(keyed[0].get("fill_key") or "")
         with self._lock:
             prev = self._pm_trades.get(key)
             if prev is None:
                 self._pm_trades[key] = {
                     "timestamp": ts,
-                    "wallet": str(row.get("wallet") or ""),
-                    "token": bool(row.get("token")),
-                    "side": bool(row.get("side")),
-                    "price": float(row["price"]),
-                    "shares": int(row["shares"]),
+                    "transaction_hash": tx,
+                    "wallet": wallet,
+                    "is_up": is_up,
+                    "is_buy": is_buy,
+                    "is_taker": is_taker,
+                    "price": price,
+                    "shares": shares,
+                    "fill_index": int(row.get("fill_index") or 0),
+                    "fill_key": key,
                 }
                 self._pm_trades_dirty = True
                 self.buffers["trades"]._since_flush += 1
                 return
             changed = False
-            wallet = str(row.get("wallet") or "")
-            if wallet and wallet != prev.get("wallet"):
+            if str(prev.get("wallet") or "") != wallet:
                 prev["wallet"] = wallet
                 changed = True
-            # Prefer latest API fields for this tx
             if int(prev["timestamp"]) != ts:
                 prev["timestamp"] = ts
                 changed = True
-            price = float(row["price"])
-            shares = int(row["shares"])
-            token = bool(row.get("token"))
-            side = bool(row.get("side"))
-            if prev["price"] != price or prev["shares"] != shares:
+            if abs(float(prev.get("price") or 0) - price) > 1e-12:
                 prev["price"] = price
+                changed = True
+            if abs(float(prev.get("shares") or 0) - shares) > 1e-12:
                 prev["shares"] = shares
                 changed = True
-            if prev["token"] != token or prev["side"] != side:
-                prev["token"] = token
-                prev["side"] = side
+            prev_taker = bool(prev.get("is_taker", True))
+            if prev_taker and not is_taker:
+                prev["is_taker"] = False
+                prev["is_up"] = is_up
+                prev["is_buy"] = is_buy
+                changed = True
+            elif not prev_taker and is_taker:
+                pass
+            elif (
+                bool(prev.get("is_up")) != is_up
+                or bool(prev.get("is_buy")) != is_buy
+                or prev_taker != is_taker
+            ):
+                prev["is_up"] = is_up
+                prev["is_buy"] = is_buy
+                prev["is_taker"] = is_taker
                 changed = True
             if changed:
                 self._pm_trades_dirty = True
 
     def upsert_pm_trades(self, rows: list[dict[str, Any]]) -> int:
+        from app.polymarket.data_api_trades import _fill_base_key, normalize_trade_legs
+
+        rows = normalize_trade_legs(rows)
+        if not rows:
+            return 0
+
+        from collections import Counter, defaultdict
+
+        def _merge_tx(
+            old: list[dict[str, Any]], new: list[dict[str, Any]]
+        ) -> list[dict[str, Any]]:
+            """
+            Merge Orbscan legs for one tx.
+
+            - Prefer the richer multiset per fill base-key (never drop a real
+              identical duplicate just because a later poll omitted it).
+            - If old is an exact uniform N× inflation of new (N>=2), take new
+              (heal all_raw+taker_raw double-count).
+            - If key sets match, new has real duplicate legs, and old is larger,
+              take new (old was inflated uniques; new restored true dups).
+            """
+            if not new:
+                return list(old)
+            if not old:
+                return list(new)
+            oc = Counter(_fill_base_key(r) for r in old)
+            nc = Counter(_fill_base_key(r) for r in new)
+            if oc == nc:
+                return list(new)
+            # Exact uniform N× inflation (N>=2) of the incoming multiset.
+            if set(oc) == set(nc) and nc:
+                ratios = {oc[k] // nc[k] for k in nc if nc[k] > 0 and oc[k] % nc[k] == 0}
+                if len(ratios) == 1 and next(iter(ratios)) >= 2:
+                    return list(new)
+            # Same keys, incoming restored true duplicate legs, old was larger
+            # (typically 2× unique-only pollution) → trust incoming.
+            if (
+                set(oc) == set(nc)
+                and any(v >= 2 for v in nc.values())
+                and len(new) < len(old)
+            ):
+                return list(new)
+            if len(new) >= len(old) and all(nc[k] >= oc.get(k, 0) for k in nc):
+                return list(new)
+
+            # Max-merge counts per base key; prefer payloads from the side that
+            # already has enough copies.
+            old_by: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            new_by: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for r in old:
+                old_by[_fill_base_key(r)].append(r)
+            for r in new:
+                new_by[_fill_base_key(r)].append(r)
+            merged: list[dict[str, Any]] = []
+            for key in set(old_by) | set(new_by):
+                o_list = old_by.get(key, [])
+                n_list = new_by.get(key, [])
+                need = max(len(o_list), len(n_list))
+                primary = n_list if len(n_list) >= len(o_list) else o_list
+                secondary = o_list if primary is n_list else n_list
+                chosen = list(primary[:need])
+                if len(chosen) < need:
+                    chosen.extend(secondary[len(chosen) : need])
+                merged.extend(chosen)
+            return normalize_trade_legs(merged)
+
+        incoming_by_tx: dict[str, list[dict[str, Any]]] = {}
+        no_tx_rows: list[dict[str, Any]] = []
+        for r in rows:
+            tx = str(r.get("transaction_hash") or "").strip().lower()
+            if not tx:
+                no_tx_rows.append(r)
+                continue
+            incoming_by_tx.setdefault(tx, []).append(r)
+
         before = len(self._pm_trades)
-        for row in rows:
+        merged_by_tx: dict[str, list[dict[str, Any]]] = {}
+        with self._lock:
+            for tx, new_rows in incoming_by_tx.items():
+                old_rows = [
+                    r
+                    for r in self._pm_trades.values()
+                    if str(r.get("transaction_hash") or "").strip().lower() == tx
+                ]
+                merged_by_tx[tx] = _merge_tx(old_rows, new_rows)
+                drop_keys = [
+                    k
+                    for k, r in self._pm_trades.items()
+                    if str(r.get("transaction_hash") or "").strip().lower() == tx
+                ]
+                for k in drop_keys:
+                    del self._pm_trades[k]
+                self._pm_trades_dirty = True
+
+        for row in no_tx_rows:
             self.upsert_pm_trade(row)
+        for tx, merged_rows in merged_by_tx.items():
+            for row in merged_rows:
+                self.upsert_pm_trade(row)
         return max(0, len(self._pm_trades) - before)
 
     def wallet_fill_rate(self) -> tuple[int, int]:
@@ -201,23 +338,36 @@ class MarketStore:
             return filled, n
 
     def _sync_pm_trades_buffer(self) -> None:
+        from app.polymarket.data_api_trades import normalize_trade_legs
+
         with self._lock:
             if not self._pm_trades_dirty:
                 return
-            rows = sorted(self._pm_trades.values(), key=lambda r: int(r["timestamp"]))
+            rows = normalize_trade_legs(list(self._pm_trades.values()))
+            rebuilt: dict[str, dict[str, Any]] = {}
+            for r in rows:
+                key = str(r.get("fill_key") or "").strip()
+                if not key:
+                    continue
+                rebuilt[key] = r
+            self._pm_trades = rebuilt
             self._pm_trades_dirty = False
+            sorted_rows = sorted(rebuilt.values(), key=lambda r: int(r["timestamp"]))
         buf = self.buffers["trades"]
         with buf._lock:
             buf._rows = [
                 {
                     "timestamp": int(r["timestamp"]),
+                    "transaction_hash": str(r.get("transaction_hash") or ""),
                     "wallet": str(r.get("wallet") or ""),
-                    "token": bool(r["token"]),
-                    "side": bool(r["side"]),
-                    "price": float(r["price"]),
-                    "shares": int(r["shares"]),
+                    "is_up": bool(r.get("is_up")),
+                    "is_buy": bool(r.get("is_buy")),
+                    "is_taker": bool(r.get("is_taker", True)),
+                    "price": round(float(r["price"]), 6),
+                    "shares": round(float(r["shares"]), 2),
+                    "fill_index": int(r.get("fill_index") or 0),
                 }
-                for r in rows
+                for r in sorted_rows
             ]
             buf._dirty = True
 
