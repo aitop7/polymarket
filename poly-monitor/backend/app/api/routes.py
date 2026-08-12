@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -271,6 +272,97 @@ async def get_market_activity(
     from app.core.market_social import market_activity
 
     return await market_activity(market_id, limit=limit)
+
+
+@router.get("/wallets/{address}")
+async def get_wallet_summary(address: str) -> dict[str, Any]:
+    """Wallet profile summary (positions value, biggest win, explorer links)."""
+    from app.core.wallet_activity import fetch_wallet_summary, normalize_wallet
+
+    try:
+        normalize_wallet(address)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        return await fetch_wallet_summary(address)
+    except Exception as exc:
+        raise HTTPException(502, f"Wallet lookup failed: {exc}") from exc
+
+
+@router.get("/wallets/{address}/pnl")
+async def get_wallet_pnl(
+    address: str,
+    interval: str = Query("1d", pattern="^(1d|1w|1m|1y|ytd|all|max)$"),
+) -> dict[str, Any]:
+    """PnL timeseries for 1D / 1W / 1M / 1Y / YTD / ALL (Polymarket user-pnl API)."""
+    from app.core.wallet_activity import fetch_wallet_pnl
+
+    try:
+        return await fetch_wallet_pnl(address, interval=interval)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Wallet PnL failed: {exc}") from exc
+
+
+@router.get("/wallets/{address}/daily")
+async def get_wallet_daily_pnl(
+    address: str,
+    days: int = Query(90, ge=1, le=730),
+) -> dict[str, Any]:
+    """Per-day PnL deltas (newest first)."""
+    from app.core.wallet_activity import fetch_wallet_daily_pnl
+
+    try:
+        return await fetch_wallet_daily_pnl(address, days=days)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Wallet daily PnL failed: {exc}") from exc
+
+
+@router.get("/wallets/{address}/activity")
+async def get_wallet_activity(
+    address: str,
+    date: str | None = Query(None, description="ET calendar day YYYY-MM-DD"),
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict[str, Any]:
+    """Wallet activity tape (optional date filter). Links to Polygonscan + Orbscan."""
+    from app.core.wallet_activity import fetch_wallet_activity
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(400, "date must be YYYY-MM-DD") from exc
+    try:
+        return await fetch_wallet_activity(address, date=date, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Wallet activity failed: {exc}") from exc
+
+
+@router.get("/wallets/{address}/markets")
+async def get_wallet_markets(
+    address: str,
+    date: str | None = Query(None, description="ET calendar day YYYY-MM-DD"),
+    limit: int = Query(100, ge=1, le=500),
+) -> dict[str, Any]:
+    """Per-market PnL (closed positions for date, or closed+open overall)."""
+    from app.core.wallet_activity import fetch_wallet_markets
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(400, "date must be YYYY-MM-DD") from exc
+    try:
+        return await fetch_wallet_markets(address, date=date, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Wallet markets failed: {exc}") from exc
 
 
 @router.get("/markets/{market_id}/neighbors")

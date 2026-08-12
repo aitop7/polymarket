@@ -275,6 +275,40 @@ export const api = {
       { cache: 'no-store' },
     )
   },
+  walletSummary: (address: string) =>
+    json<WalletSummary>(`/api/wallets/${encodeURIComponent(address)}`, { cache: 'no-store' }),
+  walletPnl: (address: string, interval: WalletPnlInterval = '1d') => {
+    const q = new URLSearchParams({ interval, _ts: String(Date.now()) })
+    return json<WalletPnlResponse>(
+      `/api/wallets/${encodeURIComponent(address)}/pnl?${q}`,
+      { cache: 'no-store' },
+    )
+  },
+  walletDaily: (address: string, days = 90) => {
+    const q = new URLSearchParams({ days: String(days), _ts: String(Date.now()) })
+    return json<WalletDailyResponse>(
+      `/api/wallets/${encodeURIComponent(address)}/daily?${q}`,
+      { cache: 'no-store' },
+    )
+  },
+  walletActivity: (address: string, opts?: { date?: string; limit?: number }) => {
+    const q = new URLSearchParams({ _ts: String(Date.now()) })
+    if (opts?.date) q.set('date', opts.date)
+    if (opts?.limit != null) q.set('limit', String(opts.limit))
+    return json<WalletActivityResponse>(
+      `/api/wallets/${encodeURIComponent(address)}/activity?${q}`,
+      { cache: 'no-store' },
+    )
+  },
+  walletMarkets: (address: string, opts?: { date?: string; limit?: number }) => {
+    const q = new URLSearchParams({ _ts: String(Date.now()) })
+    if (opts?.date) q.set('date', opts.date)
+    if (opts?.limit != null) q.set('limit', String(opts.limit))
+    return json<WalletMarketsResponse>(
+      `/api/wallets/${encodeURIComponent(address)}/markets?${q}`,
+      { cache: 'no-store' },
+    )
+  },
 }
 
 export type LiveSeriesPoint = {
@@ -371,6 +405,114 @@ export type MarketTradersResponse = {
   winner: 'Up' | 'Down' | null
   by_pnl: TraderStatRow[]
   by_volume: TraderStatRow[]
+}
+
+export type WalletPnlInterval = '1d' | '1w' | '1m' | '1y' | 'ytd' | 'all'
+
+export type WalletSummary = {
+  wallet: string
+  name: string
+  pseudonym?: string | null
+  profile_image?: string | null
+  positions_value: number
+  biggest_win?: {
+    realized_pnl: number
+    title?: string | null
+    slug?: string | null
+    outcome?: string | null
+  } | null
+  total_pnl?: number | null
+  open_positions: number
+  closed_sample: number
+  polygonscan_url: string
+  orbscan_url: string
+  polymarket_url: string
+}
+
+export type WalletPnlPoint = { t: number; pnl: number }
+
+export type WalletPnlResponse = {
+  wallet: string
+  interval: string
+  fidelity: string
+  start_pnl: number | null
+  end_pnl: number | null
+  pnl: number | null
+  series: WalletPnlPoint[]
+}
+
+export type WalletDailyRow = {
+  date: string
+  t: number
+  pnl: number
+  cum_pnl: number
+}
+
+export type WalletDailyResponse = {
+  wallet: string
+  days: number
+  daily: WalletDailyRow[]
+}
+
+export type WalletActivityItem = {
+  timestamp: number
+  type: string
+  side?: string | null
+  outcome?: string | null
+  price?: number | null
+  shares: number
+  usd: number
+  title?: string | null
+  slug?: string | null
+  condition_id?: string | null
+  transaction_hash?: string | null
+  proxy_wallet?: string
+  name?: string | null
+  pseudonym?: string | null
+  icon?: string | null
+  polygonscan_url?: string | null
+  orbscan_url?: string | null
+}
+
+export type WalletMarketActivity = {
+  condition_id?: string | null
+  slug?: string | null
+  title?: string | null
+  icon?: string | null
+  n_events: number
+  volume_usd: number
+  pnl?: number | null
+  activity: WalletActivityItem[]
+}
+
+export type WalletActivityResponse = {
+  wallet: string
+  date?: string | null
+  count: number
+  name?: string | null
+  activity: WalletActivityItem[]
+  markets?: WalletMarketActivity[]
+}
+
+export type WalletMarketPnl = {
+  condition_id?: string | null
+  title?: string | null
+  slug?: string | null
+  icon?: string | null
+  outcomes?: (string | null)[]
+  pnl?: number | null
+  status?: string | null
+  timestamp?: number | null
+  end_date?: string | null
+  total_bought?: number
+}
+
+export type WalletMarketsResponse = {
+  wallet: string
+  date?: string | null
+  count: number
+  total_pnl: number
+  markets: WalletMarketPnl[]
 }
 
 export type LiveTick = {

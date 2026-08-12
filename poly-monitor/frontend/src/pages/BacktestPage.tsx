@@ -693,7 +693,7 @@ export default function BacktestPage() {
                         borderRadius: 8,
                         boxShadow: '0 4px 12px rgba(15,17,23,0.08)',
                       }}
-                      formatter={(value: number | string) => [formatUsd(Number(value)), 'Cum PnL']}
+                      formatter={(value) => [formatUsd(Number(value ?? 0)), 'Cum PnL']}
                       labelFormatter={(_, payload) => {
                         const row = payload?.[0]?.payload as { market_id?: string; i?: number } | undefined
                         return row?.market_id ? `#${row.i} · ${row.market_id}` : ''

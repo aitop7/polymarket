@@ -13,6 +13,7 @@ export default function App() {
           </NavLink>
           <NavLink to="/paper">Paper</NavLink>
           <NavLink to="/backtest">Backtest</NavLink>
+          <NavLink to="/wallet">Wallet</NavLink>
         </nav>
       </header>
       <main className="main">

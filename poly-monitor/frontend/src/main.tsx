@@ -5,6 +5,7 @@ import App from './App'
 import BacktestPage from './pages/BacktestPage'
 import MarketPage from './pages/MarketPage'
 import PaperPage from './pages/PaperPage'
+import WalletPage from './pages/WalletPage'
 import './index.css'
 
 createRoot(document.getElementById('root')!).render(
@@ -15,6 +16,8 @@ createRoot(document.getElementById('root')!).render(
           <Route index element={<MarketPage mode="monitor" />} />
           <Route path="paper" element={<PaperPage />} />
           <Route path="backtest" element={<BacktestPage />} />
+          <Route path="wallet" element={<WalletPage />} />
+          <Route path="wallet/:walletAddress" element={<WalletPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
