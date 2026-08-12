@@ -68,6 +68,37 @@ function displayWalletName(name?: string | null, wallet?: string | null): string
   return n
 }
 
+/** Two-letter avatar monogram; skips leading 0x on addresses. */
+function avatarInitials(name?: string | null, wallet?: string | null): string {
+  const n = (name || '').trim()
+  const w = (wallet || '').trim()
+  const raw =
+    n && !(ADDR_RE.test(n) || (w && n.toLowerCase() === w.toLowerCase())) ? n : w || n
+  if (!raw) return '?'
+  const stripped = raw.replace(/^0x/i, '')
+  const letters = stripped.replace(/[^a-zA-Z0-9]/g, '')
+  if (letters.length >= 2) return letters.slice(0, 2).toUpperCase()
+  if (letters.length === 1) return letters.toUpperCase()
+  return '?'
+}
+
+/** Stable avatar colors derived from name/address text. */
+function avatarColorFromName(name?: string | null, wallet?: string | null): string {
+  const n = (name || '').trim()
+  const w = (wallet || '').trim()
+  const seed =
+    (n && !(ADDR_RE.test(n) || (w && n.toLowerCase() === w.toLowerCase())) ? n : w || n) ||
+    '?'
+  let hash = 0
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  }
+  const hue = hash % 360
+  const sat = 52 + (hash % 18) // 52–69%
+  const light = 42 + ((hash >>> 8) % 12) // 42–53%
+  return `hsl(${hue} ${sat}% ${light}%)`
+}
+
 function fmtSignedUsd(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return '—'
   const sign = n > 0 ? '+' : n < 0 ? '−' : ''
@@ -277,6 +308,8 @@ export default function WalletPage() {
   const commentTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const commentWalletRef = useRef<string | null>(null)
 
+  const [deleteConfirm, setDeleteConfirm] = useState<SavedWalletRow | null>(null)
+
   const refreshSavedList = async () => {
     try {
       const res = await api.savedWallets()
@@ -391,6 +424,19 @@ export default function WalletPage() {
   const removeSaved = async (addr: string, e: MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
+    const row = savedWallets.find((w) => w.wallet === addr.toLowerCase()) || {
+      wallet: addr.toLowerCase(),
+      name: addr.toLowerCase(),
+    }
+    setDeleteConfirm(row)
+  }
+
+  const cancelDeleteSaved = () => setDeleteConfirm(null)
+
+  const confirmDeleteSaved = async () => {
+    const addr = deleteConfirm?.wallet
+    if (!addr) return
+    setDeleteConfirm(null)
     try {
       await api.deleteSavedWallet(addr)
       setSavedWallets((prev) => prev.filter((w) => w.wallet !== addr.toLowerCase()))
@@ -1031,11 +1077,19 @@ export default function WalletPage() {
                       className={`wallet-saved-item${active ? ' active' : ''}`}
                       onClick={() => goToWallet(w.wallet)}
                     >
-                      <span className="wallet-saved-avatar" aria-hidden>
+                      <span
+                        className="wallet-saved-avatar"
+                        aria-hidden
+                        style={
+                          w.profile_image
+                            ? undefined
+                            : { background: avatarColorFromName(w.name, w.wallet) }
+                        }
+                      >
                         {w.profile_image ? (
                           <img src={w.profile_image} alt="" />
                         ) : (
-                          (w.name || '?').slice(0, 1).toUpperCase()
+                          avatarInitials(w.name, w.wallet)
                         )}
                       </span>
                       <span className="wallet-saved-meta">
@@ -1147,11 +1201,19 @@ export default function WalletPage() {
           <section className="wallet-hero-row">
             <div className="wallet-profile-card">
               <div className="wallet-profile-top">
-                <div className="wallet-avatar" aria-hidden>
+                <div
+                  className="wallet-avatar"
+                  aria-hidden
+                  style={
+                    summary.profile_image
+                      ? undefined
+                      : { background: avatarColorFromName(summary.name, summary.wallet) }
+                  }
+                >
                   {summary.profile_image ? (
                     <img src={summary.profile_image} alt="" />
                   ) : (
-                    displayWalletName(summary.name, summary.wallet).slice(0, 1).toUpperCase()
+                    avatarInitials(summary.name, summary.wallet)
                   )}
                 </div>
                 <div className="wallet-profile-text">
@@ -1756,6 +1818,53 @@ export default function WalletPage() {
           </section>
         )}
       </div>
+
+      {deleteConfirm && (
+        <div
+          className="health-dialog-backdrop"
+          onClick={cancelDeleteSaved}
+          role="presentation"
+        >
+          <div
+            className="health-dialog wallet-delete-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="wallet-delete-title"
+            aria-describedby="wallet-delete-desc"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="health-dialog-head">
+              <div id="wallet-delete-title" className="health-dialog-title">
+                Remove saved wallet?
+              </div>
+            </div>
+            <p id="wallet-delete-desc" className="health-dialog-summary">
+              Remove{' '}
+              <strong>
+                {displayWalletName(deleteConfirm.name, deleteConfirm.wallet)}
+              </strong>{' '}
+              ({shorten(deleteConfirm.wallet)}) from your saved list? Cached data for this
+              wallet will be deleted.
+            </p>
+            <div className="health-dialog-actions">
+              <button
+                type="button"
+                className="health-dialog-btn ghost"
+                onClick={cancelDeleteSaved}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="health-dialog-btn primary wallet-delete-confirm"
+                onClick={() => void confirmDeleteSaved()}
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
