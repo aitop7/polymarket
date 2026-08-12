@@ -8,9 +8,8 @@ from typing import Any
 import lightgbm as lgb
 import numpy as np
 
-from strategies.base import Action, OrderIntent, Side, TickContext
+from strategies.base import TickContext
 from strategies.edge_threshold import EdgeThresholdStrategy
-
 
 # Keep in sync with fetch_real feature_schema.FEATURE_COLUMNS
 FEATURE_COLUMNS = [
@@ -70,6 +69,35 @@ FEATURE_COLUMNS = [
     "market_progress",
 ]
 
+_MIN_FEATURE_COVERAGE = 0.35
+
+
+def _feature_coverage(features: dict[str, Any]) -> float:
+    if not features:
+        return 0.0
+    present = 0
+    for col in FEATURE_COLUMNS:
+        v = features.get(col)
+        if v is None:
+            continue
+        if isinstance(v, float) and np.isnan(v):
+            continue
+        present += 1
+    return present / len(FEATURE_COLUMNS)
+
+
+def _has_any_model_features(features: dict[str, Any]) -> bool:
+    for col in FEATURE_COLUMNS:
+        if col not in features:
+            continue
+        v = features[col]
+        if v is None:
+            continue
+        if isinstance(v, float) and np.isnan(v):
+            continue
+        return True
+    return False
+
 
 class LgbmEdgeStrategy:
     name = "lgbm_edge"
@@ -80,21 +108,34 @@ class LgbmEdgeStrategy:
         threshold: float = 0.05,
         size_usd: float = 10.0,
         once_per_market: bool = True,
+        max_trades_per_market: int | None = None,
+        cooldown_seconds: float = 10.0,
+        min_elapsed_seconds: float = 5.0,
+        min_remaining_seconds: float = 10.0,
+        min_feature_coverage: float = _MIN_FEATURE_COVERAGE,
     ) -> None:
         path = Path(model_path)
         if not path.is_file():
             raise FileNotFoundError(f"LightGBM model not found: {path}")
         self.model = lgb.Booster(model_file=str(path))
+        self.min_feature_coverage = float(min_feature_coverage)
         self._edge = EdgeThresholdStrategy(
             threshold=threshold,
             size_usd=size_usd,
             once_per_market=once_per_market,
+            max_trades_per_market=max_trades_per_market,
+            cooldown_seconds=cooldown_seconds,
+            min_elapsed_seconds=min_elapsed_seconds,
+            min_remaining_seconds=min_remaining_seconds,
         )
 
     def reset(self) -> None:
         self._edge.reset()
 
     def predict_p_up(self, features: dict[str, Any]) -> float | None:
+        if _has_any_model_features(features):
+            if _feature_coverage(features) < self.min_feature_coverage:
+                return None
         row = []
         for col in FEATURE_COLUMNS:
             v = features.get(col)
@@ -107,9 +148,11 @@ class LgbmEdgeStrategy:
             p = float(self.model.predict(X)[0])
         except Exception:
             return None
+        if not (0.0 <= p <= 1.0):
+            return None
         return p
 
-    def on_tick(self, ctx: TickContext) -> list[OrderIntent]:
+    def on_tick(self, ctx: TickContext) -> list:
         p = self.predict_p_up(ctx.features)
         ctx.model_p_up = p
         return self._edge.on_tick(ctx)

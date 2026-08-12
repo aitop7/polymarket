@@ -44,7 +44,8 @@ class SafePairStrategy:
         once_per_market: bool = False,
         max_pairs_per_market: int = 5,
         cooldown_seconds: float = 10.0,
-        min_remaining_seconds: float = 30.0,
+        min_elapsed_seconds: float = 5.0,
+        min_remaining_seconds: float = 10.0,
     ) -> None:
         self.min_edge = float(min_edge)
         self.size_usd = float(size_usd)
@@ -57,6 +58,7 @@ class SafePairStrategy:
         else:
             self.max_pairs_per_market = max(1, int(max_pairs_per_market))
         self.cooldown_seconds = max(0.0, float(cooldown_seconds))
+        self.min_elapsed_seconds = max(0.0, float(min_elapsed_seconds))
         self.min_remaining_seconds = max(0.0, float(min_remaining_seconds))
         self._pairs_this_market = 0
         self._last_trade_ts: int | None = None
@@ -67,6 +69,8 @@ class SafePairStrategy:
 
     def opportunity_at_tick(self, ctx: TickContext) -> tuple[bool, float, float]:
         """Static signal check (ignores cooldown, pair limits, cash). Returns (ok, gross, net)."""
+        if ctx.elapsed_seconds < self.min_elapsed_seconds:
+            return False, 0.0, 0.0
         if ctx.remaining_seconds < self.min_remaining_seconds:
             return False, 0.0, 0.0
 
@@ -101,6 +105,8 @@ class SafePairStrategy:
 
     def on_tick(self, ctx: TickContext) -> list[OrderIntent]:
         if self._pairs_this_market >= self.max_pairs_per_market:
+            return []
+        if ctx.elapsed_seconds < self.min_elapsed_seconds:
             return []
         if ctx.remaining_seconds < self.min_remaining_seconds:
             return []

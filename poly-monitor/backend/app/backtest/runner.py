@@ -10,7 +10,9 @@ from app.core.market_index import (
     filter_history_markets,
     list_markets_for_date,
 )
+from app.engine.portfolio import Portfolio
 from app.engine.replay import run_market_backtest
+from app.strategies.registry import create_strategy
 
 
 def _resolve_market_ids(
@@ -50,6 +52,7 @@ def run_backtest(
     date: str | None = None,
     strategy_params: dict[str, Any] | None = None,
     starting_cash: float = 1000.0,
+    shared_bankroll: bool = True,
 ) -> dict[str, Any]:
     ids = _resolve_market_ids(
         split=split,
@@ -57,6 +60,9 @@ def run_backtest(
         limit=limit,
         date=date,
     )
+
+    portfolio = Portfolio(cash=starting_cash) if shared_bankroll else None
+    strategy_obj = create_strategy(strategy, strategy_params)
 
     results: list[dict[str, Any]] = []
     total_pnl = 0.0
@@ -69,12 +75,17 @@ def run_backtest(
     net_edge_count = 0
 
     for mid in ids:
+        if strategy_obj is not None and hasattr(strategy_obj, "reset"):
+            strategy_obj.reset()
+
         r = run_market_backtest(
             mid,
             split=split,
             strategy_name=strategy,
             strategy_params=strategy_params,
             starting_cash=starting_cash,
+            portfolio=portfolio,
+            strategy=strategy_obj,
         )
         fills = [
             f
@@ -126,17 +137,24 @@ def run_backtest(
 
     fill_rate = pairs_filled / opportunities_found if opportunities_found > 0 else None
 
+    if shared_bankroll and portfolio is not None:
+        ending_cash = portfolio.cash
+        total_pnl = ending_cash - starting_cash
+    else:
+        ending_cash = None
+
     return {
         "strategy": strategy,
         "split": split,
         "date": date,
+        "shared_bankroll": shared_bankroll,
         "n_markets": len(results),
         "total_pnl": total_pnl,
         "avg_pnl": total_pnl / n,
         "win_rate": wins / n,
         "total_fills": total_fills,
         "starting_cash": starting_cash,
-        "ending_cash": starting_cash + total_pnl,
+        "ending_cash": ending_cash,
         "markets": results,
         "equity_curve": equity_curve,
         "params": strategy_params or {},

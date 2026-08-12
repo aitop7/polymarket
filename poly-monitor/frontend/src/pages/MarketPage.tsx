@@ -831,11 +831,19 @@ export default function MarketPage({ mode }: Props) {
             min_ask_shares: 1,
             max_pairs_per_market: 5,
             cooldown_seconds: 10,
+            min_elapsed_seconds: 5,
+            min_remaining_seconds: 10,
             once_per_market: false,
             taker_fee_rate: 0.07,
             fee_model: 'polymarket',
           }
-        : { threshold: 0.05, size_usd: 10, once_per_market: true }
+        : {
+            threshold: 0.05,
+            size_usd: 10,
+            once_per_market: true,
+            min_elapsed_seconds: 5,
+            min_remaining_seconds: 10,
+          }
     if (mode === 'paper') {
       const sess = await api.paperSession({
         market_id: marketId,

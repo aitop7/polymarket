@@ -88,6 +88,7 @@ export type BacktestResult = {
   win_rate: number
   total_fills: number
   starting_cash: number
+  shared_bankroll?: boolean
   ending_cash?: number
   markets: BacktestMarketRow[]
   equity_curve: { i: number; market_id: string; pnl: number; cum_pnl: number }[]

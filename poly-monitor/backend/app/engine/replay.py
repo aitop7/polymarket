@@ -109,16 +109,25 @@ def run_market_backtest(
     strategy_name: str = "lgbm_edge",
     strategy_params: dict[str, Any] | None = None,
     starting_cash: float = 1000.0,
+    portfolio: Portfolio | None = None,
+    strategy: Any = None,
 ) -> dict[str, Any]:
     df = load_market_frame(market_id, split=split)
-    portfolio = Portfolio(cash=starting_cash)
-    strategy = create_strategy(strategy_name, strategy_params)
-    if strategy is not None and hasattr(strategy, "reset"):
-        strategy.reset()
+    if portfolio is None:
+        portfolio = Portfolio(cash=starting_cash)
+        market_start_cash = starting_cash
+    else:
+        market_start_cash = portfolio.cash
+
+    if strategy is None:
+        strategy = create_strategy(strategy_name, strategy_params)
+        if strategy is not None and hasattr(strategy, "reset"):
+            strategy.reset()
 
     equity: list[dict[str, Any]] = []
     signals: list[dict[str, Any]] = []
     opportunities_found = 0
+    fill_start_idx = len(portfolio.fills)
 
     for i, row in df.iterrows():
         ctx = _tick_from_row(row, market_id=market_id, idx=int(i), portfolio=portfolio)
@@ -163,11 +172,13 @@ def run_market_backtest(
         )
 
     final_equity = portfolio.cash
-    trade_fills = [f for f in portfolio.fills if f.action != "SETTLE"]
+    market_pnl = final_equity - market_start_cash
+    market_fills = portfolio.fills[fill_start_idx:]
+    trade_fills = [f for f in market_fills if f.action != "SETTLE"]
     pairs_filled = len([f for f in trade_fills if f.side == "UP" and f.action == "BUY"])
     net_edges: list[float] = []
     for f in trade_fills:
-        if f.side == "UP" and f.action == "BUY":
+        if f.action == "BUY":
             _, net = parse_edge_from_reason(f.reason)
             if net is not None:
                 net_edges.append(net)
@@ -175,12 +186,12 @@ def run_market_backtest(
     return {
         "market_id": str(market_id),
         "winner": winner,
-        "starting_cash": starting_cash,
+        "starting_cash": market_start_cash,
         "ending_cash": final_equity,
-        "pnl": final_equity - starting_cash,
+        "pnl": market_pnl,
         "payout": payout,
         "n_fills": len(trade_fills),
-        "fills": [f.to_dict() for f in portfolio.fills],
+        "fills": [f.to_dict() for f in market_fills],
         "signals": signals,
         "equity": equity[:: max(1, len(equity) // 100)] if equity else [],
         "stats": {

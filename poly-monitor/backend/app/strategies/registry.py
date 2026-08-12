@@ -7,18 +7,37 @@ from typing import Any
 
 from app.core.config import settings
 
+_DEFAULT_MIN_ELAPSED_SECONDS = 5.0
+_DEFAULT_MIN_REMAINING_SECONDS = 10.0
+
 
 def list_strategies() -> list[dict[str, Any]]:
     return [
         {
             "name": "edge_threshold",
             "description": "Trade when external model_p_up edge vs market exceeds threshold",
-            "params": {"threshold": 0.05, "size_usd": 10.0, "once_per_market": True},
+            "params": {
+                "threshold": 0.05,
+                "size_usd": 10.0,
+                "once_per_market": True,
+                "max_trades_per_market": 3,
+                "cooldown_seconds": 10.0,
+                "min_elapsed_seconds": _DEFAULT_MIN_ELAPSED_SECONDS,
+                "min_remaining_seconds": _DEFAULT_MIN_REMAINING_SECONDS,
+            },
         },
         {
             "name": "lgbm_edge",
             "description": "LightGBM P(UP) + edge threshold (fetch_real baseline)",
-            "params": {"threshold": 0.05, "size_usd": 10.0, "once_per_market": True},
+            "params": {
+                "threshold": 0.05,
+                "size_usd": 10.0,
+                "once_per_market": True,
+                "max_trades_per_market": 3,
+                "cooldown_seconds": 10.0,
+                "min_elapsed_seconds": _DEFAULT_MIN_ELAPSED_SECONDS,
+                "min_remaining_seconds": _DEFAULT_MIN_REMAINING_SECONDS,
+            },
         },
         {
             "name": "safe_pair",
@@ -33,7 +52,8 @@ def list_strategies() -> list[dict[str, Any]]:
                 "once_per_market": False,
                 "max_pairs_per_market": 5,
                 "cooldown_seconds": 10.0,
-                "min_remaining_seconds": 30.0,
+                "min_elapsed_seconds": _DEFAULT_MIN_ELAPSED_SECONDS,
+                "min_remaining_seconds": _DEFAULT_MIN_REMAINING_SECONDS,
             },
         },
         {
@@ -56,6 +76,10 @@ def create_strategy(name: str, params: dict[str, Any] | None = None) -> Any:
             threshold=float(params.get("threshold", 0.05)),
             size_usd=float(params.get("size_usd", 10.0)),
             once_per_market=bool(params.get("once_per_market", True)),
+            max_trades_per_market=int(params.get("max_trades_per_market", 3)) if params.get("max_trades_per_market") is not None else None,
+            cooldown_seconds=float(params.get("cooldown_seconds", 10.0)),
+            min_elapsed_seconds=float(params.get("min_elapsed_seconds", _DEFAULT_MIN_ELAPSED_SECONDS)),
+            min_remaining_seconds=float(params.get("min_remaining_seconds", _DEFAULT_MIN_REMAINING_SECONDS)),
         )
     if name == "lgbm_edge":
         from strategies.lgbm_edge import LgbmEdgeStrategy
@@ -66,6 +90,10 @@ def create_strategy(name: str, params: dict[str, Any] | None = None) -> Any:
             threshold=float(params.get("threshold", 0.05)),
             size_usd=float(params.get("size_usd", 10.0)),
             once_per_market=bool(params.get("once_per_market", True)),
+            max_trades_per_market=int(params.get("max_trades_per_market", 3)) if params.get("max_trades_per_market") is not None else None,
+            cooldown_seconds=float(params.get("cooldown_seconds", 10.0)),
+            min_elapsed_seconds=float(params.get("min_elapsed_seconds", _DEFAULT_MIN_ELAPSED_SECONDS)),
+            min_remaining_seconds=float(params.get("min_remaining_seconds", _DEFAULT_MIN_REMAINING_SECONDS)),
         )
     if name == "safe_pair":
         from strategies.safe_pair import SafePairStrategy
@@ -80,6 +108,7 @@ def create_strategy(name: str, params: dict[str, Any] | None = None) -> Any:
             once_per_market=bool(params.get("once_per_market", False)),
             max_pairs_per_market=int(params.get("max_pairs_per_market", 5)),
             cooldown_seconds=float(params.get("cooldown_seconds", 10.0)),
-            min_remaining_seconds=float(params.get("min_remaining_seconds", 30.0)),
+            min_elapsed_seconds=float(params.get("min_elapsed_seconds", _DEFAULT_MIN_ELAPSED_SECONDS)),
+            min_remaining_seconds=float(params.get("min_remaining_seconds", _DEFAULT_MIN_REMAINING_SECONDS)),
         )
     raise ValueError(f"Unknown strategy: {name}")

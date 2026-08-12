@@ -61,6 +61,8 @@ export default function BacktestPage() {
   const [sizeUsd, setSizeUsd] = useState(25)
   const [maxPairs, setMaxPairs] = useState(5)
   const [cooldownSec, setCooldownSec] = useState(10)
+  const [minElapsedSec, setMinElapsedSec] = useState(5)
+  const [minRemainingSec, setMinRemainingSec] = useState(10)
   const [oncePerMarket, setOncePerMarket] = useState(false)
   const [feeModel, setFeeModel] = useState<'none' | 'polymarket' | 'flat'>('polymarket')
   const [slippage, setSlippage] = useState(0)
@@ -140,6 +142,8 @@ export default function BacktestPage() {
               min_ask_shares: minAskShares,
               max_pairs_per_market: oncePerMarket ? 1 : maxPairs,
               cooldown_seconds: cooldownSec,
+              min_elapsed_seconds: minElapsedSec,
+              min_remaining_seconds: minRemainingSec,
               once_per_market: oncePerMarket,
               taker_fee_rate: 0.07,
               fee_model: feeModel,
@@ -149,6 +153,10 @@ export default function BacktestPage() {
               threshold,
               size_usd: sizeUsd,
               once_per_market: oncePerMarket,
+              max_trades_per_market: oncePerMarket ? 1 : maxPairs,
+              cooldown_seconds: cooldownSec,
+              min_elapsed_seconds: minElapsedSec,
+              min_remaining_seconds: minRemainingSec,
             },
       })
       setResult(res)
@@ -357,7 +365,7 @@ export default function BacktestPage() {
               onChange={(e) => setLimit(Math.max(1, Math.min(200, Number(e.target.value) || 1)))}
             />
 
-            <label className="sidebar-label">Starting cash</label>
+            <label className="sidebar-label">Starting cash (shared)</label>
             <input
               type="number"
               min={1}
@@ -366,10 +374,36 @@ export default function BacktestPage() {
               disabled={loading}
               onChange={(e) => setStartingCash(Math.max(1, Number(e.target.value) || 1))}
             />
+            <p className="muted" style={{ margin: '0 0 0.5rem', fontSize: '0.72rem', lineHeight: 1.35 }}>
+              One wallet across all markets in the batch.
+            </p>
           </div>
 
           <div className="sidebar-section">
             <div className="sidebar-heading">Params</div>
+            <label className="sidebar-label">Skip first (sec)</label>
+            <input
+              type="number"
+              step={1}
+              min={0}
+              max={120}
+              value={minElapsedSec}
+              disabled={loading}
+              onChange={(e) => setMinElapsedSec(Math.max(0, Number(e.target.value) || 0))}
+            />
+            <label className="sidebar-label">Skip last (sec)</label>
+            <input
+              type="number"
+              step={1}
+              min={0}
+              max={120}
+              value={minRemainingSec}
+              disabled={loading}
+              onChange={(e) => setMinRemainingSec(Math.max(0, Number(e.target.value) || 0))}
+            />
+            <p className="muted" style={{ margin: '0 0 0.55rem', fontSize: '0.72rem', lineHeight: 1.35 }}>
+              No trades while Up/Down quotes are unreliable at market open or close.
+            </p>
             {isSafePair ? (
               <>
                 <label className="sidebar-label">Min net edge</label>
@@ -456,6 +490,26 @@ export default function BacktestPage() {
                   disabled={loading}
                   onChange={(e) => setThreshold(Number(e.target.value))}
                 />
+                <label className="sidebar-label">Max trades / market</label>
+                <input
+                  type="number"
+                  step={1}
+                  min={1}
+                  max={20}
+                  value={oncePerMarket ? 1 : maxPairs}
+                  disabled={loading || oncePerMarket}
+                  onChange={(e) => setMaxPairs(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
+                />
+                <label className="sidebar-label">Cooldown (sec)</label>
+                <input
+                  type="number"
+                  step={1}
+                  min={0}
+                  max={120}
+                  value={cooldownSec}
+                  disabled={loading}
+                  onChange={(e) => setCooldownSec(Math.max(0, Number(e.target.value) || 0))}
+                />
               </>
             )}
             <label className="sidebar-label">Size (USD)</label>
@@ -468,15 +522,20 @@ export default function BacktestPage() {
               onChange={(e) => setSizeUsd(Math.max(1, Number(e.target.value) || 1))}
             />
             {!isSafePair && (
-              <label className="sidebar-check">
-                <input
-                  type="checkbox"
-                  checked={oncePerMarket}
-                  disabled={loading}
-                  onChange={(e) => setOncePerMarket(e.target.checked)}
-                />
-                Once per market
-              </label>
+              <>
+                <p className="muted" style={{ margin: '0 0 0.5rem', fontSize: '0.72rem', lineHeight: 1.35 }}>
+                  Max notional per order (shares = USD ÷ ask). Polymarket crypto fees apply.
+                </p>
+                <label className="sidebar-check">
+                  <input
+                    type="checkbox"
+                    checked={oncePerMarket}
+                    disabled={loading}
+                    onChange={(e) => setOncePerMarket(e.target.checked)}
+                  />
+                  Once per market
+                </label>
+              </>
             )}
           </div>
 
@@ -547,7 +606,11 @@ export default function BacktestPage() {
             <div className="stat-card">
               <div className="label">Ending cash</div>
               <div className="value">
-                {result ? formatUsd(result.ending_cash ?? result.starting_cash + result.total_pnl) : '—'}
+                {result
+                  ? result.shared_bankroll
+                    ? formatUsd(result.ending_cash ?? result.starting_cash + result.total_pnl)
+                    : '—'
+                  : '—'}
               </div>
             </div>
             <div className="stat-card">
