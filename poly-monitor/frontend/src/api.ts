@@ -150,6 +150,23 @@ export const api = {
       { cache: 'no-store' },
     )
   },
+  marketTraders: (marketId: string, limit = 20) => {
+    const q = new URLSearchParams({
+      limit: String(Math.max(1, Math.min(50, limit))),
+      _ts: String(Date.now()),
+    })
+    return json<MarketTradersResponse>(
+      `/api/markets/${encodeURIComponent(marketId)}/traders?${q}`,
+      { cache: 'no-store' },
+    )
+  },
+  marketTraderDetail: (marketId: string, wallet: string) => {
+    const q = new URLSearchParams({ _ts: String(Date.now()) })
+    return json<TraderDetailResponse>(
+      `/api/markets/${encodeURIComponent(marketId)}/traders/${encodeURIComponent(wallet)}?${q}`,
+      { cache: 'no-store' },
+    )
+  },
 }
 
 export type LiveSeriesPoint = {
@@ -203,6 +220,49 @@ export type LiveActivityTrade = {
   transaction_hash?: string | null
   token?: boolean
   is_sell?: boolean
+}
+
+export type TraderStatRow = {
+  wallet: string
+  pnl: number
+  volume_usd: number
+  fills: number
+  buy_usd?: number
+  sell_usd?: number
+  buy_fills?: number
+  sell_fills?: number
+  up_buy_shares?: number
+  up_sell_shares?: number
+  down_buy_shares?: number
+  down_sell_shares?: number
+  up_pos?: number
+  down_pos?: number
+  name?: string | null
+}
+
+export type TraderFillRow = {
+  timestamp: number
+  is_up: boolean
+  is_buy: boolean
+  price: number
+  shares: number
+  usd: number
+  transaction_hash?: string | null
+}
+
+export type TraderDetailResponse = TraderStatRow & {
+  market_id: string
+  resolved: boolean
+  winner: 'Up' | 'Down' | null
+  fills_list: TraderFillRow[]
+}
+
+export type MarketTradersResponse = {
+  market_id: string
+  resolved: boolean
+  winner: 'Up' | 'Down' | null
+  by_pnl: TraderStatRow[]
+  by_volume: TraderStatRow[]
 }
 
 export type LiveTick = {

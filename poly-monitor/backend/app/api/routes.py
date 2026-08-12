@@ -225,6 +225,27 @@ async def get_market_holders(
     return await market_holders(market_id, limit=limit)
 
 
+@router.get("/markets/{market_id}/traders")
+def get_market_traders(
+    market_id: str, limit: int = Query(20, ge=1, le=50)
+) -> dict[str, Any]:
+    """Top earners (realized PnL) and top volume wallets from trades.parquet."""
+    from app.core.trader_stats import market_traders
+
+    return market_traders(market_id, limit=limit)
+
+
+@router.get("/markets/{market_id}/traders/{wallet}")
+def get_market_trader_detail(market_id: str, wallet: str) -> dict[str, Any]:
+    """Per-wallet PnL / volume breakdown + fill tape for history detail view."""
+    from app.core.trader_stats import trader_detail
+
+    detail = trader_detail(market_id, wallet)
+    if detail is None:
+        raise HTTPException(404, f"Trader {wallet} not found for market {market_id}")
+    return detail
+
+
 @router.get("/markets/{market_id}/activity")
 async def get_market_activity(
     market_id: str, limit: int = Query(1500, ge=1, le=2000)

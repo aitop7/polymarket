@@ -9,13 +9,19 @@ import {
   type LiveSeriesPoint,
   type MarketDetail,
   type MarketSummary,
+  type MarketTradersResponse,
+  type TraderDetailResponse,
   wsUrl,
 } from '../api'
 import BtcPricePanel from '../components/BtcPricePanel'
 import ControlSidebar from '../components/ControlSidebar'
 import FeedSidebar from '../components/FeedSidebar'
 import OrderBookPanel, { type BookPayload } from '../components/OrderBookPanel'
-import PriceChart, { type BtcSeriesVisibility, type TimeDomain } from '../components/PriceChart'
+import PriceChart, {
+  type BtcSeriesVisibility,
+  type TimeDomain,
+  type TraderMark,
+} from '../components/PriceChart'
 import TradeSidebar from '../components/TradeSidebar'
 import VolumeChart from '../components/VolumeChart'
 
@@ -356,6 +362,9 @@ export default function MarketPage({ mode }: Props) {
   const [seriesLive, setSeriesLive] = useState<LiveSeriesPoint[]>([])
   const [activity, setActivity] = useState<FillRow[]>([])
   const [liveActivityTrades, setLiveActivityTrades] = useState<LiveActivityTrade[]>([])
+  const [traders, setTraders] = useState<MarketTradersResponse | null>(null)
+  const [selectedWallet, setSelectedWallet] = useState<string | null>(null)
+  const [traderDetail, setTraderDetail] = useState<TraderDetailResponse | null>(null)
   const [tab, setTab] = useState<'activity' | 'positions' | 'rules'>('activity')
   const [book, setBook] = useState<BookPayload | null>(null)
   const [side, setSide] = useState<'UP' | 'DOWN'>('UP')
@@ -600,12 +609,15 @@ export default function MarketPage({ mode }: Props) {
     setNeighbors(neighborsFromMarkets(markets, marketId))
   }, [liveActive, marketId, markets])
 
-  // History: load top holders + activity tape for the selected market.
+  // History: load top holders + activity tape + trader leaderboards.
   useEffect(() => {
     if (liveActive || !marketId) return
     let cancelled = false
     setHolders(null)
     setLiveActivityTrades([])
+    setTraders(null)
+    setSelectedWallet(null)
+    setTraderDetail(null)
     holdersTouchedRef.current.clear()
     Promise.all([api.marketHolders(marketId, 20), api.marketActivity(marketId, 1500)])
       .then(([h, a]) => {
@@ -635,6 +647,22 @@ export default function MarketPage({ mode }: Props) {
           down: [],
         })
         setLiveActivityTrades([])
+      })
+    api
+      .marketTraders(marketId, 20)
+      .then((tr) => {
+        if (!cancelled) setTraders(tr)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTraders({
+            market_id: marketId,
+            resolved: false,
+            winner: null,
+            by_pnl: [],
+            by_volume: [],
+          })
+        }
       })
     return () => {
       cancelled = true
@@ -889,6 +917,9 @@ export default function MarketPage({ mode }: Props) {
       setTick(null)
       setActivity([])
       setLiveActivityTrades([])
+      setTraders(null)
+      setSelectedWallet(null)
+      setTraderDetail(null)
       setBook(null)
       setHolders(null)
       setHoldersRevision(0)
@@ -1184,6 +1215,9 @@ export default function MarketPage({ mode }: Props) {
       setLiveWindow(null)
       setHolders(null)
       setLiveActivityTrades([])
+      setTraders(null)
+      setSelectedWallet(null)
+      setTraderDetail(null)
       setError(null)
       if (detail) {
         setSeriesLive(
@@ -1307,6 +1341,35 @@ export default function MarketPage({ mode }: Props) {
     if (liveActive || playheadTs == null) return liveActivityTrades
     return liveActivityTrades.filter((t) => Number(t.timestamp) <= playheadTs)
   }, [liveActive, playheadTs, liveActivityTrades])
+
+  const traderMarks = useMemo((): TraderMark[] => {
+    if (liveActive || !selectedWallet) return []
+    // Prefer parquet detail fills (complete); fall back to activity tape.
+    if (traderDetail?.fills_list?.length) {
+      const list =
+        playheadTs == null
+          ? traderDetail.fills_list
+          : traderDetail.fills_list.filter((f) => f.timestamp <= playheadTs)
+      return list
+        .map((f) => ({
+          t: Number(f.timestamp),
+          pricePct: Number(f.price) * 100,
+          side: (f.is_buy ? 'BUY' : 'SELL') as 'BUY' | 'SELL',
+          outcome: (f.is_up ? 'Up' : 'Down') as 'Up' | 'Down',
+        }))
+        .filter((m) => Number.isFinite(m.t) && Number.isFinite(m.pricePct))
+    }
+    const w = selectedWallet.toLowerCase()
+    return displayActivityTrades
+      .filter((t) => (t.proxy_wallet || '').toLowerCase() === w)
+      .map((t) => ({
+        t: Number(t.timestamp),
+        pricePct: Number(t.price) * 100,
+        side: (t.side === 'SELL' ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
+        outcome: t.outcome === 'Down' ? 'Down' : 'Up',
+      }))
+      .filter((m) => Number.isFinite(m.t) && Number.isFinite(m.pricePct))
+  }, [liveActive, selectedWallet, traderDetail, playheadTs, displayActivityTrades])
 
   const displayHolders = useMemo(() => {
     if (liveActive || playheadTs == null) return holders
@@ -1575,6 +1638,7 @@ export default function MarketPage({ mode }: Props) {
             xDefaultDomain={xDefaultDomain}
             hoverTime={sharedHoverTime}
             onHoverTimeChange={setSharedHoverTime}
+            traderMarks={traderMarks}
           />
           <VolumeChart
             data={chartData}
@@ -1666,6 +1730,13 @@ export default function MarketPage({ mode }: Props) {
       <FeedSidebar
         enabled={liveActive || Boolean(marketId)}
         live={feedLive}
+        showTraders={!liveActive && Boolean(marketId)}
+        marketId={marketId || null}
+        traders={traders}
+        selectedWallet={selectedWallet}
+        onSelectWallet={setSelectedWallet}
+        onTraderDetailChange={setTraderDetail}
+        playheadTs={playheadTs}
         holders={displayHolders}
         holdersRevision={holdersRevision}
         activityTrades={displayActivityTrades}

@@ -5,6 +5,8 @@ type Props = {
   live?: boolean
   trades: LiveActivityTrade[]
   nowMs?: number
+  selectedWallet?: string | null
+  onSelectWallet?: (wallet: string | null) => void
 }
 
 function shortenAddress(value: string): string {
@@ -55,8 +57,11 @@ export default function ActivityPanel({
   live = false,
   trades,
   nowMs: nowProp,
+  selectedWallet = null,
+  onSelectWallet,
 }: Props) {
   const nowMs = nowProp ?? Date.now()
+  const sel = selectedWallet?.toLowerCase() ?? null
   if (!enabled) {
     return (
       <section className="activity-panel">
@@ -85,8 +90,27 @@ export default function ActivityPanel({
           {trades.map((t) => {
             const up = t.outcome === 'Up'
             const href = explorerUrl(t.transaction_hash)
+            const wallet = (t.proxy_wallet || '').toLowerCase()
+            const isSelected = sel != null && wallet === sel
+            const dimmed = sel != null && !isSelected
             return (
-              <li key={t.id} className="activity-tape-row">
+              <li
+                key={t.id}
+                className={`activity-tape-row${isSelected ? ' selected' : ''}${dimmed ? ' dimmed' : ''}`}
+                onClick={() => {
+                  if (!onSelectWallet || !wallet) return
+                  onSelectWallet(isSelected ? null : wallet)
+                }}
+                onKeyDown={(e) => {
+                  if (!onSelectWallet || !wallet) return
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onSelectWallet(isSelected ? null : wallet)
+                  }
+                }}
+                role={onSelectWallet ? 'button' : undefined}
+                tabIndex={onSelectWallet && wallet ? 0 : undefined}
+              >
                 <div className="activity-tape-avatar" aria-hidden>
                   {t.profile_image ? (
                     <img src={t.profile_image} alt="" />

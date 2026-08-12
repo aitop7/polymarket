@@ -6,6 +6,7 @@ import {
   Line,
   ReferenceLine,
   ResponsiveContainer,
+  Scatter,
   Tooltip,
   XAxis,
   YAxis,
@@ -18,6 +19,15 @@ export type BtcSeriesKey = 'twap' | 'chainlink' | 'binance'
 export type BtcSeriesVisibility = Record<BtcSeriesKey, boolean>
 
 export type TimeDomain = [number, number]
+
+/** Selected trader fills plotted on the outcomes chart. */
+export type TraderMark = {
+  t: number
+  /** Price in cents (0–100), same scale as upPct/downPct */
+  pricePct: number
+  side: 'BUY' | 'SELL'
+  outcome: 'Up' | 'Down'
+}
 
 type Point = {
   t: number
@@ -48,6 +58,8 @@ type Props = {
   /** Shared hover timestamp (ms) — keeps BTC / Up-Down tooltips aligned */
   hoverTime?: number | null
   onHoverTimeChange?: (t: number | null) => void
+  /** History: selected trader buy/sell markers (outcomes mode) */
+  traderMarks?: TraderMark[]
 }
 
 const SERIES_META: {
@@ -258,6 +270,37 @@ function HaloDot({
   )
 }
 
+/** Buy = upward triangle; Sell = downward triangle. Color by outcome. */
+function TraderMarkShape(props: {
+  cx?: number
+  cy?: number
+  payload?: TraderMark
+}) {
+  const { cx, cy, payload } = props
+  if (cx == null || cy == null || !payload) return null
+  const fill = payload.outcome === 'Up' ? '#10b981' : '#ef4444'
+  const buy = payload.side === 'BUY'
+  const s = 5.5
+  if (buy) {
+    return (
+      <polygon
+        points={`${cx},${cy - s} ${cx - s},${cy + s * 0.7} ${cx + s},${cy + s * 0.7}`}
+        fill={fill}
+        stroke="#fff"
+        strokeWidth={1}
+      />
+    )
+  }
+  return (
+    <polygon
+      points={`${cx},${cy + s} ${cx - s},${cy - s * 0.7} ${cx + s},${cy - s * 0.7}`}
+      fill={fill}
+      stroke="#fff"
+      strokeWidth={1}
+    />
+  )
+}
+
 /** Vertical grey crosshair only (no horizontal hover line). */
 function ChartCrosshair(props: {
   points?: { x: number; y: number }[]
@@ -311,6 +354,7 @@ export default function PriceChart({
   onSeriesVisibleChange,
   hoverTime: hoverTimeProp,
   onHoverTimeChange,
+  traderMarks = [],
 }: Props) {
   const showBtc = mode === 'btc'
   const twapFillId = `twapAreaFill-${mode}`
@@ -757,6 +801,23 @@ export default function PriceChart({
                   isAnimationActive={false}
                   connectNulls={false}
                 />
+                {traderMarks.length > 0 ? (
+                  <Scatter
+                    name="Trader fills"
+                    data={traderMarks.map((m) => ({
+                      t: m.t,
+                      pricePct: m.pricePct,
+                      side: m.side,
+                      outcome: m.outcome,
+                    }))}
+                    dataKey="pricePct"
+                    shape={(p: { cx?: number; cy?: number; payload?: TraderMark }) => (
+                      <TraderMarkShape cx={p.cx} cy={p.cy} payload={p.payload} />
+                    )}
+                    isAnimationActive={false}
+                    legendType="none"
+                  />
+                ) : null}
               </>
             )}
           </ComposedChart>

@@ -328,6 +328,21 @@ select {
   align-items: start;
   padding: 0.42rem 0;
   border-bottom: 1px solid #eef0f4;
+  cursor: default;
+}
+
+.activity-tape-row[role='button'] {
+  cursor: pointer;
+}
+
+.activity-tape-row.selected {
+  background: rgba(234, 179, 8, 0.12);
+  outline: 1px solid rgba(234, 179, 8, 0.35);
+  border-radius: 8px;
+}
+
+.activity-tape-row.dimmed {
+  opacity: 0.38;
 }
 
 .activity-tape-row:last-child {
@@ -407,6 +422,335 @@ select {
 
 .activity-tape-link:hover {
   color: var(--text);
+}
+
+.traders-panel {
+  position: relative;
+  margin-top: 0;
+  padding: 0.75rem 0.75rem 0.85rem;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(15, 17, 23, 0.04);
+}
+
+.traders-panel-grow {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.traders-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+  flex-shrink: 0;
+}
+
+.traders-panel-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.traders-clear {
+  border: none;
+  background: transparent;
+  color: var(--accent, #2563eb);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0.1rem 0.25rem;
+}
+
+.traders-clear:hover {
+  text-decoration: underline;
+}
+
+.traders-scroll {
+  max-height: 280px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.traders-scroll-tall {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.traders-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin-bottom: 0.35rem;
+}
+
+.traders-section-head h3 {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.traders-section-head span {
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.traders-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.traders-table thead th {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 1;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0.2rem 0.25rem 0.35rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.traders-th-rank {
+  width: 1.5rem;
+}
+
+.traders-th-num {
+  text-align: right !important;
+  white-space: nowrap;
+}
+
+.traders-tr {
+  cursor: pointer;
+}
+
+.traders-tr:hover td {
+  background: rgba(15, 17, 23, 0.04);
+}
+
+.traders-tr.selected td {
+  background: rgba(234, 179, 8, 0.14);
+}
+
+.traders-table td {
+  padding: 0.32rem 0.25rem;
+  border-bottom: 1px solid #eef0f4;
+  vertical-align: middle;
+}
+
+.traders-td-rank {
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.7rem;
+}
+
+.traders-td-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 7.5rem;
+}
+
+.traders-td-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.traders-metric {
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.traders-metric.up {
+  color: #059669;
+}
+
+.traders-metric.down {
+  color: #dc2626;
+}
+
+.traders-metric.neutral {
+  color: var(--text);
+}
+
+.traders-empty {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.traders-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.traders-detail-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.traders-detail-link {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent, #2563eb);
+  text-decoration: none;
+}
+
+.traders-detail-link:hover {
+  text-decoration: underline;
+}
+
+.traders-detail-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.traders-detail-name {
+  font-size: 0.95rem;
+  font-weight: 750;
+}
+
+.traders-detail-wallet {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.traders-detail-wallet-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.traders-copy-btn {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 6px;
+  padding: 0.12rem 0.4rem;
+  font-size: 0.68rem;
+  font-weight: 650;
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.traders-copy-btn:hover {
+  background: #f3f4f6;
+}
+
+.traders-detail-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.traders-detail-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.35rem 0.4rem;
+  background: #f8fafc;
+  border-radius: 8px;
+}
+
+.traders-detail-label {
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.traders-detail-fills-head {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 0.15rem;
+}
+
+.traders-fills {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: min(52vh, 480px);
+}
+
+.traders-fill-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.45rem;
+  padding: 0.38rem 0;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.traders-fill-main {
+  min-width: 0;
+}
+
+.traders-fill-action {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.traders-fill-action .up {
+  color: #059669;
+}
+
+.traders-fill-action .down {
+  color: #dc2626;
+}
+
+.traders-fill-meta {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-top: 0.1rem;
+}
+
+.traders-fill-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+  flex-shrink: 0;
+}
+
+.traders-fill-time {
+  font-size: 0.68rem;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .holders-panel {
