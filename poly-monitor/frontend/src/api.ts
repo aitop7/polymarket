@@ -53,6 +53,19 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const text = await res.text()
+    try {
+      const body = JSON.parse(text) as { detail?: unknown; error?: unknown }
+      const detail = body.detail ?? body.error
+      if (typeof detail === 'string' && detail.trim()) {
+        throw new Error(detail)
+      }
+      if (Array.isArray(detail) && detail.length) {
+        const first = detail[0] as { msg?: string }
+        if (first?.msg) throw new Error(first.msg)
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name === 'Error') throw err
+    }
     throw new Error(text || res.statusText)
   }
   return res.json() as Promise<T>
@@ -102,6 +115,30 @@ export const api = {
       notes?: string[]
       notes_by_file?: Record<string, string[]>
     }>(`/api/markets/${id}/health/recheck`, { method: 'POST' }),
+  repairMarket: (id: string) =>
+    json<{
+      ok: boolean
+      market_id: string
+      pulled: boolean
+      vps_enabled: boolean
+      trade_rows_added?: number
+      data_health: DataHealth
+      data_health_comment?: string | null
+      max_gap_ms?: number
+      max_trade_quiet_ms?: number
+      notes?: string[]
+      notes_by_file?: Record<string, string[]>
+      vps_repair?: {
+        ok?: boolean
+        rows_added?: number
+        rows_before?: number
+        rows_after?: number
+        rows_from_api?: number
+        trades_mode?: string
+        error?: string
+      }
+      error?: string | null
+    }>(`/api/markets/${id}/repair`, { method: 'POST' }),
   book: (id: string, t?: number) =>
     json<Record<string, unknown>>(`/api/markets/${id}/book${t != null ? `?t=${t}` : ''}`),
   backtest: (body: Record<string, unknown>) =>

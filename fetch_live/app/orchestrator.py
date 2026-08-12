@@ -20,6 +20,7 @@ from app.polymarket.rtds_trades import RtdsTrades
 from app.session.manager import SessionManager
 from app.session.resolver import Resolver
 from app.storage.market_store import MarketStore
+from app.trades_mode import get_trades_mode
 from app.twap_open import TwapOpenResolver
 
 
@@ -76,6 +77,8 @@ class Orchestrator:
         if token_down:
             self.clob_ws.seed_book(token_down, down_levels)
         # Seed any trades already indexed before we subscribed
+        mode = get_trades_mode()
+        store.update_meta(trades_mode=mode)
         if cid:
             try:
                 rows = await self.data_trades.fetch_window(
@@ -85,13 +88,15 @@ class Orchestrator:
                     start_ms=store.start_ms,
                     end_ms=store.end_ms,
                     max_pages=20,
+                    trades_mode=mode,
                 )
                 store.upsert_pm_trades(rows)
                 store.flush()
                 logger.info(
-                    "Seeded {} Data API trades for market {}",
+                    "Seeded {} Data API trades for market {} mode={}",
                     len(rows),
                     store.market_id,
+                    mode,
                 )
             except Exception as exc:
                 logger.warning("Initial Data API trades fetch failed: {}", exc)
@@ -115,6 +120,8 @@ class Orchestrator:
                 store.market_id,
             )
             return
+        mode = get_trades_mode()
+        store.update_meta(trades_mode=mode)
         try:
             rows = await self.data_trades.fetch_window(
                 condition_id=cid,
@@ -123,13 +130,15 @@ class Orchestrator:
                 start_ms=store.start_ms,
                 end_ms=store.end_ms,
                 max_pages=50,
+                trades_mode=mode,
             )
             store.upsert_pm_trades(rows)
             filled, n = store.wallet_fill_rate()
             store.flush(force=True)
             logger.info(
-                "Final trades gap-fill market {} api_rows={} wallets={}/{}",
+                "Final trades gap-fill market {} mode={} api_rows={} wallets={}/{}",
                 store.market_id,
+                mode,
                 len(rows),
                 filled,
                 n,
@@ -170,7 +179,11 @@ class Orchestrator:
         self._running = True
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.twap.ensure_started()
-        logger.info("fetch_live starting data_dir={}", settings.data_dir.resolve())
+        logger.info(
+            "fetch_live starting data_dir={} trades_mode={}",
+            settings.data_dir.resolve(),
+            get_trades_mode(),
+        )
 
         self._tasks = [
             asyncio.create_task(self.binance.run(), name="binance"),

@@ -1589,6 +1589,12 @@ select {
   color: var(--text);
 }
 
+.health-dialog-btn.secondary {
+  border: 1px solid var(--border);
+  background: #f4f4f5;
+  color: var(--text);
+}
+
 .health-dialog-btn.primary {
   border: 1px solid #0f766e;
   background: #0f766e;

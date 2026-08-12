@@ -29,6 +29,9 @@ class Settings(BaseSettings):
 
     data_api_url: str = "https://data-api.polymarket.com"
     trades_poll_interval_s: float = 0.5
+    # taker = Data API takerOnly=true only (faster). full = taker + maker.
+    # Runtime override: PUT /settings {"trades_mode":"taker"|"full"} (shared file).
+    trades_mode: str = "full"
 
     gamma_url: str = "https://gamma-api.polymarket.com"
     clob_url: str = "https://clob.polymarket.com"

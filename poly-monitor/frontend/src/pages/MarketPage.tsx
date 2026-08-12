@@ -350,6 +350,7 @@ export default function MarketPage({ mode }: Props) {
   const [selectedTime, setSelectedTime] = useState('')
   const [markets, setMarkets] = useState<MarketSummary[]>([])
   const [marketId, setMarketId] = useState<string>('')
+  const [historyReloadToken, setHistoryReloadToken] = useState(0)
   const [detail, setDetail] = useState<MarketDetail | null>(null)
   const [neighbors, setNeighbors] = useState<{ prev: string | null; next: string | null }>({
     prev: null,
@@ -667,7 +668,7 @@ export default function MarketPage({ mode }: Props) {
     return () => {
       cancelled = true
     }
-  }, [liveActive, marketId])
+  }, [liveActive, marketId, historyReloadToken])
 
   useEffect(() => {
     if (liveActive || !marketId) return
@@ -724,7 +725,7 @@ export default function MarketPage({ mode }: Props) {
         }
       })
       .catch((e) => setError(String(e)))
-  }, [marketId, effectiveSplit, liveActive])
+  }, [marketId, effectiveSplit, liveActive, historyReloadToken])
 
   const stopWs = () => {
     wsRef.current?.close()
@@ -1541,7 +1542,7 @@ export default function MarketPage({ mode }: Props) {
           marketEndMs={detail?.end_time}
           playheadMs={playheadTs}
           onSeek={seekReplay}
-          onHealthUpdated={(mid, health, comment) => {
+          onHealthUpdated={(mid, health, comment, opts) => {
             setMarkets((prev) =>
               prev.map((m) =>
                 m.market_id === mid
@@ -1554,6 +1555,9 @@ export default function MarketPage({ mode }: Props) {
                 ? { ...prev, data_health: health, data_health_comment: comment }
                 : prev,
             )
+            if (opts?.reload && mid === marketId) {
+              setHistoryReloadToken((n) => n + 1)
+            }
           }}
         />
         {liveActive && (

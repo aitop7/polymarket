@@ -1,4 +1,4 @@
-"""Read-only HTTP API over fetch_live data_dir (VPS mirror for local sync)."""
+"""HTTP API over fetch_live data_dir (VPS mirror + collector settings)."""
 
 from __future__ import annotations
 
@@ -11,14 +11,25 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.schemas import TABLE_FILES
+from app.trades_mode import (
+    get_trades_mode,
+    parse_trades_mode,
+    set_trades_mode,
+    trades_mode_source,
+)
 
 _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MIN_START_MS = 1_600_000_000_000  # ~2020-09 — skip epoch junk dirs
 
 ALLOWED_FILES = frozenset({"meta.json", *TABLE_FILES.values()})
+
+
+class TradesSettingsBody(BaseModel):
+    trades_mode: str = Field(..., description="'taker' (takers only) or 'full' (taker + maker)")
 
 
 def _data_dir() -> Path:
@@ -154,6 +165,30 @@ def create_app() -> FastAPI:
             "ok": True,
             "data_dir": str(root),
             "exists": root.is_dir(),
+            "trades_mode": get_trades_mode(),
+        }
+
+    @app.get("/settings", dependencies=[Depends(require_bearer)])
+    def get_settings() -> dict[str, Any]:
+        return {
+            "trades_mode": get_trades_mode(),
+            "source": trades_mode_source(),
+            "options": ["taker", "full"],
+        }
+
+    @app.put("/settings", dependencies=[Depends(require_bearer)])
+    def put_settings(body: TradesSettingsBody) -> dict[str, Any]:
+        if parse_trades_mode(body.trades_mode) is None:
+            raise HTTPException(
+                status_code=400,
+                detail="trades_mode must be 'taker' or 'full'",
+            )
+        mode = set_trades_mode(body.trades_mode)
+        return {
+            "ok": True,
+            "trades_mode": mode,
+            "source": "file",
+            "options": ["taker", "full"],
         }
 
     @app.get("/markets", dependencies=[Depends(require_bearer)])
@@ -190,6 +225,26 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="File not found")
         media = "application/json" if name.endswith(".json") else "application/octet-stream"
         return FileResponse(path, media_type=media, filename=name)
+
+    @app.post(
+        "/markets/{market_id}/repair",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def repair_market(market_id: str) -> dict[str, Any]:
+        found = find_market_dir(market_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail="Market not found")
+        _day, market_dir = found
+        from app.repair import repair_market_dir_locked
+
+        result = await repair_market_dir_locked(market_dir)
+        if not result.get("ok"):
+            detail = str(result.get("error") or "repair failed")
+            code = 409 if "still live" in detail else 502
+            raise HTTPException(status_code=code, detail=detail)
+        meta = _read_meta(market_dir / "meta.json") or {}
+        entry = _catalog_entry(_day, market_dir, meta)
+        return {**result, "market": entry}
 
     @app.get(
         "/markets/{market_id}/archive",

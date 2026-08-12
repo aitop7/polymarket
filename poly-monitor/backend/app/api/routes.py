@@ -203,6 +203,21 @@ async def recheck_market_health(market_id: str) -> dict[str, Any]:
     return result
 
 
+@router.post("/markets/{market_id}/repair")
+async def repair_market(market_id: str) -> dict[str, Any]:
+    """Fill missed trades on the VPS, re-pull the archive, then restamp health."""
+    from app.live.vps_sync import get_vps_sync
+
+    mid = str(market_id or "").strip()
+    if not mid:
+        raise HTTPException(400, "market_id required")
+    result = await get_vps_sync().repair_history_market(mid)
+    if not result.get("ok"):
+        status = 409 if "still live" in str(result.get("error") or "") else 502
+        raise HTTPException(status, str(result.get("error") or "repair failed"))
+    return result
+
+
 @router.get("/markets/{market_id}/book")
 async def get_book(
     market_id: str, t: int | None = None, split: str | None = None

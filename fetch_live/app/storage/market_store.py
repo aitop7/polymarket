@@ -15,6 +15,7 @@ from loguru import logger
 from app.config import settings
 from app.schemas import TABLE_FILES
 from app.storage.parquet_buffer import ParquetBuffer, dedupe_by_timestamp, table_path
+from app.trades_mode import get_trades_mode
 
 
 def safe_name(value: str) -> str:
@@ -151,6 +152,8 @@ class MarketStore:
         is_up = bool(row.get("is_up"))
         is_buy = bool(row.get("is_buy"))
         is_taker = bool(row.get("is_taker", True))
+        if get_trades_mode() == "taker" and not is_taker:
+            return
         try:
             price = round(float(row["price"]), 6)
         except (TypeError, ValueError):
@@ -341,9 +344,15 @@ class MarketStore:
         from app.polymarket.data_api_trades import normalize_trade_legs
 
         with self._lock:
+            raw_rows = list(self._pm_trades.values())
+            if get_trades_mode() == "taker":
+                takers = [r for r in raw_rows if bool(r.get("is_taker", True))]
+                if len(takers) != len(raw_rows):
+                    self._pm_trades_dirty = True
+                raw_rows = takers
             if not self._pm_trades_dirty:
                 return
-            rows = normalize_trade_legs(list(self._pm_trades.values()))
+            rows = normalize_trade_legs(raw_rows)
             rebuilt: dict[str, dict[str, Any]] = {}
             for r in rows:
                 key = str(r.get("fill_key") or "").strip()

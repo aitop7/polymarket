@@ -17,6 +17,7 @@ FETCH_LIVE_FLUSH_INTERVAL_S=7
 FETCH_LIVE_FLUSH_MAX_ROWS=1000
 FETCH_LIVE_API_TOKEN=change-me
 FETCH_LIVE_SERVE_PORT=8787
+FETCH_LIVE_TRADES_MODE=full   # full = taker+maker; taker = takers only (faster)
 ```
 
 ## Run collector
@@ -66,11 +67,35 @@ Endpoints (Bearer token required when `FETCH_LIVE_API_TOKEN` is set):
 
 | Path | Purpose |
 |------|---------|
-| `GET /health` | liveness + data_dir |
+| `GET /health` | liveness + data_dir + `trades_mode` |
+| `GET /settings` | current trade capture mode |
+| `PUT /settings` | switch `taker` / `full` without restarting the collector |
 | `GET /markets?after_start_ms=` | catalog (incremental) |
 | `GET /markets/{id}` | meta + file sizes |
 | `GET /markets/{id}/files/{name}` | single file download |
+| `POST /markets/{id}/repair` | fill missed trades from Data API (history markets) |
 | `GET /markets/{id}/archive` | zip of market dir |
+
+Trade capture mode (collector + serve share `{data_dir}/collector_settings.json`):
+
+| Mode | Data API | Saved rows |
+|------|----------|------------|
+| `taker` | `takerOnly=true` only (one request) | taker fills only — faster |
+| `full` | `takerOnly=false` + `takerOnly=true` | taker + maker (default) |
+
+Switch while both processes are running (collector picks it up on the next seed / end fill / flush):
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"trades_mode":"taker"}' http://VPS:8787/settings
+```
+
+Repair a finished market (fills missed trades, then poly-monitor can re-pull):
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  http://VPS:8787/markets/MARKET_ID/repair
+```
 
 Full request/response docs: **[API.md](API.md)**. Live OpenAPI: `http://HOST:8787/docs`.
 
@@ -99,8 +124,9 @@ data/
 `binance_price_orderbook.parquet`: Binance mid (`Binance_BTC`) plus ask/bid BTC quantity in USD-distance bands from mid (widths 0.1, 0.2, …, 51.2 → `ask_0_1` … `ask_511_1023`, plus out-of-range `ask_1023_` / `bid_1023_`).
 
 `trades.parquet` is streamed from Polymarket RTDS (`activity` / `trades`) plus Data API
-gap-fill. Each row is **one wallet’s fill** (taker or maker). One `transaction_hash` can
-appear on several rows.
+gap-fill. In `full` mode each row is **one wallet’s fill** (taker or maker). In `taker`
+mode only taker rows are fetched and saved. One `transaction_hash` can appear on several
+rows.
 
 | Column | Meaning |
 |--------|---------|
@@ -113,5 +139,6 @@ appear on several rows.
 | `price` / `shares` / `fill_index` | **per-fill** price and size; `fill_index` distinguishes identical legs (same wallet/price/shares) so Orbscan duplicate maker fills are kept |
 
 CLOB WS is used for live order books only. Data API `/trades` seeds on market start and
-gap-fills on market end (`takerOnly=false` + taker-set classification). Rows follow
-**Orbscan** semantics: each action is its own row (wallets are not collapsed).
+gap-fills on market end. `full` uses `takerOnly=false` + taker-set classification;
+`taker` uses `takerOnly=true` only. Rows follow **Orbscan** semantics: each action is
+its own row (wallets are not collapsed).

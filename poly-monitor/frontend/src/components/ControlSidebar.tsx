@@ -171,11 +171,12 @@ type Props = {
   /** Current playhead (ms); null = idle / full market */
   playheadMs?: number | null
   onSeek?: (timestampMs: number) => void
-  /** After health recheck — update window list badges */
+  /** After health recheck / VPS repair — update window list badges */
   onHealthUpdated?: (
     marketId: string,
     health: DataHealth,
     comment: string | null,
+    opts?: { reload?: boolean },
   ) => void
 }
 
@@ -233,7 +234,9 @@ export default function ControlSidebar(props: Props) {
   const dragging = useRef(false)
   const [healthDialog, setHealthDialog] = useState<MarketSummary | null>(null)
   const [rechecking, setRechecking] = useState(false)
+  const [repairing, setRepairing] = useState(false)
   const [recheckError, setRecheckError] = useState<string | null>(null)
+  const healthBusy = rechecking || repairing
 
   const dialogHealth = healthTone(healthDialog?.data_health)
   const dialogGroups = useMemo(
@@ -249,39 +252,70 @@ export default function ControlSidebar(props: Props) {
   }
 
   const closeHealthDialog = () => {
-    if (rechecking) return
+    if (healthBusy) return
     setHealthDialog(null)
     setRecheckError(null)
   }
 
+  const applyHealthResult = (
+    mid: string,
+    res: {
+      data_health?: DataHealth | string
+      data_health_comment?: string | null
+      notes_by_file?: Record<string, string[]>
+      notes?: string[]
+    },
+    reload = false,
+  ) => {
+    const health = (res.data_health || 'unchecked') as DataHealth
+    const fromFiles = res.notes_by_file
+      ? Object.entries(res.notes_by_file)
+          .flatMap(([file, gaps]) => [file, ...gaps.map((g) => `  ${g}`)])
+          .join('\n')
+      : ''
+    const comment = res.data_health_comment || fromFiles || (res.notes || []).join('\n') || null
+    setHealthDialog((prev) =>
+      prev && prev.market_id === mid
+        ? {
+            ...prev,
+            data_health: health,
+            data_health_comment: comment,
+          }
+        : prev,
+    )
+    onHealthUpdated?.(mid, health, comment, { reload })
+  }
+
   const runHealthRecheck = async () => {
-    if (!healthDialog || rechecking) return
+    if (!healthDialog || healthBusy) return
     const mid = healthDialog.market_id
     setRechecking(true)
     setRecheckError(null)
     try {
-      const res = await api.recheckMarketHealth(mid)
-      const health = (res.data_health || 'unchecked') as DataHealth
-      const fromFiles = res.notes_by_file
-        ? Object.entries(res.notes_by_file)
-            .flatMap(([file, gaps]) => [file, ...gaps.map((g) => `  ${g}`)])
-            .join('\n')
-        : ''
-      const comment = res.data_health_comment || fromFiles || (res.notes || []).join('\n') || null
-      setHealthDialog((prev) =>
-        prev && prev.market_id === mid
-          ? {
-              ...prev,
-              data_health: health,
-              data_health_comment: comment,
-            }
-          : prev,
-      )
-      onHealthUpdated?.(mid, health, comment)
+      applyHealthResult(mid, await api.recheckMarketHealth(mid))
     } catch (err) {
       setRecheckError(err instanceof Error ? err.message : 'Recheck failed')
     } finally {
       setRechecking(false)
+    }
+  }
+
+  const runRepair = async () => {
+    if (!healthDialog || healthBusy) return
+    const mid = healthDialog.market_id
+    setRepairing(true)
+    setRecheckError(null)
+    try {
+      const res = await api.repairMarket(mid)
+      applyHealthResult(mid, res, true)
+      const added = res.vps_repair?.rows_added ?? res.trade_rows_added ?? 0
+      if (added > 0) {
+        setRecheckError(null)
+      }
+    } catch (err) {
+      setRecheckError(err instanceof Error ? err.message : 'Repair failed')
+    } finally {
+      setRepairing(false)
     }
   }
 
@@ -300,7 +334,7 @@ export default function ControlSidebar(props: Props) {
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !rechecking) {
+      if (e.key === 'Escape' && !healthBusy) {
         setHealthDialog(null)
         setRecheckError(null)
       }
@@ -310,7 +344,7 @@ export default function ControlSidebar(props: Props) {
       document.body.style.overflow = prev
       window.removeEventListener('keydown', onKey)
     }
-  }, [healthDialog, rechecking])
+  }, [healthDialog, healthBusy])
 
   const elapsedLabel = useMemo(() => {
     if (start == null || displayTs == null) return '0:00'
@@ -617,17 +651,26 @@ export default function ControlSidebar(props: Props) {
                   type="button"
                   className="health-dialog-btn ghost"
                   onClick={closeHealthDialog}
-                  disabled={rechecking}
+                  disabled={healthBusy}
                 >
                   Close
                 </button>
                 <button
                   type="button"
-                  className="health-dialog-btn primary"
+                  className="health-dialog-btn secondary"
                   onClick={() => void runHealthRecheck()}
-                  disabled={rechecking || histDisabled}
+                  disabled={healthBusy || histDisabled}
                 >
                   {rechecking ? 'Rechecking…' : 'Recheck'}
+                </button>
+                <button
+                  type="button"
+                  className="health-dialog-btn primary"
+                  onClick={() => void runRepair()}
+                  disabled={healthBusy || histDisabled}
+                  title="Fill missed trades on the VPS from Polymarket Data API, then re-pull"
+                >
+                  {repairing ? 'Repairing…' : 'Repair'}
                 </button>
               </div>
             </div>

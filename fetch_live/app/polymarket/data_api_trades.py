@@ -1,4 +1,4 @@
-"""Polymarket Data API trades — maker + taker fills for trades.parquet."""
+"""Polymarket Data API trades — taker-only or full (taker + maker) fills."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import httpx
 from loguru import logger
 
 from app.config import settings
+from app.trades_mode import TradesMode, get_trades_mode
 
 OnTradeRows = Callable[[list[dict[str, Any]]], None]
 
@@ -399,16 +400,43 @@ class DataApiTrades:
         start_ms: int,
         end_ms: int,
         max_pages: int = 50,
+        trades_mode: TradesMode | None = None,
     ) -> list[dict[str, Any]]:
         """
-        Fetch all fills (makers + takers) for a market window.
+        Fetch fills for a market window.
 
-        Classification: takerOnly=true builds per-tx taker wallets; other fills
-        on a tx that has a known taker are makers. If a tx has no known taker,
-        do not invent makers (default is_taker=true).
+        trades_mode=taker: one Data API call (takerOnly=true). Faster, no makers.
+        trades_mode=full: takerOnly=false fills + takerOnly=true for classification.
+
+        Classification (full): takerOnly=true builds per-tx taker wallets; other
+        fills on a tx that has a known taker are makers. If a tx has no known
+        taker, do not invent makers (default is_taker=true).
         """
         if not condition_id:
             return []
+        mode = trades_mode or get_trades_mode()
+        if mode == "taker":
+            taker_raw = await self._fetch_pages(
+                condition_id=condition_id,
+                max_pages=max_pages,
+                start_ms=start_ms,
+                taker_only=True,
+            )
+            out: list[dict[str, Any]] = []
+            for trade in taker_raw:
+                row = self._to_row(
+                    trade,
+                    token_up=token_up,
+                    token_down=token_down,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    takers_by_tx=None,
+                    force_taker=True,
+                )
+                if row is None:
+                    continue
+                out.append(row)
+            return assign_fill_keys(drop_uniform_tx_duplicates(out))
 
         all_raw, taker_raw = await asyncio.gather(
             self._fetch_pages(
@@ -426,7 +454,7 @@ class DataApiTrades:
         )
 
         takers_by_tx = taker_wallets_by_tx(taker_raw)
-        out: list[dict[str, Any]] = []
+        out = []
         # Emit fills from takerOnly=false only. takerOnly=true is classification
         # only — merging both feeds double-counted when float/format keys drifted.
         for trade in all_raw:
@@ -452,7 +480,8 @@ class DataApiTrades:
         token_down: str | None,
         start_ms: int,
         end_ms: int,
-        takers_by_tx: dict[str, set[str]],
+        takers_by_tx: dict[str, set[str]] | None,
+        force_taker: bool = False,
     ) -> dict[str, Any] | None:
         tx = str(trade.get("transactionHash") or trade.get("transaction_hash") or "")
         try:
@@ -502,7 +531,10 @@ class DataApiTrades:
             or trade.get("wallet")
             or ""
         ).strip().lower()
-        is_taker = classify_is_taker(tx, wallet, takers_by_tx)
+        if force_taker or takers_by_tx is None:
+            is_taker = True
+        else:
+            is_taker = classify_is_taker(tx, wallet, takers_by_tx)
 
         return {
             "timestamp": ts,

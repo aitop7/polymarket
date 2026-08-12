@@ -823,6 +823,129 @@ class VpsSyncClient:
             self._log_net_error(f"pull {market_id}", exc)
             return None
 
+    async def request_vps_repair(self, market_id: str) -> dict[str, Any]:
+        """Ask fetch_live serve to merge Data API trades into VPS trades.parquet."""
+        if not self.enabled or not self._base():
+            return {"ok": False, "error": "VPS sync is not configured"}
+        mid = str(market_id or "").strip()
+        if not mid:
+            return {"ok": False, "error": "missing market_id"}
+        try:
+            async with self._http(read_s=120.0) as client:
+                url = f"{self._base()}/markets/{mid}/repair"
+                resp = await client.post(url)
+                if resp.status_code == 404:
+                    return {
+                        "ok": False,
+                        "error": "VPS 404 — market missing or serve needs POST /markets/{id}/repair",
+                    }
+                if resp.status_code >= 400:
+                    detail = ""
+                    try:
+                        body = resp.json()
+                        if isinstance(body, dict):
+                            detail = str(body.get("detail") or body.get("error") or "")
+                    except Exception:
+                        detail = (resp.text or "")[:240]
+                    return {
+                        "ok": False,
+                        "error": detail or f"VPS repair HTTP {resp.status_code}",
+                        "status_code": resp.status_code,
+                    }
+                data = resp.json()
+                self._unreachable = False
+                return data if isinstance(data, dict) else {"ok": True}
+        except Exception as exc:
+            self._log_net_error(f"repair {market_id}", exc)
+            return {"ok": False, "error": str(exc)}
+
+    async def repair_history_market(self, market_id: str) -> dict[str, Any]:
+        """
+        Repair missed trades on the VPS, re-pull the archive, then restamp health.
+        Used by the history-market Repair button.
+        """
+        from app.core.live_dataset import (
+            TWAP_SPLIT,
+            read_data_health,
+            read_data_health_comment,
+            _read_meta,
+        )
+        from app.core.market_index import invalidate_market_index
+
+        mid = str(market_id or "").strip()
+        if not mid:
+            return {"ok": False, "error": "missing market_id"}
+
+        async with self._hist_lock(mid):
+            vps_enabled = bool(self.enabled and self._base())
+            vps_repair: dict[str, Any] = {"ok": False, "skipped": True}
+            if vps_enabled:
+                vps_repair = await self.request_vps_repair(mid)
+                vps_repair["skipped"] = False
+
+            pulled = False
+            if vps_enabled:
+                path = await self.pull_market(mid, force=True)
+                pulled = path is not None
+
+            local_path, stub = self._local_stub(mid)
+            if local_path is None:
+                return {
+                    "ok": False,
+                    "market_id": mid,
+                    "pulled": pulled,
+                    "vps_enabled": vps_enabled,
+                    "vps_repair": vps_repair,
+                    "error": vps_repair.get("error") or "local market not found",
+                }
+
+            trade_added = int(vps_repair.get("rows_added") or 0)
+            if self._trades_need_backfill(stub):
+                try:
+                    from app.core.trade_repair import backfill_trades_for_market_dir
+
+                    local_added = int(await backfill_trades_for_market_dir(local_path) or 0)
+                    trade_added += local_added
+                    local_path, stub = self._local_stub(mid)
+                except Exception as exc:
+                    logger.warning("Repair local trade backfill failed for %s: %s", mid, exc)
+
+            if local_path is None:
+                return {
+                    "ok": False,
+                    "market_id": mid,
+                    "pulled": pulled,
+                    "vps_enabled": vps_enabled,
+                    "vps_repair": vps_repair,
+                    "error": "local market missing after repair",
+                }
+
+            grade = self._persist_health(local_path, stub) or "unchecked"
+            meta = _read_meta(local_path / "meta.json") or {}
+            try:
+                invalidate_market_index(TWAP_SPLIT)
+            except Exception:
+                pass
+
+            analysis = self._analyze_gaps(stub)
+            vps_ok = bool(vps_repair.get("ok"))
+            ok = True if not vps_enabled else vps_ok
+            return {
+                "ok": ok,
+                "market_id": mid,
+                "pulled": pulled,
+                "vps_enabled": vps_enabled,
+                "vps_repair": vps_repair,
+                "trade_rows_added": trade_added,
+                "data_health": grade or read_data_health(meta),
+                "data_health_comment": read_data_health_comment(meta),
+                "max_gap_ms": int(analysis.get("max_gap_ms") or 0),
+                "max_trade_quiet_ms": int(analysis.get("max_trade_quiet_ms") or 0),
+                "notes": list(analysis.get("notes") or []),
+                "notes_by_file": dict(analysis.get("notes_by_file") or {}),
+                "error": None if ok else vps_repair.get("error"),
+            }
+
     async def recheck_history_market(self, market_id: str) -> dict[str, Any]:
         """
         Force VPS re-pull (when enabled), optional Data API trade fill,

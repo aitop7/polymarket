@@ -1,6 +1,6 @@
 # fetch_live HTTP API
 
-Read-only FastAPI over the collector’s `FETCH_LIVE_DATA_DIR`. Used by local poly-monitor (and any client) to pull saved BTC Up/Down 5m market bundles from a VPS.
+FastAPI over the collector’s `FETCH_LIVE_DATA_DIR`. Used by local poly-monitor (and any client) to pull saved BTC Up/Down 5m market bundles from a VPS. `PUT /settings` can switch trade capture mode without restarting the collector.
 
 **Implementation:** [`app/serve_api.py`](app/serve_api.py) · **Entry:** `python serve.py` / `./run-serve.sh`  
 **Default base URL:** `http://HOST:8787`
@@ -40,7 +40,7 @@ Authorization: Bearer change-me
 |--------|---------|
 | `401` | Missing or invalid bearer token |
 | `404` | Market or file not found |
-| `400` | Invalid file name on `/files/{name}` |
+| `400` | Invalid file name on `/files/{name}`, or invalid `trades_mode` |
 
 ---
 
@@ -56,12 +56,91 @@ Liveness. **No auth.**
 {
   "ok": true,
   "data_dir": "/root/charles/fetch_live/data",
-  "exists": true
+  "exists": true,
+  "trades_mode": "full"
 }
 ```
 
 ```bash
 curl -s http://127.0.0.1:8787/health
+```
+
+---
+
+### `GET /settings`
+
+Current trade capture mode. Auth required when a token is set.
+
+**Response**
+
+```json
+{
+  "trades_mode": "taker",
+  "source": "file",
+  "options": ["taker", "full"]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `trades_mode` | `taker` = save takers only (faster Data API); `full` = taker + maker |
+| `source` | `file` = runtime override in `{data_dir}/collector_settings.json`; `env` = `FETCH_LIVE_TRADES_MODE` |
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" http://VPS:8787/settings
+```
+
+---
+
+### `PUT /settings`
+
+Switch mode while the collector is running. Writes `{data_dir}/collector_settings.json`; the collector reads it on the next seed / end fill / flush. Applies to **new** fetches; already-written parquet is not rewritten.
+
+**Body**
+
+```json
+{ "trades_mode": "taker" }
+```
+
+Aliases accepted: `taker` / `taker_only` / `takers` · `full` / `all` / `maker`.
+
+**Response:** same shape as `GET /settings` plus `"ok": true`. Invalid value → `400`.
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"trades_mode":"taker"}' http://VPS:8787/settings
+
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"trades_mode":"full"}' http://VPS:8787/settings
+```
+
+---
+
+### `POST /markets/{market_id}/repair`
+
+Fill missed Polymarket trades on the VPS. Fetches Data API `/trades` (respects current `trades_mode`), merges into `trades.parquet`, stamps `meta.json` (`trades_repaired_at`, `trades_count`, `trades_mode`).
+
+Refuses while the market is still live (`409`) so the collector cannot overwrite the repair on flush.
+
+**Response**
+
+```json
+{
+  "ok": true,
+  "market_id": "3403562",
+  "trades_mode": "full",
+  "rows_before": 412,
+  "rows_from_api": 860,
+  "rows_after": 860,
+  "rows_added": 448,
+  "repaired_at": 1786207454000,
+  "market": { }
+}
+```
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  http://VPS:8787/markets/3403562/repair
 ```
 
 ---
@@ -193,6 +272,7 @@ Paths under `data/YYYY-MM-DD/{market_id}/`. See [README.md](README.md) for colle
 | `btc_close_price` | float \| null | Chainlink 30s TWAP at end |
 | `winner` | bool \| null | `true` = Up, `false` = Down |
 | `active` / `closed` | bool | Session flags |
+| `trades_mode` | string \| null | `taker` or `full` when the collector stamped this market |
 
 ### Parquet tables
 
@@ -216,6 +296,7 @@ Schemas: [`app/schemas.py`](app/schemas.py).
 | `FETCH_LIVE_SERVE_HOST` | `0.0.0.0` | Bind address |
 | `FETCH_LIVE_SERVE_PORT` | `8787` | Port |
 | `FETCH_LIVE_API_TOKEN` | `""` | Bearer secret; empty disables auth |
+| `FETCH_LIVE_TRADES_MODE` | `full` | Default trade capture: `taker` or `full`. Overridden by `PUT /settings` |
 
 ---
 
@@ -223,4 +304,4 @@ Schemas: [`app/schemas.py`](app/schemas.py).
 
 - Prefer `/markets?after_start_ms=` for incremental sync, then `/archive` or `/files/{name}` per market.
 - poly-monitor pulls from this API into its local `FETCH_LIVE_DATA_DIR` (see poly-monitor `.env`).
-- This API does **not** expose live CLOB/WS streams; it only serves files written by `python main.py`.
+- This API does **not** expose live CLOB/WS streams; it serves files written by `python main.py` plus `PUT /settings` for trade capture mode.
