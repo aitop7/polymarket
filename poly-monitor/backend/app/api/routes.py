@@ -68,6 +68,10 @@ class PaperOrderRequest(BaseModel):
     shares: float | None = None
 
 
+class WalletCommentBody(BaseModel):
+    comment: str = ""
+
+
 @router.get("/health")
 def health() -> dict[str, Any]:
     from app.core.live_dataset import data_health_thresholds
@@ -274,51 +278,154 @@ async def get_market_activity(
     return await market_activity(market_id, limit=limit)
 
 
-@router.get("/wallets/{address}")
-async def get_wallet_summary(address: str) -> dict[str, Any]:
-    """Wallet profile summary (positions value, biggest win, explorer links)."""
-    from app.core.wallet_activity import fetch_wallet_summary, normalize_wallet
+@router.get("/wallets/saved")
+def list_saved_wallets() -> dict[str, Any]:
+    """List locally cached / watched wallets (most recently viewed first)."""
+    from app.core.wallet_store import list_watched_wallets
+
+    wallets = list_watched_wallets()
+    return {"count": len(wallets), "wallets": wallets}
+
+
+@router.delete("/wallets/saved/{address}")
+def delete_saved_wallet(address: str) -> dict[str, Any]:
+    from app.core.wallet_activity import normalize_wallet
+    from app.core.wallet_store import delete_watched_wallet
 
     try:
-        normalize_wallet(address)
+        addr = normalize_wallet(address)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    ok = delete_watched_wallet(addr)
+    if not ok:
+        raise HTTPException(404, "Wallet not in local cache")
+    return {"ok": True, "wallet": addr}
+
+
+@router.put("/wallets/saved/{address}/comment")
+def put_saved_wallet_comment(address: str, body: WalletCommentBody) -> dict[str, Any]:
+    """Save a local note/comment for a watched trader."""
+    from app.core.wallet_activity import normalize_wallet
+    from app.core.wallet_store import set_comment
+
     try:
-        return await fetch_wallet_summary(address)
+        addr = normalize_wallet(address)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    saved = set_comment(addr, body.comment)
+    return {"ok": True, "wallet": addr, "comment": saved}
+
+
+@router.get("/wallets/{address}")
+async def get_wallet_summary(
+    address: str,
+    refresh: bool = Query(False, description="Force live fetch and overwrite cache"),
+) -> dict[str, Any]:
+    """Wallet profile summary (positions value, biggest win, explorer links)."""
+    from app.core.wallet_activity import fetch_wallet_summary, normalize_wallet
+    from app.core import wallet_store
+
+    try:
+        addr = normalize_wallet(address)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not refresh:
+        cached = wallet_store.get_summary(addr)
+        if cached is not None:
+            wallet_store.touch_viewed(addr)
+            return cached
+    try:
+        data = await fetch_wallet_summary(addr)
     except Exception as exc:
         raise HTTPException(502, f"Wallet lookup failed: {exc}") from exc
+    wallet_store.save_summary(addr, data)
+    comment = wallet_store.get_comment(addr)
+    return {**data, "comment": comment, "cached": False}
 
 
 @router.get("/wallets/{address}/pnl")
 async def get_wallet_pnl(
     address: str,
     interval: str = Query("1d", pattern="^(1d|1w|1m|1y|ytd|all|max)$"),
+    refresh: bool = Query(False),
 ) -> dict[str, Any]:
-    """PnL timeseries for 1D / 1W / 1M / 1Y / YTD / ALL (Polymarket user-pnl API)."""
-    from app.core.wallet_activity import fetch_wallet_pnl
+    """BTC Up/Down 5m realized PnL timeseries for 1D / 1W / 1M / 1Y / YTD / ALL."""
+    from app.core.wallet_activity import fetch_wallet_pnl, normalize_wallet
+    from app.core import wallet_store
 
     try:
-        return await fetch_wallet_pnl(address, interval=interval)
+        addr = normalize_wallet(address)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not refresh:
+        cached = wallet_store.get_pnl(addr, interval)
+        # Ignore pre-rewrite all-market user-pnl cache.
+        if cached is not None and cached.get("scope") == "btc_updown_5m":
+            wallet_store.touch_viewed(addr)
+            return cached
+    try:
+        data = await fetch_wallet_pnl(addr, interval=interval)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Wallet PnL failed: {exc}") from exc
+    wallet_store.save_pnl(addr, interval, data)
+    return {**data, "cached": False}
 
 
 @router.get("/wallets/{address}/daily")
 async def get_wallet_daily_pnl(
     address: str,
     days: int = Query(90, ge=1, le=730),
+    scan_limit: int = Query(3000, ge=50, le=50000),
+    before: str | None = Query(None, description="Return settle days strictly before YYYY-MM-DD"),
+    refresh: bool = Query(False),
 ) -> dict[str, Any]:
-    """Per-day PnL deltas (newest first)."""
-    from app.core.wallet_activity import fetch_wallet_daily_pnl
+    """Per-day BTC Up/Down 5m realized PnL (newest first)."""
+    from app.core.wallet_activity import fetch_wallet_daily_pnl, normalize_wallet
+    from app.core import wallet_store
 
     try:
-        return await fetch_wallet_daily_pnl(address, days=days)
+        addr = normalize_wallet(address)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if before:
+        try:
+            datetime.strptime(before, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(400, "before must be YYYY-MM-DD") from exc
+
+    # Only the primary (no-before) snapshot is served/saved from cache.
+    if not refresh and not before:
+        cached = wallet_store.get_daily(addr)
+        # Ignore pre-rewrite cache (no scan_limit / has_more).
+        if cached is not None and cached.get("scan_limit") is not None:
+            wallet_store.touch_viewed(addr)
+            return cached
+    try:
+        data = await fetch_wallet_daily_pnl(
+            addr, days=days, scan_limit=scan_limit, before=before
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Wallet daily PnL failed: {exc}") from exc
+
+    if before:
+        return {**data, "cached": False}
+
+    from app.core.wallet_activity import fetch_wallet_summary
+
+    summary = wallet_store.get_summary(addr)
+    if summary is None:
+        try:
+            summary = await fetch_wallet_summary(addr)
+        except Exception:
+            summary = {"wallet": addr, "name": addr}
+        wallet_store.save_summary(addr, summary, daily=data)
+    else:
+        wallet_store.save_daily(addr, data)
+    return {**data, "cached": False}
 
 
 @router.get("/wallets/{address}/activity")
@@ -326,9 +433,12 @@ async def get_wallet_activity(
     address: str,
     date: str | None = Query(None, description="ET calendar day YYYY-MM-DD"),
     limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0, le=20000),
+    refresh: bool = Query(False),
 ) -> dict[str, Any]:
     """Wallet activity tape (optional date filter). Links to Polygonscan + Orbscan."""
-    from app.core.wallet_activity import fetch_wallet_activity
+    from app.core.wallet_activity import fetch_wallet_activity, normalize_wallet
+    from app.core import wallet_store
 
     if date:
         try:
@@ -336,11 +446,23 @@ async def get_wallet_activity(
         except ValueError as exc:
             raise HTTPException(400, "date must be YYYY-MM-DD") from exc
     try:
-        return await fetch_wallet_activity(address, date=date, limit=limit)
+        addr = normalize_wallet(address)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if date and not refresh and offset == 0:
+        cached = wallet_store.get_day_activity(addr, date)
+        if cached is not None:
+            wallet_store.touch_viewed(addr)
+            return cached
+    try:
+        data = await fetch_wallet_activity(addr, date=date, limit=limit, offset=offset)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Wallet activity failed: {exc}") from exc
+    if date and offset == 0:
+        wallet_store.save_day(addr, date, activity=data)
+    return {**data, "cached": False}
 
 
 @router.get("/wallets/{address}/markets")
@@ -348,9 +470,12 @@ async def get_wallet_markets(
     address: str,
     date: str | None = Query(None, description="ET calendar day YYYY-MM-DD"),
     limit: int = Query(100, ge=1, le=500),
+    activity_limit: int = Query(500, ge=50, le=1000),
+    refresh: bool = Query(False),
 ) -> dict[str, Any]:
-    """Per-market PnL (closed positions for date, or closed+open overall)."""
-    from app.core.wallet_activity import fetch_wallet_markets
+    """Per-market PnL (closed positions for date, merged with same-day activity)."""
+    from app.core.wallet_activity import fetch_wallet_markets, normalize_wallet
+    from app.core import wallet_store
 
     if date:
         try:
@@ -358,11 +483,34 @@ async def get_wallet_markets(
         except ValueError as exc:
             raise HTTPException(400, "date must be YYYY-MM-DD") from exc
     try:
-        return await fetch_wallet_markets(address, date=date, limit=limit)
+        addr = normalize_wallet(address)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if date and not refresh:
+        cached = wallet_store.get_day_markets(addr, date)
+        if cached is not None:
+            wallet_store.touch_viewed(addr)
+            return cached
+    try:
+        # Reuse same-day activity cache when present so markets rebuild doesn't
+        # re-hit Polymarket activity (the slow path that made cached switches lag).
+        activity_cached = None
+        if date and not refresh:
+            activity_cached = wallet_store.get_day_activity(addr, date)
+        data = await fetch_wallet_markets(
+            addr,
+            date=date,
+            limit=limit,
+            activity_limit=activity_limit,
+            activity_payload=activity_cached,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Wallet markets failed: {exc}") from exc
+    if date:
+        wallet_store.save_day(addr, date, markets=data)
+    return {**data, "cached": False}
 
 
 @router.get("/markets/{market_id}/neighbors")

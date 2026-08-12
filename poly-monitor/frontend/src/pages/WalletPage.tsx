@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Area,
@@ -14,6 +14,8 @@ import {
   api,
   formatCents,
   formatUsd,
+  type MarketDetail,
+  type SavedWalletRow,
   type WalletDailyRow,
   type WalletMarketActivity,
   type WalletMarketPnl,
@@ -21,6 +23,11 @@ import {
   type WalletPnlResponse,
   type WalletSummary,
 } from '../api'
+import PriceChart, {
+  type BtcSeriesVisibility,
+  type TimeDomain,
+  type TraderMark,
+} from '../components/PriceChart'
 
 const INTERVALS: { id: WalletPnlInterval; label: string; subtitle: string }[] = [
   { id: '1d', label: '1D', subtitle: 'Past Day' },
@@ -32,24 +39,33 @@ const INTERVALS: { id: WalletPnlInterval; label: string; subtitle: string }[] = 
 ]
 
 const ADDR_RE = /^0x[a-fA-F0-9]{40}$/
+const BTC_SLUG_RE = /^btc-updown-5m-(\d+)$/i
+const DEFAULT_BTC_SERIES: BtcSeriesVisibility = { twap: true, chainlink: true, binance: true }
 
-function todayEt(): string {
-  try {
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/New_York',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(new Date())
-  } catch {
-    return new Date().toISOString().slice(0, 10)
-  }
+function slugToWindowStartMs(slug?: string | null): number | null {
+  if (!slug) return null
+  const m = BTC_SLUG_RE.exec(slug.trim())
+  if (!m) return null
+  const n = Number(m[1])
+  if (!Number.isFinite(n) || n <= 0) return null
+  return n > 1e12 ? n : n * 1000
 }
 
 function shorten(addr: string): string {
   const s = addr.trim()
   if (s.length <= 12) return s
   return `${s.slice(0, 6)}…${s.slice(-4)}`
+}
+
+function displayWalletName(name?: string | null, wallet?: string | null): string {
+  const n = (name || '').trim()
+  const w = (wallet || '').trim()
+  if (!n) return w ? shorten(w) : '—'
+  // Backend sometimes falls back to the full address as the "name".
+  if (ADDR_RE.test(n) || (w && n.toLowerCase() === w.toLowerCase())) {
+    return shorten(n)
+  }
+  return n
 }
 
 function fmtSignedUsd(n: number | null | undefined): string {
@@ -79,12 +95,105 @@ function formatCompactUsd(n: number): string {
   return formatUsd(n)
 }
 
-function fmtChartTick(ms: number, interval: WalletPnlInterval): string {
-  const d = new Date(ms)
-  if (interval === '1d') {
-    return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+/** Buy spend, redeem proceeds, and net from a market's activity tape. */
+function computeWasteEarn(rows: {
+  type?: string
+  side?: string | null
+  shares?: number
+  usd?: number
+}[]) {
+  let buyUsd = 0
+  let buyShares = 0
+  let sellUsd = 0
+  let sellShares = 0
+  let redeemUsd = 0
+  let redeemShares = 0
+  for (const row of rows) {
+    const typ = (row.type || '').toUpperCase()
+    const side = (row.side || '').toUpperCase()
+    const shares = Number(row.shares) || 0
+    const usd = Number(row.usd) || 0
+    if (typ === 'REDEEM') {
+      redeemShares += shares
+      redeemUsd += usd > 0 ? usd : shares // redeem pays ~$1/share
+      continue
+    }
+    // SPLIT: USDC → equal Up + Down shares. MERGE: equal Up + Down → USDC.
+    if (typ === 'SPLIT') {
+      buyShares += shares * 2
+      buyUsd += usd > 0 ? usd : shares
+      continue
+    }
+    if (typ === 'MERGE') {
+      sellShares += shares * 2
+      sellUsd += usd > 0 ? usd : shares
+      continue
+    }
+    if (side === 'SELL' || typ === 'SELL') {
+      sellShares += shares
+      sellUsd += usd
+      continue
+    }
+    if (side === 'BUY' || typ === 'TRADE' || typ === 'BUY' || !side) {
+      buyShares += shares
+      buyUsd += usd
+    }
   }
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  // Waste = capital spent buying Up/Down tokens (incl. SPLIT).
+  // Earned = money returned via sells + redeems (incl. MERGE).
+  const wastedShares = buyShares
+  const wastedMoney = buyUsd
+  const earnedMoney = sellUsd + redeemUsd
+  const profitMoney = earnedMoney - buyUsd
+  return {
+    buyUsd,
+    buyShares,
+    sellUsd,
+    sellShares,
+    redeemUsd,
+    redeemShares,
+    wastedShares,
+    wastedMoney,
+    earnedMoney,
+    profitMoney,
+  }
+}
+
+function fmtChartTick(ms: number, interval: WalletPnlInterval): string {
+  try {
+    if (interval === '1d') {
+      return new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      }).format(new Date(ms))
+    }
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      month: 'short',
+      day: 'numeric',
+    }).format(new Date(ms))
+  } catch {
+    return ''
+  }
+}
+
+function fmtChartTipTime(ms: number): string {
+  try {
+    return `${new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      month: 'short',
+      day: '2-digit',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(new Date(ms))} ET`
+  } catch {
+    return ''
+  }
 }
 
 /** "Bitcoin Up or Down - August 12, 12:05PM-12:10PM ET" → "12:05PM–12:10PM" */
@@ -124,50 +233,144 @@ export default function WalletPage() {
   const navigate = useNavigate()
   const [query, setQuery] = useState(walletParam || '')
   const [wallet, setWallet] = useState<string | null>(null)
-  const [date, setDate] = useState(todayEt())
+  const [date, setDate] = useState<string>('')
   const [interval, setInterval] = useState<WalletPnlInterval>('1d')
+  const loadGen = useRef(0)
 
   const [summary, setSummary] = useState<WalletSummary | null>(null)
   const [pnl, setPnl] = useState<WalletPnlResponse | null>(null)
   const [daily, setDaily] = useState<WalletDailyRow[]>([])
+  const [dailyHasMore, setDailyHasMore] = useState(false)
+  const [dailyScanLimit, setDailyScanLimit] = useState(3000)
   const [activityMarkets, setActivityMarkets] = useState<WalletMarketActivity[]>([])
+  const [activityNextOffset, setActivityNextOffset] = useState(0)
+  const [activityHasMore, setActivityHasMore] = useState(false)
+  const [activityLimit, setActivityLimit] = useState(500)
   const [marketPnls, setMarketPnls] = useState<WalletMarketPnl[]>([])
   const [marketsTotalPnl, setMarketsTotalPnl] = useState<number | null>(null)
+  const [marketsHasMore, setMarketsHasMore] = useState(false)
+  const [marketsLimit, setMarketsLimit] = useState(200)
   const [expandedMarket, setExpandedMarket] = useState<string | null>(null)
+  const [savedWallets, setSavedWallets] = useState<SavedWalletRow[]>([])
+  const [fromCache, setFromCache] = useState(false)
 
   const [loading, setLoading] = useState(false)
   const [pnlLoading, setPnlLoading] = useState(false)
   const [activityLoading, setActivityLoading] = useState(false)
+  const [dailyMoreLoading, setDailyMoreLoading] = useState(false)
+  const [marketsMoreLoading, setMarketsMoreLoading] = useState(false)
+  const [activityMoreLoading, setActivityMoreLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const loadWalletData = async (raw: string) => {
+  const [marketDetail, setMarketDetail] = useState<MarketDetail | null>(null)
+  const [chartLoading, setChartLoading] = useState(false)
+  const [chartError, setChartError] = useState<string | null>(null)
+  const [btcSeriesVisible, setBtcSeriesVisible] =
+    useState<BtcSeriesVisibility>(DEFAULT_BTC_SERIES)
+  const [sharedXDomain, setSharedXDomain] = useState<TimeDomain | null>(null)
+  const [sharedHoverTime, setSharedHoverTime] = useState<number | null>(null)
+  const [activityHighlightTs, setActivityHighlightTs] = useState<number | null>(null)
+  const [copiedAddr, setCopiedAddr] = useState(false)
+  const [commentDraft, setCommentDraft] = useState('')
+  const [commentSaving, setCommentSaving] = useState(false)
+  const [commentSavedAt, setCommentSavedAt] = useState<number | null>(null)
+  const commentTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const commentWalletRef = useRef<string | null>(null)
+
+  const refreshSavedList = async () => {
+    try {
+      const res = await api.savedWallets()
+      setSavedWallets(res.wallets || [])
+    } catch {
+      /* ignore list errors */
+    }
+  }
+
+  useEffect(() => {
+    void refreshSavedList()
+  }, [])
+
+  const loadWalletData = async (raw: string, opts?: { refresh?: boolean }) => {
     const addr = raw.trim()
     if (!ADDR_RE.test(addr)) {
       setError('Enter a valid wallet address (0x + 40 hex chars)')
       return
     }
     const normalized = addr.toLowerCase()
+    const refresh = Boolean(opts?.refresh)
+    const gen = ++loadGen.current
+
+    // Clear day-scoped state first so we never live-fetch the previous wallet's date
+    // against this address (that cache-miss path is what made "cached" switches slow).
     setLoading(true)
     setError(null)
     setWallet(normalized)
     setQuery(normalized)
+    setDate('')
+    setDaily([])
+    setDailyHasMore(false)
+    setActivityMarkets([])
+    setMarketPnls([])
+    setMarketsTotalPnl(null)
+    setExpandedMarket(null)
+    setMarketDetail(null)
+    setChartError(null)
+    setActivityHighlightTs(null)
+    setPnl(null)
+    setDailyScanLimit(3000)
+    setActivityLimit(500)
+    setMarketsLimit(200)
+    setCommentSavedAt(null)
+    commentWalletRef.current = normalized
+
+    // Instant profile paint from the saved-wallet list while cache/API loads.
+    const savedHit = savedWallets.find((w) => w.wallet === normalized)
+    if (savedHit && !refresh) {
+      setCommentDraft(savedHit.comment || '')
+      setSummary({
+        wallet: normalized,
+        name: savedHit.name || shorten(normalized),
+        profile_image: savedHit.profile_image ?? null,
+        positions_value: Number(savedHit.positions_value ?? 0),
+        total_pnl: savedHit.total_pnl ?? null,
+        biggest_win: null,
+        open_positions: 0,
+        closed_sample: 0,
+        polygonscan_url: `https://polygonscan.com/address/${normalized}`,
+        orbscan_url: `https://orbscan.com/address/${normalized}`,
+        polymarket_url: `https://polymarket.com/profile/${normalized}`,
+        comment: savedHit.comment || '',
+      })
+      setFromCache(true)
+    } else {
+      setCommentDraft('')
+    }
+
     try {
       const [sum, dailyRes] = await Promise.all([
-        api.walletSummary(normalized),
-        api.walletDaily(normalized, 120),
+        api.walletSummary(normalized, { refresh }),
+        api.walletDaily(normalized, 120, { refresh, scanLimit: 3000 }),
       ])
+      if (gen !== loadGen.current) return
       setSummary(sum)
+      setCommentDraft(sum.comment || '')
+      setFromCache(Boolean(sum.cached || dailyRes.cached))
       const days = dailyRes.daily || []
       setDaily(days)
+      setDailyHasMore(Boolean(dailyRes.has_more))
+      if (dailyRes.scan_limit) setDailyScanLimit(dailyRes.scan_limit)
       if (days.length) {
         setDate(days[0].date)
       }
+      void refreshSavedList()
     } catch (e) {
+      if (gen !== loadGen.current) return
       setSummary(null)
       setDaily([])
+      setDailyHasMore(false)
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setLoading(false)
+      if (gen === loadGen.current) setLoading(false)
     }
   }
 
@@ -185,17 +388,299 @@ export default function WalletPage() {
     navigate(`/wallet/${normalized}`)
   }
 
+  const removeSaved = async (addr: string, e: MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    try {
+      await api.deleteSavedWallet(addr)
+      setSavedWallets((prev) => prev.filter((w) => w.wallet !== addr.toLowerCase()))
+      if (wallet === addr.toLowerCase()) {
+        navigate('/wallet')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const persistComment = async (addr: string, text: string) => {
+    setCommentSaving(true)
+    try {
+      const res = await api.saveWalletComment(addr, text)
+      if (commentWalletRef.current !== addr) return
+      const saved = res.comment || ''
+      setCommentDraft(saved)
+      setCommentSavedAt(Date.now())
+      setSummary((prev) => (prev && prev.wallet === addr ? { ...prev, comment: saved } : prev))
+      setSavedWallets((prev) => {
+        const hit = prev.find((w) => w.wallet === addr)
+        if (hit) {
+          return prev.map((w) => (w.wallet === addr ? { ...w, comment: saved } : w))
+        }
+        return prev
+      })
+      void refreshSavedList()
+    } catch (err) {
+      if (commentWalletRef.current === addr) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
+    } finally {
+      if (commentWalletRef.current === addr) setCommentSaving(false)
+    }
+  }
+
+  const onCommentChange = (value: string) => {
+    setCommentDraft(value)
+    setCommentSavedAt(null)
+    const addr = commentWalletRef.current || wallet
+    if (!addr) return
+    if (commentTimer.current) clearTimeout(commentTimer.current)
+    commentTimer.current = setTimeout(() => {
+      void persistComment(addr, value)
+    }, 500)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (commentTimer.current) clearTimeout(commentTimer.current)
+    }
+  }, [])
+
+  const hardRefresh = async () => {
+    if (!wallet) {
+      goToWallet(query)
+      return
+    }
+    const addr = wallet
+    const scan = 3000
+    const actLim = 500
+    const mktLim = 200
+    setDailyScanLimit(scan)
+    setActivityLimit(actLim)
+    setMarketsLimit(mktLim)
+    setLoading(true)
+    setPnlLoading(true)
+    setActivityLoading(true)
+    setError(null)
+    try {
+      const [sum, dailyRes, pnlRes, act, mkts] = await Promise.all([
+        api.walletSummary(addr, { refresh: true }),
+        api.walletDaily(addr, 120, { refresh: true, scanLimit: scan }),
+        api.walletPnl(addr, interval, { refresh: true }),
+        api.walletActivity(addr, { date, limit: actLim, refresh: true }),
+        api.walletMarkets(addr, {
+          date,
+          limit: mktLim,
+          activityLimit: actLim,
+          refresh: true,
+        }),
+      ])
+      setSummary(sum)
+      setFromCache(false)
+      const days = dailyRes.daily || []
+      setDaily(days)
+      setDailyHasMore(Boolean(dailyRes.has_more))
+      setPnl(pnlRes)
+      setActivityMarkets(act.markets || [])
+      setActivityNextOffset(act.next_offset ?? act.count ?? 0)
+      setActivityHasMore(Boolean(act.has_more))
+      setMarketPnls(mkts.markets || [])
+      setMarketsTotalPnl(mkts.total_pnl ?? null)
+      setMarketsHasMore(Boolean(mkts.has_more))
+      const firstKey =
+        (mkts.markets?.[0]?.condition_id ||
+          mkts.markets?.[0]?.slug ||
+          mkts.markets?.[0]?.title ||
+          act.markets?.[0]?.condition_id ||
+          act.markets?.[0]?.slug ||
+          act.markets?.[0]?.title) ??
+        null
+      setExpandedMarket(firstKey)
+      void refreshSavedList()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+      setPnlLoading(false)
+      setActivityLoading(false)
+    }
+  }
+
+  const fetchMoreDaily = async () => {
+    if (!wallet || dailyMoreLoading) return
+    setDailyMoreLoading(true)
+    setError(null)
+    try {
+      const oldest = daily.length ? daily[daily.length - 1].date : undefined
+      const nextScan = Math.min(dailyScanLimit + 3000, 50000)
+      // Deeper scan of the full history (rewrites list), then also pull a page before oldest.
+      const [deep, older] = await Promise.all([
+        api.walletDaily(wallet, 180, { refresh: true, scanLimit: nextScan }),
+        oldest
+          ? api.walletDaily(wallet, 90, { scanLimit: nextScan, before: oldest })
+          : Promise.resolve(null),
+      ])
+      setDailyScanLimit(nextScan)
+      const byDate = new Map<string, WalletDailyRow>()
+      for (const row of [...(deep.daily || []), ...(older?.daily || []), ...daily]) {
+        if (!byDate.has(row.date)) byDate.set(row.date, row)
+      }
+      const merged = Array.from(byDate.values()).sort((a, b) => (a.date < b.date ? 1 : -1))
+      setDaily(merged)
+      setDailyHasMore(Boolean(deep.has_more || older?.has_more))
+      setFromCache(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDailyMoreLoading(false)
+    }
+  }
+
+  const fetchMoreMarkets = async () => {
+    if (!wallet || !date || marketsMoreLoading) return
+    setMarketsMoreLoading(true)
+    setError(null)
+    try {
+      const nextLim = Math.min(marketsLimit + 150, 500)
+      const nextAct = Math.min(activityLimit + 250, 1000)
+      const mkts = await api.walletMarkets(wallet, {
+        date,
+        limit: nextLim,
+        activityLimit: nextAct,
+        refresh: true,
+      })
+      setMarketsLimit(nextLim)
+      setActivityLimit(nextAct)
+      setMarketPnls(mkts.markets || [])
+      setMarketsTotalPnl(mkts.total_pnl ?? null)
+      setMarketsHasMore(Boolean(mkts.has_more))
+      setFromCache(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setMarketsMoreLoading(false)
+    }
+  }
+
+  const fetchMoreActivity = async () => {
+    if (!wallet || !date || activityMoreLoading) return
+    setActivityMoreLoading(true)
+    setError(null)
+    try {
+      const selectedKey = expandedMarket
+      const beforeCount =
+        selectedKey == null
+          ? 0
+          : (activityMarkets.find((m) => (m.condition_id || m.slug || m.title || 'unknown') === selectedKey)
+              ?.activity.length ?? 0)
+
+      // Prefer deepening from offset 0 with a higher BTC limit so the day cache is
+      // rewritten completely (fixes stale partial market tapes). Then keep paging
+      // with the real API offset until the selected market gains rows or we exhaust.
+      const deepLimit = Math.min(Math.max(activityLimit + 500, 1000), 1000)
+      let page = await api.walletActivity(wallet, {
+        date,
+        limit: deepLimit,
+        offset: 0,
+        refresh: true,
+      })
+      let markets = page.markets || []
+      let nextOffset = page.next_offset ?? page.count ?? 0
+      let hasMore = Boolean(page.has_more)
+
+      const countForSelected = (list: typeof markets) => {
+        if (!selectedKey) return 0
+        const hit = list.find(
+          (m) => (m.condition_id || m.slug || m.title || 'unknown') === selectedKey,
+        )
+        return hit?.activity.length ?? 0
+      }
+
+      let guard = 0
+      while (
+        selectedKey &&
+        countForSelected(markets) <= beforeCount &&
+        hasMore &&
+        guard < 6
+      ) {
+        guard += 1
+        const more = await api.walletActivity(wallet, {
+          date,
+          limit: 400,
+          offset: nextOffset,
+          refresh: true,
+        })
+        const incoming = more.markets || []
+        const byKey = new Map<string, WalletMarketActivity>()
+        for (const m of markets) {
+          byKey.set(m.condition_id || m.slug || m.title || 'unknown', m)
+        }
+        for (const m of incoming) {
+          const key = m.condition_id || m.slug || m.title || 'unknown'
+          const cur = byKey.get(key)
+          if (!cur) {
+            byKey.set(key, m)
+            continue
+          }
+          const seen = new Set(
+            (cur.activity || []).map((a) => `${a.timestamp}|${a.transaction_hash || ''}|${a.type}`),
+          )
+          const extra = (m.activity || []).filter(
+            (a) => !seen.has(`${a.timestamp}|${a.transaction_hash || ''}|${a.type}`),
+          )
+          byKey.set(key, {
+            ...cur,
+            n_events: cur.n_events + extra.length,
+            volume_usd:
+              Number(cur.volume_usd || 0) + extra.reduce((s, a) => s + (a.usd || 0), 0),
+            activity: [...(cur.activity || []), ...extra].sort(
+              (a, b) => b.timestamp - a.timestamp,
+            ),
+            pnl: cur.pnl ?? m.pnl,
+          })
+        }
+        markets = Array.from(byKey.values())
+        nextOffset = more.next_offset ?? nextOffset + (more.count || 0)
+        hasMore = Boolean(more.has_more)
+      }
+
+      setActivityLimit(deepLimit)
+      setActivityMarkets(markets)
+      setActivityNextOffset(nextOffset)
+      setActivityHasMore(hasMore)
+      setFromCache(false)
+
+      // Keep header counts in sync for the open market.
+      if (selectedKey) {
+        const hit = markets.find(
+          (m) => (m.condition_id || m.slug || m.title || 'unknown') === selectedKey,
+        )
+        if (hit && hit.n_events !== hit.activity.length) {
+          hit.n_events = hit.activity.length
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setActivityMoreLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (!walletParam) {
       setWallet(null)
       setSummary(null)
       setDaily([])
+      setDailyHasMore(false)
       setActivityMarkets([])
       setMarketPnls([])
       setMarketsTotalPnl(null)
+      setMarketsHasMore(false)
+      setActivityHasMore(false)
       setPnl(null)
       setExpandedMarket(null)
+      setFromCache(false)
       setError(null)
+      setQuery('')
       return
     }
     if (!ADDR_RE.test(walletParam)) {
@@ -217,7 +702,10 @@ export default function WalletPage() {
     api
       .walletPnl(wallet, interval)
       .then((res) => {
-        if (!cancelled) setPnl(res)
+        if (!cancelled) {
+          setPnl(res)
+          if (res.cached) setFromCache(true)
+        }
       })
       .catch((e) => {
         if (!cancelled) {
@@ -238,20 +726,32 @@ export default function WalletPage() {
       setActivityMarkets([])
       setMarketPnls([])
       setMarketsTotalPnl(null)
+      setMarketsHasMore(false)
+      setActivityHasMore(false)
+      setActivityNextOffset(0)
       return
     }
     let cancelled = false
     setActivityLoading(true)
     setExpandedMarket(null)
+    setActivityHighlightTs(null)
     Promise.all([
-      api.walletActivity(wallet, { date, limit: 500 }),
-      api.walletMarkets(wallet, { date, limit: 200 }),
+      api.walletActivity(wallet, { date, limit: activityLimit }),
+      api.walletMarkets(wallet, {
+        date,
+        limit: marketsLimit,
+        activityLimit,
+      }),
     ])
       .then(([act, mkts]) => {
         if (cancelled) return
         setActivityMarkets(act.markets || [])
+        setActivityNextOffset(act.next_offset ?? act.count ?? 0)
+        setActivityHasMore(Boolean(act.has_more))
         setMarketPnls(mkts.markets || [])
         setMarketsTotalPnl(mkts.total_pnl ?? null)
+        setMarketsHasMore(Boolean(mkts.has_more))
+        if (act.cached || mkts.cached) setFromCache(true)
         const firstKey =
           (mkts.markets?.[0]?.condition_id ||
             mkts.markets?.[0]?.slug ||
@@ -276,6 +776,7 @@ export default function WalletPage() {
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- limits bump via Fetch more handlers
   }, [wallet, date])
 
   const chartData = useMemo(() => {
@@ -309,89 +810,336 @@ export default function WalletPage() {
     )
   }, [marketPnls, expandedMarket])
 
-  const boughtShares = useMemo(() => {
+  const sideFlow = useMemo(() => {
     const rows = selectedMarketActivity?.activity || []
-    let up = 0
-    let down = 0
-    for (const row of rows) {
-      const side = (row.side || '').toUpperCase()
-      if (side === 'SELL') continue
-      // Treat missing side as buy for TRADE activity rows
-      if (side && side !== 'BUY') continue
-      const outcome = (row.outcome || '').toLowerCase()
-      const shares = Number(row.shares) || 0
-      if (outcome === 'up') up += shares
-      else if (outcome === 'down') down += shares
+    const empty = { shares: 0, usd: 0 }
+    const out = {
+      buyUp: { ...empty },
+      buyDown: { ...empty },
+      sellUp: { ...empty },
+      sellDown: { ...empty },
     }
-    return { up, down }
+    for (const row of rows) {
+      const typ = (row.type || '').toUpperCase()
+      if (typ === 'REDEEM') continue
+      const shares = Number(row.shares) || 0
+      const usd = Number(row.usd) || 0
+      // SPLIT mints equal Up + Down; MERGE burns equal Up + Down for USDC.
+      if (typ === 'SPLIT') {
+        const halfUsd = (usd > 0 ? usd : shares) / 2
+        out.buyUp.shares += shares
+        out.buyUp.usd += halfUsd
+        out.buyDown.shares += shares
+        out.buyDown.usd += halfUsd
+        continue
+      }
+      if (typ === 'MERGE') {
+        const halfUsd = (usd > 0 ? usd : shares) / 2
+        out.sellUp.shares += shares
+        out.sellUp.usd += halfUsd
+        out.sellDown.shares += shares
+        out.sellDown.usd += halfUsd
+        continue
+      }
+      const side = (row.side || '').toUpperCase()
+      const outcome = (row.outcome || '').toLowerCase()
+      if (outcome !== 'up' && outcome !== 'down') continue
+      const isSell = side === 'SELL' || typ === 'SELL'
+      const isBuy = !isSell && (side === 'BUY' || typ === 'TRADE' || typ === 'BUY' || !side)
+      if (!isBuy && !isSell) continue
+      const bucket = isSell
+        ? outcome === 'up'
+          ? out.sellUp
+          : out.sellDown
+        : outcome === 'up'
+          ? out.buyUp
+          : out.buyDown
+      bucket.shares += shares
+      bucket.usd += usd
+    }
+    return out
   }, [selectedMarketActivity])
+
+  const marketMoney = useMemo(
+    () => computeWasteEarn(selectedMarketActivity?.activity || []),
+    [selectedMarketActivity],
+  )
+
+  const showMarketMoneyBar =
+    !!selectedMarketActivity &&
+    (Math.abs(marketMoney.wastedMoney) > 0.005 ||
+      Math.abs(marketMoney.earnedMoney) > 0.005 ||
+      Math.abs(marketMoney.profitMoney) > 0.005)
+
+  const showSideFlowBar =
+    !!selectedMarketActivity &&
+    (sideFlow.buyUp.shares > 0 ||
+      sideFlow.buyDown.shares > 0 ||
+      sideFlow.sellUp.shares > 0 ||
+      sideFlow.sellDown.shares > 0)
+
+  const selectedSlug =
+    selectedMarketActivity?.slug || selectedMarketMeta?.slug || null
+
+  const traderMarks = useMemo((): TraderMark[] => {
+    const rows = selectedMarketActivity?.activity || []
+    return rows
+      .filter((row) => {
+        const typ = (row.type || '').toUpperCase()
+        return !typ || typ === 'TRADE' || typ === 'BUY' || typ === 'SELL'
+      })
+      .map((row) => {
+        const sideRaw = (row.side || '').toUpperCase()
+        const side: 'BUY' | 'SELL' = sideRaw === 'SELL' ? 'SELL' : 'BUY'
+        const outcomeRaw = (row.outcome || '').toLowerCase()
+        const outcome: 'Up' | 'Down' = outcomeRaw === 'down' ? 'Down' : 'Up'
+        const px = Number(row.price)
+        // Activity API is usually 0–1; tolerate already-cents values.
+        const pricePct = px > 1.5 ? px : px * 100
+        return {
+          t: Number(row.timestamp),
+          pricePct,
+          side,
+          outcome,
+        }
+      })
+      .filter((m) => Number.isFinite(m.t) && Number.isFinite(m.pricePct))
+  }, [selectedMarketActivity])
+
+  useEffect(() => {
+    if (!selectedSlug) {
+      setMarketDetail(null)
+      setChartError(null)
+      setSharedXDomain(null)
+      setSharedHoverTime(null)
+      return
+    }
+    let cancelled = false
+    setChartLoading(true)
+    setChartError(null)
+    setSharedHoverTime(null)
+
+    ;(async () => {
+      try {
+        const startMs = slugToWindowStartMs(selectedSlug)
+        let marketId: string | null = null
+        if (startMs != null) {
+          try {
+            const hit = await api.marketAt('twap', { t: startMs + 15_000 })
+            marketId = hit.market_id
+          } catch {
+            /* fall through */
+          }
+        }
+        if (!marketId) {
+          if (!cancelled) {
+            setMarketDetail(null)
+            setChartError('No local price history for this market window')
+          }
+          return
+        }
+        const detail = await api.market(marketId, 'twap')
+        if (cancelled) return
+        setMarketDetail(detail)
+        if (detail.start_time != null && detail.end_time != null) {
+          setSharedXDomain([detail.start_time, detail.end_time])
+        } else if (detail.series?.length) {
+          setSharedXDomain([
+            detail.series[0].t,
+            detail.series[detail.series.length - 1].t,
+          ])
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setMarketDetail(null)
+          setChartError(e instanceof Error ? e.message : String(e))
+        }
+      } finally {
+        if (!cancelled) setChartLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedSlug])
+
+  const priceChartData = useMemo(
+    () =>
+      (marketDetail?.series || []).map((p) => ({
+        t: p.t,
+        btc: p.btc,
+        twap: p.twap,
+        chainlink: p.chainlink,
+        up: p.up,
+        down: p.down,
+      })),
+    [marketDetail],
+  )
+
+  const xFullDomain = useMemo((): TimeDomain => {
+    if (marketDetail?.start_time != null && marketDetail?.end_time != null) {
+      return [marketDetail.start_time, marketDetail.end_time]
+    }
+    if (priceChartData.length >= 2) {
+      return [priceChartData[0].t, priceChartData[priceChartData.length - 1].t]
+    }
+    if (traderMarks.length >= 2) {
+      const times = traderMarks.map((m) => m.t)
+      return [Math.min(...times) - 5_000, Math.max(...times) + 5_000]
+    }
+    const now = Date.now()
+    return [now - 300_000, now]
+  }, [marketDetail, priceChartData, traderMarks])
+
+  const chartXDomain = sharedXDomain ?? xFullDomain
 
   const intervalMeta = INTERVALS.find((x) => x.id === interval) || INTERVALS[0]
   const pnlValue = pnl?.pnl ?? null
   const pnlPositive = (pnlValue ?? 0) >= 0
 
+  const copyWalletAddress = async () => {
+    const addr = summary?.wallet || wallet
+    if (!addr) return
+    try {
+      await navigator.clipboard.writeText(addr)
+      setCopiedAddr(true)
+      window.setTimeout(() => setCopiedAddr(false), 1400)
+    } catch {
+      setError('Could not copy address')
+    }
+  }
+
   return (
     <div className="workspace wallet-workspace">
-      <aside className="workspace-rail workspace-rail-left">
-        <div className="control-sidebar control-sidebar-embedded">
-          <div className="sidebar-section">
-            <div className="sidebar-heading mode-heading">
-              <span>Wallet</span>
-              <span className="mode-current-pill">Activity</span>
-            </div>
-            <p className="muted" style={{ margin: '0 0 0.55rem', fontSize: '0.78rem', lineHeight: 1.4 }}>
-              BTC Up/Down 5m only. Activity links open Polygonscan and Orbscan.
-            </p>
-
-            <label className="sidebar-label">Wallet address</label>
-            <input
-              type="text"
-              spellCheck={false}
-              placeholder="0x…"
-              value={query}
-              disabled={loading}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') goToWallet(query)
-              }}
-            />
-            <button
-              type="button"
-              className="sidebar-btn primary"
-              style={{ width: '100%', marginTop: '0.55rem' }}
-              disabled={loading}
-              onClick={() => goToWallet(query)}
-            >
-              {loading ? 'Loading…' : 'Search'}
-            </button>
-            <p className="muted" style={{ margin: '0.55rem 0 0', fontSize: '0.72rem', lineHeight: 1.35 }}>
-              Pick a day in <strong>PnL by day</strong> to load that date’s markets.
-            </p>
-          </div>
-
-          {summary && (
-            <div className="sidebar-section sidebar-section-last">
-              <div className="sidebar-heading">Links</div>
-              <a className="wallet-ext-link" href={summary.polymarket_url} target="_blank" rel="noreferrer">
-                Polymarket profile
-              </a>
-              <a className="wallet-ext-link" href={summary.orbscan_url} target="_blank" rel="noreferrer">
-                Orbscan profile
-              </a>
-              <a className="wallet-ext-link" href={summary.polygonscan_url} target="_blank" rel="noreferrer">
-                Polygonscan address
-              </a>
-            </div>
+      <aside className="workspace-rail workspace-rail-left wallet-saved-rail">
+        <div className="wallet-saved-panel">
+          <div className="wallet-saved-heading">Saved wallets</div>
+          <p className="wallet-saved-hint muted">
+            Watched wallets are stored locally so reopen skips live fetch.
+          </p>
+          {savedWallets.length === 0 ? (
+            <p className="muted wallet-saved-empty">No saved wallets yet.</p>
+          ) : (
+            <ul className="wallet-saved-list">
+              {savedWallets.map((w) => {
+                const active = wallet === w.wallet
+                return (
+                  <li key={w.wallet}>
+                    <button
+                      type="button"
+                      className={`wallet-saved-item${active ? ' active' : ''}`}
+                      onClick={() => goToWallet(w.wallet)}
+                    >
+                      <span className="wallet-saved-avatar" aria-hidden>
+                        {w.profile_image ? (
+                          <img src={w.profile_image} alt="" />
+                        ) : (
+                          (w.name || '?').slice(0, 1).toUpperCase()
+                        )}
+                      </span>
+                      <span className="wallet-saved-meta">
+                        <span className="wallet-saved-name">{w.name || shorten(w.wallet)}</span>
+                        <span className="wallet-saved-addr">{shorten(w.wallet)}</span>
+                        {w.comment?.trim() && (
+                          <span className="wallet-saved-comment" title={w.comment}>
+                            {w.comment.trim()}
+                          </span>
+                        )}
+                        {w.total_pnl != null && (
+                          <span className={`wallet-saved-pnl ${(w.total_pnl ?? 0) >= 0 ? 'up' : 'down'}`}>
+                            {fmtSignedUsd(w.total_pnl)}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="wallet-saved-remove"
+                      title="Remove saved wallet"
+                      aria-label={`Remove ${w.name || w.wallet}`}
+                      onClick={(e) => void removeSaved(w.wallet, e)}
+                    >
+                      ×
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
           )}
         </div>
       </aside>
 
       <div className="workspace-main wallet-main">
+        <div className="wallet-search-bar">
+          <label className="wallet-search-field" htmlFor="wallet-search-input">
+            <span className="wallet-search-icon" aria-hidden>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </span>
+            <span className="wallet-search-prefix">0x</span>
+            <input
+              id="wallet-search-input"
+              type="text"
+              spellCheck={false}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              placeholder="Paste wallet address…"
+              value={query.startsWith('0x') || query.startsWith('0X') ? query.slice(2) : query}
+              disabled={loading}
+              onChange={(e) => {
+                const raw = e.target.value.trim()
+                setQuery(raw ? (raw.startsWith('0x') || raw.startsWith('0X') ? raw : `0x${raw}`) : '')
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') goToWallet(query)
+              }}
+            />
+            {query && !loading && (
+              <button
+                type="button"
+                className="wallet-search-clear"
+                aria-label="Clear address"
+                onClick={() => setQuery('')}
+              >
+                ×
+              </button>
+            )}
+          </label>
+          <div className="wallet-search-actions">
+            <button
+              type="button"
+              className="wallet-search-btn primary"
+              disabled={loading || !query.trim()}
+              onClick={() => goToWallet(query)}
+            >
+              {loading ? 'Loading…' : 'Search'}
+            </button>
+            <button
+              type="button"
+              className="wallet-search-btn"
+              disabled={loading || !wallet}
+              title="Force live fetch and update local cache"
+              onClick={() => void hardRefresh()}
+            >
+              Refresh
+            </button>
+            {fromCache && wallet && (
+              <span className="wallet-cache-pill" title="Showing locally saved data">
+                Cached
+              </span>
+            )}
+          </div>
+        </div>
+
         {error && <p className="error">{error}</p>}
 
         {!wallet && !error && (
-          <p className="muted" style={{ marginTop: '1rem' }}>
-            Search a wallet address to load PnL and daily activity.
+          <p className="muted" style={{ marginTop: '0.25rem' }}>
+            Search a wallet to load BTC Up/Down 5m PnL and activity. Results are saved locally for quick reopen.
           </p>
         )}
 
@@ -403,15 +1151,46 @@ export default function WalletPage() {
                   {summary.profile_image ? (
                     <img src={summary.profile_image} alt="" />
                   ) : (
-                    (summary.name || '?').slice(0, 1).toUpperCase()
+                    displayWalletName(summary.name, summary.wallet).slice(0, 1).toUpperCase()
                   )}
                 </div>
                 <div className="wallet-profile-text">
-                  <div className="wallet-profile-name">{summary.name}</div>
-                  <div className="wallet-profile-addr" title={summary.wallet}>
-                    {shorten(summary.wallet)}
+                  <div
+                    className="wallet-profile-name"
+                    title={
+                      ADDR_RE.test((summary.name || '').trim())
+                        ? summary.wallet
+                        : summary.name || summary.wallet
+                    }
+                  >
+                    {displayWalletName(summary.name, summary.wallet)}
+                  </div>
+                  <div className="wallet-profile-addr-row">
+                    <span className="wallet-profile-addr" title={summary.wallet}>
+                      {shorten(summary.wallet)}
+                    </span>
+                    <button
+                      type="button"
+                      className="wallet-copy-btn"
+                      onClick={() => void copyWalletAddress()}
+                      title={copiedAddr ? 'Copied' : 'Copy address'}
+                      aria-label={copiedAddr ? 'Address copied' : 'Copy wallet address'}
+                    >
+                      {copiedAddr ? 'Copied' : 'Copy'}
+                    </button>
                   </div>
                 </div>
+              </div>
+              <div className="wallet-profile-links">
+                <a className="wallet-ext-link" href={summary.polymarket_url} target="_blank" rel="noreferrer">
+                  Polymarket
+                </a>
+                <a className="wallet-ext-link" href={summary.orbscan_url} target="_blank" rel="noreferrer">
+                  Orbscan
+                </a>
+                <a className="wallet-ext-link" href={summary.polygonscan_url} target="_blank" rel="noreferrer">
+                  Polygonscan
+                </a>
               </div>
               <div className="wallet-profile-stats">
                 <div>
@@ -432,6 +1211,32 @@ export default function WalletPage() {
                   </div>
                   <div className="wallet-stat-label">All-time PnL</div>
                 </div>
+              </div>
+              <div className="wallet-comment">
+                <label className="wallet-comment-label" htmlFor="wallet-trader-comment">
+                  Comment
+                  <span className="wallet-comment-status muted">
+                    {commentSaving ? 'Saving…' : commentSavedAt ? 'Saved' : ''}
+                  </span>
+                </label>
+                <textarea
+                  id="wallet-trader-comment"
+                  className="wallet-comment-input"
+                  rows={3}
+                  maxLength={4000}
+                  placeholder="Notes on this trader…"
+                  value={commentDraft}
+                  onChange={(e) => onCommentChange(e.target.value)}
+                  onBlur={() => {
+                    const addr = commentWalletRef.current || wallet
+                    if (!addr) return
+                    if (commentTimer.current) {
+                      clearTimeout(commentTimer.current)
+                      commentTimer.current = null
+                    }
+                    void persistComment(addr, commentDraft)
+                  }}
+                />
               </div>
             </div>
 
@@ -462,7 +1267,9 @@ export default function WalletPage() {
               <div className={`wallet-pnl-value ${pnlPositive ? 'up' : 'down'}`}>
                 {pnlLoading && !pnl ? '…' : fmtSignedUsd(pnlValue)}
               </div>
-              <div className="wallet-pnl-sub">{intervalMeta.subtitle}</div>
+              <div className="wallet-pnl-sub">
+                {intervalMeta.subtitle} · BTC Up/Down 5m
+              </div>
               <div className="wallet-pnl-chart">
                 {chartData.length > 1 ? (
                   <ResponsiveContainer width="100%" height={160}>
@@ -503,7 +1310,7 @@ export default function WalletPage() {
                           borderRadius: 8,
                           fontSize: 12,
                         }}
-                        labelFormatter={(v) => new Date(Number(v)).toLocaleString()}
+                        labelFormatter={(v) => fmtChartTipTime(Number(v))}
                         formatter={(value) => [fmtSignedUsd(Number(value ?? 0)), 'PnL']}
                       />
                       <Area
@@ -530,6 +1337,77 @@ export default function WalletPage() {
                 )}
               </div>
             </div>
+          </section>
+        )}
+
+        {wallet && (expandedMarket || selectedSlug) && (
+          <section className="wallet-chart-panel">
+            <div className="wallet-chart-head">
+              <div>
+                <h2>Price · trade timing</h2>
+                <p className="muted wallet-chart-sub">
+                  {shortMarketLabel(
+                    selectedMarketMeta?.title || selectedMarketActivity?.title,
+                    selectedSlug,
+                  )}
+                  {traderMarks.length > 0
+                    ? ` · ${traderMarks.length} fill${traderMarks.length === 1 ? '' : 's'} marked on Up/Down`
+                    : ''}
+                </p>
+              </div>
+              {marketDetail?.market_id && (
+                <span className="wallet-chart-mid muted" title={marketDetail.market_id}>
+                  {marketDetail.market_id}
+                </span>
+              )}
+            </div>
+            {chartLoading && (
+              <p className="muted" style={{ padding: '0.75rem 0.9rem' }}>
+                Loading price series…
+              </p>
+            )}
+            {!chartLoading && chartError && !marketDetail && (
+              <p className="muted" style={{ padding: '0.75rem 0.9rem' }}>
+                {chartError}
+                {traderMarks.length > 0
+                  ? ' — fill markers still listed in Activity below.'
+                  : ''}
+              </p>
+            )}
+            {!chartLoading && marketDetail && priceChartData.length > 0 && (
+              <div className="wallet-chart-stack">
+                <PriceChart
+                  data={priceChartData}
+                  priceToBeat={marketDetail.btc_open_price}
+                  mode="btc"
+                  title="BTC price"
+                  seriesVisible={btcSeriesVisible}
+                  onSeriesVisibleChange={setBtcSeriesVisible}
+                  xDomain={chartXDomain}
+                  onXDomainChange={setSharedXDomain}
+                  onXDomainReset={() => setSharedXDomain(xFullDomain)}
+                  xFullDomain={xFullDomain}
+                  xDefaultDomain={xFullDomain}
+                  hoverTime={sharedHoverTime}
+                  onHoverTimeChange={setSharedHoverTime}
+                  highlightTime={activityHighlightTs}
+                />
+                <PriceChart
+                  data={priceChartData}
+                  mode="outcomes"
+                  title="Up / Down price"
+                  xDomain={chartXDomain}
+                  onXDomainChange={setSharedXDomain}
+                  onXDomainReset={() => setSharedXDomain(xFullDomain)}
+                  xFullDomain={xFullDomain}
+                  xDefaultDomain={xFullDomain}
+                  hoverTime={sharedHoverTime}
+                  onHoverTimeChange={setSharedHoverTime}
+                  traderMarks={traderMarks}
+                  highlightTime={activityHighlightTs}
+                />
+              </div>
+            )}
           </section>
         )}
 
@@ -560,6 +1438,16 @@ export default function WalletPage() {
                   </button>
                 ))}
               </div>
+              <div className="wallet-panel-foot">
+                <button
+                  type="button"
+                  className="wallet-fetch-more"
+                  disabled={dailyMoreLoading || loading}
+                  onClick={() => void fetchMoreDaily()}
+                >
+                  {dailyMoreLoading ? 'Fetching…' : 'Fetch more'}
+                </button>
+              </div>
             </div>
 
             <div className="wallet-panel">
@@ -576,7 +1464,7 @@ export default function WalletPage() {
               <div className="wallet-daily-list">
                 {!activityLoading && marketPnls.length === 0 && (
                   <p className="muted" style={{ padding: '0.75rem' }}>
-                    No closed-market PnL on this date
+                    No market PnL on this date
                   </p>
                 )}
                 {marketPnls.map((m) => {
@@ -603,20 +1491,48 @@ export default function WalletPage() {
                   )
                 })}
               </div>
+              <div className="wallet-panel-foot">
+                <button
+                  type="button"
+                  className="wallet-fetch-more"
+                  disabled={marketsMoreLoading || activityLoading || !date}
+                  onClick={() => void fetchMoreMarkets()}
+                >
+                  {marketsMoreLoading ? 'Fetching…' : 'Fetch more'}
+                </button>
+              </div>
             </div>
 
             <div className="wallet-panel wallet-activity-panel">
               <div className="wallet-panel-head">
                 <h2>Activity</h2>
-                <span className="muted">
-                  {activityLoading
-                    ? '…'
-                    : selectedMarketActivity
-                      ? `${selectedMarketActivity.n_events} · $${formatCompactUsd(selectedMarketActivity.volume_usd)}`
-                      : expandedMarket
-                        ? 'None'
-                        : '—'}
-                </span>
+                <div className="wallet-activity-head-stats">
+                  {activityLoading ? (
+                    <span className="muted">…</span>
+                  ) : selectedMarketActivity ? (
+                    <>
+                      <span className="muted">
+                        {selectedMarketActivity.n_events} · $
+                        {formatCompactUsd(selectedMarketActivity.volume_usd)}
+                      </span>
+                      {marketMoney.wastedMoney > 0.005 && (
+                        <span
+                          className="wallet-money-pill waste"
+                          title="Selected market: USD spent buying Up/Down tokens"
+                        >
+                          Waste ${formatCompactUsd(marketMoney.wastedMoney)}
+                          {marketMoney.wastedShares > 0.005 && (
+                            <span className="wallet-money-shares">
+                              · {formatCompactUsd(marketMoney.wastedShares)} sh
+                            </span>
+                          )}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="muted">{expandedMarket ? 'None' : '—'}</span>
+                  )}
+                </div>
               </div>
               {(selectedMarketMeta?.title ||
                 selectedMarketMeta?.slug ||
@@ -635,30 +1551,111 @@ export default function WalletPage() {
                       selectedMarketMeta?.slug || selectedMarketActivity?.slug,
                     )}
                   </span>
-                  {(selectedMarketMeta?.pnl != null || selectedMarketActivity?.pnl != null) && (
+                  {showMarketMoneyBar ? (
                     <span
-                      className={`wallet-daily-pnl ${
-                        ((selectedMarketMeta?.pnl ?? selectedMarketActivity?.pnl) ?? 0) >= 0
-                          ? 'up'
-                          : 'down'
-                      }`}
+                      className="wallet-timeline-money"
+                      title="This market: buy spend / sells+redeems / net profit"
                     >
-                      {fmtSignedUsd(selectedMarketMeta?.pnl ?? selectedMarketActivity?.pnl)}
+                      <span className="down">
+                        Waste ${formatCompactUsd(marketMoney.wastedMoney)}
+                        {marketMoney.wastedShares > 0.005 && (
+                          <span className="muted">
+                            {' '}
+                            ({formatCompactUsd(marketMoney.wastedShares)} sh)
+                          </span>
+                        )}
+                      </span>
+                      <span className="up">
+                        Earned ${formatCompactUsd(marketMoney.earnedMoney)}
+                      </span>
+                      <span className={marketMoney.profitMoney >= 0 ? 'up' : 'down'}>
+                        Profit {fmtSignedUsd(marketMoney.profitMoney)}
+                      </span>
                     </span>
+                  ) : (
+                    (selectedMarketMeta?.pnl != null || selectedMarketActivity?.pnl != null) && (
+                      <span
+                        className={`wallet-daily-pnl ${
+                          ((selectedMarketMeta?.pnl ?? selectedMarketActivity?.pnl) ?? 0) >= 0
+                            ? 'up'
+                            : 'down'
+                        }`}
+                      >
+                        {fmtSignedUsd(selectedMarketMeta?.pnl ?? selectedMarketActivity?.pnl)}
+                      </span>
+                    )
                   )}
                 </div>
               )}
-              {selectedMarketActivity && (boughtShares.up > 0 || boughtShares.down > 0) && (
+              {showSideFlowBar && (
                 <div className="wallet-bought-bar">
-                  <span>
-                    Bought <span className="up">Up</span>{' '}
-                    <strong>{formatCompactUsd(boughtShares.up)}</strong>
-                  </span>
-                  <span className="wallet-bought-sep">·</span>
-                  <span>
-                    <span className="down">Down</span>{' '}
-                    <strong>{formatCompactUsd(boughtShares.down)}</strong>
-                  </span>
+                  {(sideFlow.buyUp.shares > 0 || sideFlow.buyDown.shares > 0) && (
+                    <span>
+                      Bought
+                      {sideFlow.buyUp.shares > 0 && (
+                        <>
+                          {' '}
+                          <span className="up">Up</span>{' '}
+                          <strong>
+                            {formatCompactUsd(sideFlow.buyUp.shares)}
+                            <span className="muted">
+                              {' '}
+                              (${formatCompactUsd(sideFlow.buyUp.usd)})
+                            </span>
+                          </strong>
+                        </>
+                      )}
+                      {sideFlow.buyDown.shares > 0 && (
+                        <>
+                          {' '}
+                          <span className="down">Down</span>{' '}
+                          <strong>
+                            {formatCompactUsd(sideFlow.buyDown.shares)}
+                            <span className="muted">
+                              {' '}
+                              (${formatCompactUsd(sideFlow.buyDown.usd)})
+                            </span>
+                          </strong>
+                        </>
+                      )}
+                    </span>
+                  )}
+                  {(sideFlow.sellUp.shares > 0 || sideFlow.sellDown.shares > 0) && (
+                    <>
+                      {(sideFlow.buyUp.shares > 0 || sideFlow.buyDown.shares > 0) && (
+                        <span className="wallet-bought-sep">·</span>
+                      )}
+                      <span>
+                        Sold
+                        {sideFlow.sellUp.shares > 0 && (
+                          <>
+                            {' '}
+                            <span className="up">Up</span>{' '}
+                            <strong>
+                              {formatCompactUsd(sideFlow.sellUp.shares)}
+                              <span className="muted">
+                                {' '}
+                                (${formatCompactUsd(sideFlow.sellUp.usd)})
+                              </span>
+                            </strong>
+                          </>
+                        )}
+                        {sideFlow.sellDown.shares > 0 && (
+                          <>
+                            {' '}
+                            <span className="down">Down</span>{' '}
+                            <strong>
+                              {formatCompactUsd(sideFlow.sellDown.shares)}
+                              <span className="muted">
+                                {' '}
+                                (${formatCompactUsd(sideFlow.sellDown.usd)})
+                              </span>
+                            </strong>
+                          </>
+                        )}
+                      </span>
+                    </>
+                  )}
                 </div>
               )}
               <div className="wallet-fill-list">
@@ -669,19 +1666,38 @@ export default function WalletPage() {
                   <p className="muted wallet-fill-empty">No fills</p>
                 )}
                 {selectedMarketActivity?.activity.map((row, i) => {
+                  const typ = (row.type || '').toUpperCase()
                   const side = (row.side || '').toUpperCase()
-                  const isBuy = side === 'BUY'
+                  const isRedeem = typ === 'REDEEM'
+                  const isBuy = !isRedeem && side === 'BUY'
+                  const isSell = !isRedeem && side === 'SELL'
                   const outcome = row.outcome || ''
                   const outcomeUp = outcome.toLowerCase() === 'up'
+                  const active =
+                    activityHighlightTs != null &&
+                    Math.abs(Number(row.timestamp) - activityHighlightTs) <= 750
+                  const actionLabel = isRedeem
+                    ? 'Redeem'
+                    : side === 'BUY'
+                      ? 'Buy'
+                      : side === 'SELL'
+                        ? 'Sell'
+                        : typ || '—'
                   return (
                     <div
                       key={`${row.transaction_hash || 'x'}-${row.timestamp}-${i}`}
-                      className="wallet-fill-row"
+                      className={`wallet-fill-row${active ? ' active' : ''}`}
+                      onMouseEnter={() => setActivityHighlightTs(Number(row.timestamp))}
+                      onMouseLeave={() => setActivityHighlightTs(null)}
                     >
                       <span className="wallet-fill-time">{fmtTimeShort(row.timestamp)}</span>
                       <span className="wallet-fill-action">
-                        <span className={isBuy ? 'up' : side === 'SELL' ? 'down' : undefined}>
-                          {side === 'BUY' ? 'Buy' : side === 'SELL' ? 'Sell' : row.type || '—'}
+                        <span
+                          className={
+                            isRedeem ? undefined : isBuy ? 'up' : isSell ? 'down' : undefined
+                          }
+                        >
+                          {actionLabel}
                         </span>{' '}
                         {outcome && (
                           <span className={outcomeUp ? 'up' : 'down'}>{outcome}</span>
@@ -704,6 +1720,7 @@ export default function WalletPage() {
                             target="_blank"
                             rel="noreferrer"
                             title="Polygonscan"
+                            onMouseEnter={(e) => e.stopPropagation()}
                           >
                             ↗
                           </a>
@@ -715,6 +1732,7 @@ export default function WalletPage() {
                             rel="noreferrer"
                             title="Orbscan"
                             className="wallet-fill-orb"
+                            onMouseEnter={(e) => e.stopPropagation()}
                           >
                             ◈
                           </a>
@@ -723,6 +1741,16 @@ export default function WalletPage() {
                     </div>
                   )
                 })}
+              </div>
+              <div className="wallet-panel-foot">
+                <button
+                  type="button"
+                  className="wallet-fetch-more"
+                  disabled={activityMoreLoading || activityLoading || !date}
+                  onClick={() => void fetchMoreActivity()}
+                >
+                  {activityMoreLoading ? 'Fetching…' : 'Fetch more'}
+                </button>
               </div>
             </div>
           </section>

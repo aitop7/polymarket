@@ -275,40 +275,80 @@ export const api = {
       { cache: 'no-store' },
     )
   },
-  walletSummary: (address: string) =>
-    json<WalletSummary>(`/api/wallets/${encodeURIComponent(address)}`, { cache: 'no-store' }),
-  walletPnl: (address: string, interval: WalletPnlInterval = '1d') => {
+  walletSummary: (address: string, opts?: { refresh?: boolean }) => {
+    const q = new URLSearchParams({ _ts: String(Date.now()) })
+    if (opts?.refresh) q.set('refresh', 'true')
+    return json<WalletSummary & { cached?: boolean }>(
+      `/api/wallets/${encodeURIComponent(address)}?${q}`,
+      { cache: 'no-store' },
+    )
+  },
+  walletPnl: (address: string, interval: WalletPnlInterval = '1d', opts?: { refresh?: boolean }) => {
     const q = new URLSearchParams({ interval, _ts: String(Date.now()) })
-    return json<WalletPnlResponse>(
+    if (opts?.refresh) q.set('refresh', 'true')
+    return json<WalletPnlResponse & { cached?: boolean }>(
       `/api/wallets/${encodeURIComponent(address)}/pnl?${q}`,
       { cache: 'no-store' },
     )
   },
-  walletDaily: (address: string, days = 90) => {
+  walletDaily: (
+    address: string,
+    days = 90,
+    opts?: { refresh?: boolean; scanLimit?: number; before?: string },
+  ) => {
     const q = new URLSearchParams({ days: String(days), _ts: String(Date.now()) })
-    return json<WalletDailyResponse>(
+    if (opts?.refresh) q.set('refresh', 'true')
+    if (opts?.scanLimit != null) q.set('scan_limit', String(opts.scanLimit))
+    if (opts?.before) q.set('before', opts.before)
+    return json<WalletDailyResponse & { cached?: boolean; has_more?: boolean; scan_limit?: number }>(
       `/api/wallets/${encodeURIComponent(address)}/daily?${q}`,
       { cache: 'no-store' },
     )
   },
-  walletActivity: (address: string, opts?: { date?: string; limit?: number }) => {
+  walletActivity: (
+    address: string,
+    opts?: { date?: string; limit?: number; offset?: number; refresh?: boolean },
+  ) => {
     const q = new URLSearchParams({ _ts: String(Date.now()) })
     if (opts?.date) q.set('date', opts.date)
     if (opts?.limit != null) q.set('limit', String(opts.limit))
-    return json<WalletActivityResponse>(
+    if (opts?.offset != null) q.set('offset', String(opts.offset))
+    if (opts?.refresh) q.set('refresh', 'true')
+    return json<WalletActivityResponse & { cached?: boolean; has_more?: boolean; next_offset?: number }>(
       `/api/wallets/${encodeURIComponent(address)}/activity?${q}`,
       { cache: 'no-store' },
     )
   },
-  walletMarkets: (address: string, opts?: { date?: string; limit?: number }) => {
+  walletMarkets: (
+    address: string,
+    opts?: { date?: string; limit?: number; activityLimit?: number; refresh?: boolean },
+  ) => {
     const q = new URLSearchParams({ _ts: String(Date.now()) })
     if (opts?.date) q.set('date', opts.date)
     if (opts?.limit != null) q.set('limit', String(opts.limit))
-    return json<WalletMarketsResponse>(
-      `/api/wallets/${encodeURIComponent(address)}/markets?${q}`,
-      { cache: 'no-store' },
-    )
+    if (opts?.activityLimit != null) q.set('activity_limit', String(opts.activityLimit))
+    if (opts?.refresh) q.set('refresh', 'true')
+    return json<
+      WalletMarketsResponse & { cached?: boolean; has_more?: boolean; total_count?: number }
+    >(`/api/wallets/${encodeURIComponent(address)}/markets?${q}`, { cache: 'no-store' })
   },
+  savedWallets: () =>
+    json<{ count: number; wallets: SavedWalletRow[] }>('/api/wallets/saved', { cache: 'no-store' }),
+  deleteSavedWallet: (address: string) =>
+    json<{ ok: boolean; wallet: string }>(`/api/wallets/saved/${encodeURIComponent(address)}`, {
+      method: 'DELETE',
+      cache: 'no-store',
+    }),
+  saveWalletComment: (address: string, comment: string) =>
+    json<{ ok: boolean; wallet: string; comment: string }>(
+      `/api/wallets/saved/${encodeURIComponent(address)}/comment`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comment }),
+        cache: 'no-store',
+      },
+    ),
 }
 
 export type LiveSeriesPoint = {
@@ -427,6 +467,7 @@ export type WalletSummary = {
   polygonscan_url: string
   orbscan_url: string
   polymarket_url: string
+  comment?: string | null
 }
 
 export type WalletPnlPoint = { t: number; pnl: number }
@@ -445,12 +486,17 @@ export type WalletDailyRow = {
   date: string
   t: number
   pnl: number
-  cum_pnl: number
+  cum_pnl?: number | null
+  n_positions?: number
 }
 
 export type WalletDailyResponse = {
   wallet: string
   days: number
+  traded_days?: number
+  scan_limit?: number
+  has_more?: boolean
+  before?: string | null
   daily: WalletDailyRow[]
 }
 
@@ -489,6 +535,9 @@ export type WalletActivityResponse = {
   wallet: string
   date?: string | null
   count: number
+  offset?: number
+  next_offset?: number
+  has_more?: boolean
   name?: string | null
   activity: WalletActivityItem[]
   markets?: WalletMarketActivity[]
@@ -511,8 +560,21 @@ export type WalletMarketsResponse = {
   wallet: string
   date?: string | null
   count: number
+  total_count?: number
+  has_more?: boolean
   total_pnl: number
   markets: WalletMarketPnl[]
+}
+
+export type SavedWalletRow = {
+  wallet: string
+  name?: string | null
+  profile_image?: string | null
+  positions_value?: number | null
+  total_pnl?: number | null
+  comment?: string | null
+  updated_at?: number
+  last_viewed_at?: number
 }
 
 export type LiveTick = {

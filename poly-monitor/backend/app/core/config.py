@@ -11,6 +11,10 @@ _REPO_ROOT = _POLY_MONITOR_ROOT.parent
 _DEFAULT_LIVE_DIR = Path(r"E:\DataSets\poly\live")
 
 
+# Re-export for modules that need the poly-monitor root path.
+POLY_MONITOR_ROOT = _POLY_MONITOR_ROOT
+
+
 def normalize_vps_sync_url(raw: str) -> str:
     """Accept host:port or full URL; return absolute http(s) base or ''."""
     text = (raw or "").strip().rstrip("/")

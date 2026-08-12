@@ -60,6 +60,8 @@ type Props = {
   onHoverTimeChange?: (t: number | null) => void
   /** History: selected trader buy/sell markers (outcomes mode) */
   traderMarks?: TraderMark[]
+  /** External highlight (e.g. activity-row hover): vertical cursor + emphasized mark */
+  highlightTime?: number | null
 }
 
 const SERIES_META: {
@@ -115,12 +117,20 @@ function TargetTagLabel({ viewBox, above }: TargetLabelProps) {
   )
 }
 
+const ET_TZ = 'America/New_York'
+
 function formatTimeTick(ms: number): string {
-  return new Date(ms).toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-    second: '2-digit',
-  })
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: ET_TZ,
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(new Date(ms))
+  } catch {
+    return ''
+  }
 }
 
 /** Absolute clock-aligned ticks so labels scroll with the data (not fixed slots). */
@@ -163,14 +173,20 @@ function formatTipValue(mode: 'btc' | 'outcomes', raw: unknown): string {
 }
 
 function formatTipDateTime(ms: number): string {
-  return new Date(ms).toLocaleString(undefined, {
-    month: 'short',
-    day: '2-digit',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    second: '2-digit',
-  })
+  try {
+    return `${new Intl.DateTimeFormat('en-US', {
+      timeZone: ET_TZ,
+      month: 'short',
+      day: '2-digit',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(new Date(ms))} ET`
+  } catch {
+    return ''
+  }
 }
 
 type ChartDatum = Point & { upPct?: number | null; downPct?: number | null }
@@ -274,30 +290,50 @@ function HaloDot({
 function TraderMarkShape(props: {
   cx?: number
   cy?: number
-  payload?: TraderMark
+  payload?: TraderMark & { active?: boolean }
 }) {
   const { cx, cy, payload } = props
   if (cx == null || cy == null || !payload) return null
   const fill = payload.outcome === 'Up' ? '#10b981' : '#ef4444'
   const buy = payload.side === 'BUY'
-  const s = 5.5
+  const active = Boolean(payload.active)
+  const s = active ? 9 : 5.5
+  const stroke = active ? '#0f1117' : '#fff'
+  const strokeWidth = active ? 2 : 1
+  const ring = active ? (
+    <circle
+      cx={cx}
+      cy={cy}
+      r={s + 5}
+      fill="none"
+      stroke={fill}
+      strokeWidth={2}
+      strokeOpacity={0.45}
+    />
+  ) : null
   if (buy) {
     return (
-      <polygon
-        points={`${cx},${cy - s} ${cx - s},${cy + s * 0.7} ${cx + s},${cy + s * 0.7}`}
-        fill={fill}
-        stroke="#fff"
-        strokeWidth={1}
-      />
+      <g>
+        {ring}
+        <polygon
+          points={`${cx},${cy - s} ${cx - s},${cy + s * 0.7} ${cx + s},${cy + s * 0.7}`}
+          fill={fill}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+        />
+      </g>
     )
   }
   return (
-    <polygon
-      points={`${cx},${cy + s} ${cx - s},${cy - s * 0.7} ${cx + s},${cy - s * 0.7}`}
-      fill={fill}
-      stroke="#fff"
-      strokeWidth={1}
-    />
+    <g>
+      {ring}
+      <polygon
+        points={`${cx},${cy + s} ${cx - s},${cy - s * 0.7} ${cx + s},${cy - s * 0.7}`}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+      />
+    </g>
   )
 }
 
@@ -355,6 +391,7 @@ export default function PriceChart({
   hoverTime: hoverTimeProp,
   onHoverTimeChange,
   traderMarks = [],
+  highlightTime = null,
 }: Props) {
   const showBtc = mode === 'btc'
   const twapFillId = `twapAreaFill-${mode}`
@@ -369,7 +406,9 @@ export default function PriceChart({
   const [hoverZone, setHoverZone] = useState<'price' | 'time' | 'plot'>('plot')
   const [localHoverTime, setLocalHoverTime] = useState<number | null>(null)
   const [collapsed, setCollapsed] = useState(false)
-  const hoverTime = onHoverTimeChange ? (hoverTimeProp ?? null) : localHoverTime
+  const hoverTime = onHoverTimeChange
+    ? (highlightTime ?? hoverTimeProp ?? null)
+    : (highlightTime ?? localHoverTime)
   const setHoverTime = onHoverTimeChange ?? setLocalHoverTime
 
   const chartData = useMemo(() => {
@@ -696,6 +735,15 @@ export default function PriceChart({
                   cursor={<ChartCrosshair />}
                   isAnimationActive={false}
                 />
+                {highlightTime != null && (
+                  <ReferenceLine
+                    x={highlightTime}
+                    stroke="#3b82f6"
+                    strokeWidth={1.75}
+                    strokeDasharray="4 3"
+                    ifOverflow="hidden"
+                  />
+                )}
                 {priceToBeat != null && (
                   <ReferenceLine
                     y={priceToBeat}
@@ -775,6 +823,15 @@ export default function PriceChart({
                   cursor={<ChartCrosshair />}
                   isAnimationActive={false}
                 />
+                {highlightTime != null && (
+                  <ReferenceLine
+                    x={highlightTime}
+                    stroke="#3b82f6"
+                    strokeWidth={1.75}
+                    strokeDasharray="4 3"
+                    ifOverflow="hidden"
+                  />
+                )}
                 <Line
                   type="monotone"
                   dataKey="upPct"
@@ -809,9 +866,15 @@ export default function PriceChart({
                       pricePct: m.pricePct,
                       side: m.side,
                       outcome: m.outcome,
+                      active:
+                        highlightTime != null && Math.abs(m.t - highlightTime) <= 750,
                     }))}
                     dataKey="pricePct"
-                    shape={(p: { cx?: number; cy?: number; payload?: TraderMark }) => (
+                    shape={(p: {
+                      cx?: number
+                      cy?: number
+                      payload?: TraderMark & { active?: boolean }
+                    }) => (
                       <TraderMarkShape cx={p.cx} cy={p.cy} payload={p.payload} />
                     )}
                     isAnimationActive={false}
