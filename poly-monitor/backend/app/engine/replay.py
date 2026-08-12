@@ -11,7 +11,8 @@ from app.core.data import FEATURE_COLUMNS, load_market_frame
 from app.core.pricing import quotes_from_row
 from app.engine.portfolio import Portfolio
 from app.strategies.registry import create_strategy
-from strategies.base import Action, MarketEndContext, OrderIntent, Side, TickContext
+from strategies.base import MarketEndContext, OrderIntent, TickContext
+from strategies.safe_pair import is_matched_buy_pair, parse_edge_from_reason
 
 
 def _row_features(row: pd.Series) -> dict[str, Any]:
@@ -21,6 +22,20 @@ def _row_features(row: pd.Series) -> dict[str, Any]:
             v = row[c]
             out[c] = None if pd.isna(v) else float(v)
     return out
+
+
+_ASK_NEAR_BANDS = ("0_1", "1_3")
+
+
+def _near_ask_depth(row: pd.Series, prefix: str) -> float | None:
+    total = 0.0
+    found = False
+    for band in _ASK_NEAR_BANDS:
+        col = f"{prefix}_ask_{band}"
+        if col in row.index and pd.notna(row[col]):
+            total += float(row[col])
+            found = True
+    return total if found else None
 
 
 def _tick_from_row(row: pd.Series, *, market_id: str, idx: int, portfolio: Portfolio) -> TickContext:
@@ -52,7 +67,39 @@ def _tick_from_row(row: pd.Series, *, market_id: str, idx: int, portfolio: Portf
         features=_row_features(row),
         portfolio=portfolio.snapshot(),
         row_index=idx,
+        up_ask_price=f("up_ask_price"),
+        down_ask_price=f("down_ask_price"),
+        up_ask_shares=f("up_ask_shares"),
+        down_ask_shares=f("down_ask_shares"),
+        up_bid_price=f("up_bid_price"),
+        down_bid_price=f("down_bid_price"),
+        up_bid_shares=f("up_bid_shares"),
+        down_bid_shares=f("down_bid_shares"),
+        up_ask_near_depth=_near_ask_depth(row, "up"),
+        down_ask_near_depth=_near_ask_depth(row, "down"),
     )
+
+
+def _apply_strategy_intents(
+    portfolio: Portfolio,
+    intents: list[OrderIntent],
+    *,
+    market_id: str,
+    timestamp: int,
+    up_price: float,
+    down_price: float,
+    model_p_up: float | None = None,
+) -> list[dict[str, Any]]:
+    fills = portfolio.apply_intents(
+        intents,
+        market_id=market_id,
+        timestamp=timestamp,
+        up_price=up_price,
+        down_price=down_price,
+        source="strategy",
+        atomic_pair=is_matched_buy_pair(intents),
+    )
+    return [{**f.to_dict(), "model_p_up": model_p_up} for f in fills]
 
 
 def run_market_backtest(
@@ -71,23 +118,29 @@ def run_market_backtest(
 
     equity: list[dict[str, Any]] = []
     signals: list[dict[str, Any]] = []
+    opportunities_found = 0
 
     for i, row in df.iterrows():
         ctx = _tick_from_row(row, market_id=market_id, idx=int(i), portfolio=portfolio)
+        if strategy is not None and hasattr(strategy, "opportunity_at_tick"):
+            ok, _, _ = strategy.opportunity_at_tick(ctx)
+            if ok:
+                opportunities_found += 1
         intents: list[OrderIntent] = []
         if strategy is not None:
             intents = strategy.on_tick(ctx) or []
-        for intent in intents:
-            fill = portfolio.apply_intent(
-                intent,
-                market_id=str(market_id),
-                timestamp=ctx.timestamp,
-                up_price=ctx.up_price,
-                down_price=ctx.down_price,
-                source="strategy",
+        if intents:
+            signals.extend(
+                _apply_strategy_intents(
+                    portfolio,
+                    intents,
+                    market_id=str(market_id),
+                    timestamp=ctx.timestamp,
+                    up_price=ctx.up_price,
+                    down_price=ctx.down_price,
+                    model_p_up=ctx.model_p_up,
+                )
             )
-            if fill:
-                signals.append({**fill.to_dict(), "model_p_up": ctx.model_p_up})
         equity.append(
             {
                 "t": ctx.timestamp,
@@ -110,6 +163,15 @@ def run_market_backtest(
         )
 
     final_equity = portfolio.cash
+    trade_fills = [f for f in portfolio.fills if f.action != "SETTLE"]
+    pairs_filled = len([f for f in trade_fills if f.side == "UP" and f.action == "BUY"])
+    net_edges: list[float] = []
+    for f in trade_fills:
+        if f.side == "UP" and f.action == "BUY":
+            _, net = parse_edge_from_reason(f.reason)
+            if net is not None:
+                net_edges.append(net)
+
     return {
         "market_id": str(market_id),
         "winner": winner,
@@ -117,10 +179,16 @@ def run_market_backtest(
         "ending_cash": final_equity,
         "pnl": final_equity - starting_cash,
         "payout": payout,
-        "n_fills": len([f for f in portfolio.fills if f.action != "SETTLE"]),
+        "n_fills": len(trade_fills),
         "fills": [f.to_dict() for f in portfolio.fills],
         "signals": signals,
         "equity": equity[:: max(1, len(equity) // 100)] if equity else [],
+        "stats": {
+            "opportunities_found": opportunities_found,
+            "markets_with_opportunities": 1 if opportunities_found > 0 else 0,
+            "pairs_filled": pairs_filled,
+            "avg_net_edge": sum(net_edges) / len(net_edges) if net_edges else None,
+        },
     }
 
 
@@ -188,17 +256,19 @@ class ReplaySession:
                     fills_out.append(fill.to_dict())
 
             if self.strategy is not None:
-                for intent in self.strategy.on_tick(ctx) or []:
-                    fill = self.portfolio.apply_intent(
-                        intent,
-                        market_id=self.market_id,
-                        timestamp=ctx.timestamp,
-                        up_price=ctx.up_price,
-                        down_price=ctx.down_price,
-                        source="strategy",
+                intents = self.strategy.on_tick(ctx) or []
+                if intents:
+                    fills_out.extend(
+                        _apply_strategy_intents(
+                            self.portfolio,
+                            intents,
+                            market_id=self.market_id,
+                            timestamp=ctx.timestamp,
+                            up_price=ctx.up_price,
+                            down_price=ctx.down_price,
+                            model_p_up=ctx.model_p_up,
+                        )
                     )
-                    if fill:
-                        fills_out.append({**fill.to_dict(), "model_p_up": ctx.model_p_up})
 
         return {
             "type": "tick",

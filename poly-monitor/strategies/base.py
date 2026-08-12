@@ -24,6 +24,8 @@ class OrderIntent:
     size_usd: float | None = None
     shares: float | None = None
     limit_price: float | None = None
+    fee_rate: float = 0.0
+    fee_model: str = "polymarket"  # none | polymarket | flat
     reason: str = ""
 
 
@@ -58,6 +60,16 @@ class TickContext:
     model_p_up: float | None = None
     portfolio: PortfolioSnapshot | None = None
     row_index: int = 0
+    up_ask_price: float | None = None
+    down_ask_price: float | None = None
+    up_ask_shares: float | None = None
+    down_ask_shares: float | None = None
+    up_bid_price: float | None = None
+    down_bid_price: float | None = None
+    up_bid_shares: float | None = None
+    down_bid_shares: float | None = None
+    up_ask_near_depth: float | None = None
+    down_ask_near_depth: float | None = None
 
 
 @dataclass

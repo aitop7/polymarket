@@ -823,6 +823,19 @@ export default function MarketPage({ mode }: Props) {
     // Keep previewTs until first tick so playhead doesn't jump to start.
 
     let sid: string | null = null
+    const strategyParams =
+      strategy === 'safe_pair'
+        ? {
+            min_edge: 0.005,
+            size_usd: 25,
+            min_ask_shares: 1,
+            max_pairs_per_market: 5,
+            cooldown_seconds: 10,
+            once_per_market: false,
+            taker_fee_rate: 0.07,
+            fee_model: 'polymarket',
+          }
+        : { threshold: 0.05, size_usd: 10, once_per_market: true }
     if (mode === 'paper') {
       const sess = await api.paperSession({
         market_id: marketId,
@@ -830,7 +843,7 @@ export default function MarketPage({ mode }: Props) {
         strategy,
         speed,
         starting_cash: 1000,
-        params: { threshold: 0.05, size_usd: 10, once_per_market: true },
+        params: strategyParams,
       })
       sid = sess.session_id
       setSessionId(sid)
@@ -850,7 +863,7 @@ export default function MarketPage({ mode }: Props) {
           paper: mode === 'paper',
           session_id: sid,
           starting_cash: 1000,
-          params: { threshold: 0.05, size_usd: 10, once_per_market: true },
+          params: strategyParams,
           ...(startAt != null ? { start_timestamp: startAt } : {}),
         }),
       )

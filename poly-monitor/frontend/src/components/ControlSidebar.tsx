@@ -813,6 +813,7 @@ export default function ControlSidebar(props: Props) {
               <option value="none">Manual only</option>
               <option value="lgbm_edge">LightGBM edge</option>
               <option value="edge_threshold">Edge threshold</option>
+              <option value="safe_pair">Safe pair (ask sum)</option>
             </select>
           </>
         )}

@@ -46,6 +46,68 @@ export type MarketDetail = MarketSummary & {
   last: { timestamp: number; btc_price: number | null; up_price: number; down_price: number }
 }
 
+export type BacktestFill = {
+  timestamp?: number
+  market_id?: string
+  side?: string
+  action?: string
+  shares?: number
+  price?: number
+  usd?: number
+  reason?: string
+  model_p_up?: number | null
+}
+
+export type BacktestMarketRow = {
+  market_id: string
+  winner: number
+  pnl: number
+  n_fills: number
+  ending_cash: number
+  payout?: number
+  fills?: BacktestFill[]
+  equity?: { t: number; equity: number; cash: number }[]
+  signals?: BacktestFill[]
+}
+
+export type BacktestStats = {
+  opportunities_found: number
+  markets_with_opportunities: number
+  pairs_filled: number
+  avg_net_edge: number | null
+  fill_rate: number | null
+}
+
+export type BacktestResult = {
+  strategy: string
+  split: string
+  date?: string | null
+  n_markets: number
+  total_pnl: number
+  avg_pnl: number
+  win_rate: number
+  total_fills: number
+  starting_cash: number
+  ending_cash?: number
+  markets: BacktestMarketRow[]
+  equity_curve: { i: number; market_id: string; pnl: number; cum_pnl: number }[]
+  params: Record<string, unknown>
+  stats?: BacktestStats | null
+}
+
+export type BacktestMarketResult = {
+  market_id: string
+  winner: number
+  starting_cash: number
+  ending_cash: number
+  pnl: number
+  payout?: number
+  n_fills: number
+  fills: BacktestFill[]
+  signals?: BacktestFill[]
+  equity: { t: number; equity: number; cash: number }[]
+}
+
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
@@ -145,7 +207,12 @@ export const api = {
   book: (id: string, t?: number) =>
     json<Record<string, unknown>>(`/api/markets/${id}/book${t != null ? `?t=${t}` : ''}`),
   backtest: (body: Record<string, unknown>) =>
-    json<Record<string, unknown>>('/api/backtest', { method: 'POST', body: JSON.stringify(body) }),
+    json<BacktestResult>('/api/backtest', { method: 'POST', body: JSON.stringify(body) }),
+  backtestMarket: (body: Record<string, unknown>) =>
+    json<BacktestMarketResult>('/api/backtest/market', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   paperSession: (body: Record<string, unknown>) =>
     json<{ session_id: string; market_id: string; rows: number; speed: number }>(
       '/api/paper/session',

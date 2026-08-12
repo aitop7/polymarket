@@ -21,6 +21,22 @@ def list_strategies() -> list[dict[str, Any]]:
             "params": {"threshold": 0.05, "size_usd": 10.0, "once_per_market": True},
         },
         {
+            "name": "safe_pair",
+            "description": "Market-neutral: buy equal UP+DOWN when ask sum < $1 after costs",
+            "params": {
+                "min_edge": 0.005,
+                "size_usd": 25.0,
+                "min_ask_shares": 1.0,
+                "taker_fee_rate": 0.07,
+                "fee_model": "polymarket",
+                "slippage": 0.0,
+                "once_per_market": False,
+                "max_pairs_per_market": 5,
+                "cooldown_seconds": 10.0,
+                "min_remaining_seconds": 30.0,
+            },
+        },
+        {
             "name": "none",
             "description": "No automated strategy (manual / monitor only)",
             "params": {},
@@ -50,5 +66,20 @@ def create_strategy(name: str, params: dict[str, Any] | None = None) -> Any:
             threshold=float(params.get("threshold", 0.05)),
             size_usd=float(params.get("size_usd", 10.0)),
             once_per_market=bool(params.get("once_per_market", True)),
+        )
+    if name == "safe_pair":
+        from strategies.safe_pair import SafePairStrategy
+
+        return SafePairStrategy(
+            min_edge=float(params.get("min_edge", params.get("threshold", 0.005))),
+            size_usd=float(params.get("size_usd", 25.0)),
+            min_ask_shares=float(params.get("min_ask_shares", 1.0)),
+            taker_fee_rate=float(params.get("taker_fee_rate", 0.07)),
+            fee_model=str(params.get("fee_model", "polymarket")),
+            slippage=float(params.get("slippage", 0.0)),
+            once_per_market=bool(params.get("once_per_market", False)),
+            max_pairs_per_market=int(params.get("max_pairs_per_market", 5)),
+            cooldown_seconds=float(params.get("cooldown_seconds", 10.0)),
+            min_remaining_seconds=float(params.get("min_remaining_seconds", 30.0)),
         )
     raise ValueError(f"Unknown strategy: {name}")

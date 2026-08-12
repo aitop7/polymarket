@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.data import (
+    ALL_SPLITS,
     SPLITS,
     book_at,
     list_markets,
@@ -44,6 +45,7 @@ class BacktestRequest(BaseModel):
     split: str = "validation"
     market_ids: list[str] | None = None
     limit: int = Field(default=20, ge=1, le=500)
+    date: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     starting_cash: float = 1000.0
 
@@ -302,7 +304,7 @@ def get_neighbors(market_id: str, split: str | None = None) -> dict[str, Any]:
 
 @router.post("/backtest")
 def post_backtest(body: BacktestRequest) -> dict[str, Any]:
-    if body.split not in SPLITS:
+    if body.split not in ALL_SPLITS:
         raise HTTPException(400, "Invalid split")
     try:
         return run_backtest(
@@ -310,9 +312,36 @@ def post_backtest(body: BacktestRequest) -> dict[str, Any]:
             split=body.split,
             market_ids=body.market_ids,
             limit=body.limit,
+            date=body.date,
             strategy_params=body.params,
             starting_cash=body.starting_cash,
         )
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/backtest/market")
+def post_backtest_market(body: BacktestRequest) -> dict[str, Any]:
+    """Run one market and return full fills + equity (for detail pane)."""
+    if body.split not in ALL_SPLITS:
+        raise HTTPException(400, "Invalid split")
+    mid = None
+    if body.market_ids:
+        mid = str(body.market_ids[0])
+    if not mid:
+        raise HTTPException(400, "market_ids[0] required")
+    try:
+        from app.engine.replay import run_market_backtest
+
+        return run_market_backtest(
+            mid,
+            split=body.split,
+            strategy_name=body.strategy,
+            strategy_params=body.params,
+            starting_cash=body.starting_cash,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
 
