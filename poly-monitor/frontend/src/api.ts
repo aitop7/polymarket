@@ -138,6 +138,7 @@ export const api = {
         error?: string
         endpoint_missing?: boolean
       }
+      filled?: Record<string, number>
       warning?: string | null
       error?: string | null
     }>(`/api/markets/${id}/repair`, { method: 'POST' }),

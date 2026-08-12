@@ -443,6 +443,12 @@ class VpsSyncClient:
         max_gap = 0
         max_trade_quiet = 0
         by_file: dict[str, list[tuple[int, str]]] = {}
+        skip_pm_trade_quiet = False
+        try:
+            meta_skip = json.loads((dest / "meta.json").read_text(encoding="utf-8"))
+            skip_pm_trade_quiet = bool(meta_skip.get("trades_repaired_complete"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            skip_pm_trade_quiet = False
 
         for name in _PRICE_1S_FILES:
             remote_has: bool | None = True if local_only else (name in remote_names)
@@ -459,6 +465,8 @@ class VpsSyncClient:
         for name in _TRADE_FILES:
             remote_has = True if local_only else (name in remote_names)
             if not local_only and name not in remote_names:
+                continue
+            if name == "trades.parquet" and skip_pm_trade_quiet:
                 continue
             quiet, file_notes = self._trade_series_stats(
                 dest / name, name=name, start=start, end=end, remote_has=remote_has
@@ -907,15 +915,24 @@ class VpsSyncClient:
                 }
 
             trade_added = int(vps_repair.get("rows_added") or 0)
+            local_filled: dict[str, int] = {}
             # Always fill locally on explicit Repair (covers old VPS serve / API lag).
             try:
                 from app.core.trade_repair import backfill_trades_for_market_dir
 
                 local_added = int(await backfill_trades_for_market_dir(local_path) or 0)
                 trade_added += local_added
-                local_path, stub = self._local_stub(mid)
+                local_filled["trades.parquet"] = local_added
             except Exception as exc:
                 logger.warning("Repair local trade backfill failed for %s: %s", mid, exc)
+            try:
+                from app.core.series_repair import repair_series_for_market_dir
+
+                series_filled = await repair_series_for_market_dir(local_path)
+                local_filled.update(series_filled or {})
+            except Exception as exc:
+                logger.warning("Repair local series backfill failed for %s: %s", mid, exc)
+            local_path, stub = self._local_stub(mid)
 
             if local_path is None:
                 return {
@@ -941,13 +958,24 @@ class VpsSyncClient:
             if vps_enabled and not vps_ok:
                 warning = str(vps_repair.get("error") or "VPS repair failed")
             # Succeed if VPS repaired, or we filled locally while serve is only outdated.
-            ok = vps_ok or (not vps_enabled) or endpoint_missing or trade_added > 0
+            local_added_total = sum(int(v or 0) for v in local_filled.values())
+            ok = (
+                vps_ok
+                or (not vps_enabled)
+                or endpoint_missing
+                or trade_added > 0
+                or local_added_total > 0
+            )
+            filled = dict(vps_repair.get("filled") or {})
+            for name, n in local_filled.items():
+                filled[name] = int(filled.get(name) or 0) + int(n or 0)
             return {
                 "ok": ok,
                 "market_id": mid,
                 "pulled": pulled,
                 "vps_enabled": vps_enabled,
                 "vps_repair": vps_repair,
+                "filled": filled,
                 "trade_rows_added": trade_added,
                 "data_health": grade or read_data_health(meta),
                 "data_health_comment": read_data_health_comment(meta),

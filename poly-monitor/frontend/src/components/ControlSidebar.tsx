@@ -308,7 +308,14 @@ export default function ControlSidebar(props: Props) {
     try {
       const res = await api.repairMarket(mid)
       applyHealthResult(mid, res, true)
-      setRecheckError(res.warning || res.error || null)
+      const filled = res.filled || {}
+      const bits = Object.entries(filled)
+        .filter(([, n]) => Number(n) > 0)
+        .map(([name, n]) => `${name.replace('.parquet', '')} +${n}`)
+      const summary = bits.length
+        ? `Filled ${bits.join(', ')}`
+        : 'No new rows (tape already complete, or sources had nothing to add)'
+      setRecheckError(res.warning || res.error || summary)
     } catch (err) {
       setRecheckError(err instanceof Error ? err.message : 'Repair failed')
     } finally {
@@ -665,7 +672,7 @@ export default function ControlSidebar(props: Props) {
                   className="health-dialog-btn primary"
                   onClick={() => void runRepair()}
                   disabled={healthBusy || histDisabled}
-                  title="Fill missed trades on the VPS from Polymarket Data API, then re-pull"
+                  title="Fill missed Polymarket trades, Binance trades/prices, and 1s holes, then re-pull"
                 >
                   {repairing ? 'Repairing…' : 'Repair'}
                 </button>

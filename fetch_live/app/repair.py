@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 from loguru import logger
@@ -22,8 +23,19 @@ from app.polymarket.data_api_trades import (
     drop_uniform_tx_duplicates,
     normalize_trade_legs,
 )
-from app.schemas import SCHEMAS, TABLE_FILES
+from app.schemas import (
+    BINANCE_BAND_COLUMNS,
+    ORDERBOOK_COLUMNS,
+    SCHEMAS,
+    TABLE_FILES,
+)
 from app.trades_mode import get_trades_mode
+
+_BINANCE_REST = (
+    "https://data-api.binance.vision",
+    "https://api.binance.com",
+    "https://api1.binance.com",
+)
 
 _TRADE_COLS = (
     "timestamp",
@@ -136,6 +148,316 @@ def write_trade_rows(path: Path, rows: list[dict[str, Any]]) -> int:
     return len(payload)
 
 
+def _floor_s(ts: int) -> int:
+    return int(ts) - (int(ts) % 1000)
+
+
+def load_table_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    try:
+        return [r for r in pq.read_table(path).to_pylist() if isinstance(r, dict)]
+    except Exception as exc:
+        logger.warning("Could not read {}: {}", path, exc)
+        return []
+
+
+def write_table_rows(path: Path, table: str, rows: list[dict[str, Any]]) -> int:
+    schema = SCHEMAS[table]
+    cols = [f.name for f in schema]
+    payload: list[dict[str, Any]] = []
+    for raw in rows:
+        row = {c: raw.get(c) for c in cols}
+        try:
+            row["timestamp"] = int(row.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            continue
+        if row["timestamp"] <= 0:
+            continue
+        payload.append(row)
+    payload.sort(key=lambda r: int(r["timestamp"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".parquet.tmp")
+    pq.write_table(
+        pa.Table.from_pylist(payload, schema=schema),
+        tmp,
+        compression=settings.parquet_compression,
+    )
+    tmp.replace(path)
+    return len(payload)
+
+
+def _empty_binance_px_row(ts: int, price: float) -> dict[str, Any]:
+    row: dict[str, Any] = {"timestamp": int(ts), "Binance_BTC": float(price)}
+    for col in BINANCE_BAND_COLUMNS:
+        row[col] = 0.0
+    return row
+
+
+async def _binance_json(
+    http: Any, path: str, params: dict[str, Any]
+) -> Any:
+    last_exc: Exception | None = None
+    for base in (settings.binance_rest_url, *_BINANCE_REST):
+        try:
+            resp = await http.get(f"{str(base).rstrip('/')}{path}", params=params)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            last_exc = exc
+            continue
+    raise last_exc or RuntimeError("Binance REST failed")
+
+
+async def fetch_binance_agg_trades(
+    http: Any, *, start_ms: int, end_ms: int
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    cursor = int(start_ms)
+    end = int(end_ms)
+    symbol = settings.btc_symbol
+    for _ in range(200):
+        batch = await _binance_json(
+            http,
+            "/api/v3/aggTrades",
+            {
+                "symbol": symbol,
+                "startTime": cursor,
+                "endTime": end,
+                "limit": 1000,
+            },
+        )
+        if not isinstance(batch, list) or not batch:
+            break
+        for item in batch:
+            if not isinstance(item, dict):
+                continue
+            try:
+                ts = int(item.get("T") or 0)
+                price = float(item.get("p") or 0)
+                qty = float(item.get("q") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts < start_ms or ts >= end_ms:
+                continue
+            out.append(
+                {
+                    "timestamp": ts,
+                    "price": price,
+                    "quantity": qty,
+                    "buyer_is_maker": bool(item.get("m")),
+                }
+            )
+        last_t = int(batch[-1].get("T") or 0)
+        if last_t >= end - 1 or len(batch) < 1000:
+            break
+        cursor = last_t + 1
+        if cursor >= end:
+            break
+    return out
+
+
+async def fetch_binance_klines_1s(
+    http: Any, *, start_ms: int, end_ms: int
+) -> dict[int, float]:
+    out: dict[int, float] = {}
+    cursor = int(start_ms)
+    end = int(end_ms)
+    symbol = settings.btc_symbol
+    for _ in range(20):
+        batch = await _binance_json(
+            http,
+            "/api/v3/klines",
+            {
+                "symbol": symbol,
+                "interval": "1s",
+                "startTime": cursor,
+                "endTime": end - 1,
+                "limit": 1000,
+            },
+        )
+        if not isinstance(batch, list) or not batch:
+            break
+        last_open = cursor
+        for item in batch:
+            if not isinstance(item, (list, tuple)) or len(item) < 5:
+                continue
+            try:
+                open_ms = _floor_s(int(item[0]))
+                close_px = float(item[4])
+            except (TypeError, ValueError):
+                continue
+            if start_ms <= open_ms < end_ms:
+                out[open_ms] = close_px
+            last_open = open_ms
+        if last_open >= end - 1000 or len(batch) < 1000:
+            break
+        cursor = last_open + 1000
+        if cursor >= end:
+            break
+    return out
+
+
+def merge_binance_trades(
+    existing: list[dict[str, Any]], incoming: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    seen: set[tuple[int, float, float, bool]] = set()
+    out: list[dict[str, Any]] = []
+    for src in (existing, incoming):
+        for raw in src:
+            try:
+                ts = int(raw.get("timestamp") or 0)
+                price = float(raw.get("price") or 0)
+                qty = float(raw.get("quantity") or 0)
+                maker = bool(raw.get("buyer_is_maker"))
+            except (TypeError, ValueError):
+                continue
+            key = (ts, round(price, 6), round(qty, 8), maker)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "timestamp": ts,
+                    "price": price,
+                    "quantity": qty,
+                    "buyer_is_maker": maker,
+                }
+            )
+    out.sort(key=lambda r: int(r["timestamp"]))
+    return out
+
+
+def fill_binance_px_1s(
+    existing: list[dict[str, Any]],
+    klines: dict[int, float],
+    *,
+    start_ms: int,
+    end_ms: int,
+) -> tuple[list[dict[str, Any]], int]:
+    by_ts: dict[int, dict[str, Any]] = {}
+    for raw in existing:
+        try:
+            ts = _floor_s(int(raw.get("timestamp") or 0))
+        except (TypeError, ValueError):
+            continue
+        if start_ms <= ts < end_ms:
+            by_ts[ts] = dict(raw)
+            by_ts[ts]["timestamp"] = ts
+    added = 0
+    last_px: float | None = None
+    for ts in range(_floor_s(start_ms), _floor_s(end_ms), 1000):
+        if ts in by_ts and by_ts[ts].get("Binance_BTC") is not None:
+            try:
+                last_px = float(by_ts[ts]["Binance_BTC"])
+            except (TypeError, ValueError):
+                pass
+            continue
+        px = klines.get(ts, last_px)
+        if px is None:
+            continue
+        last_px = float(px)
+        if ts not in by_ts:
+            by_ts[ts] = _empty_binance_px_row(ts, last_px)
+            added += 1
+        else:
+            by_ts[ts]["Binance_BTC"] = last_px
+            for col in BINANCE_BAND_COLUMNS:
+                by_ts[ts].setdefault(col, 0.0)
+            added += 1
+    rows = [by_ts[k] for k in sorted(by_ts)]
+    return rows, added
+
+
+def fill_chainlink_1s(
+    existing: list[dict[str, Any]],
+    klines: dict[int, float],
+    *,
+    start_ms: int,
+    end_ms: int,
+) -> tuple[list[dict[str, Any]], int]:
+    by_ts: dict[int, dict[str, Any]] = {}
+    for raw in existing:
+        try:
+            ts = _floor_s(int(raw.get("timestamp") or 0))
+        except (TypeError, ValueError):
+            continue
+        if start_ms <= ts < end_ms:
+            by_ts[ts] = {
+                "timestamp": ts,
+                "Chainlink_BTC": raw.get("Chainlink_BTC"),
+                "twap": raw.get("twap"),
+            }
+    added = 0
+    last_px: float | None = None
+    for ts in range(_floor_s(start_ms), _floor_s(end_ms), 1000):
+        row = by_ts.get(ts)
+        spot = None
+        if row is not None and row.get("Chainlink_BTC") is not None:
+            try:
+                spot = float(row["Chainlink_BTC"])
+            except (TypeError, ValueError):
+                spot = None
+        if spot is None:
+            spot = klines.get(ts, last_px)
+            if spot is None:
+                continue
+            if row is None:
+                by_ts[ts] = {"timestamp": ts, "Chainlink_BTC": float(spot), "twap": None}
+                added += 1
+            else:
+                row["Chainlink_BTC"] = float(spot)
+                added += 1
+        last_px = float(spot)
+    # Recompute 30s TWAP only where missing.
+    times = sorted(by_ts)
+    spots: list[tuple[int, float]] = []
+    for ts in times:
+        try:
+            spots.append((ts, float(by_ts[ts]["Chainlink_BTC"])))
+        except (TypeError, ValueError, KeyError):
+            continue
+    for ts, _px in spots:
+        if by_ts[ts].get("twap") is not None:
+            continue
+        window = [p for t, p in spots if ts - 30_000 < t <= ts]
+        if window:
+            by_ts[ts]["twap"] = float(sum(window) / len(window))
+    return [by_ts[k] for k in sorted(by_ts)], added
+
+
+def fill_orderbooks_1s(
+    existing: list[dict[str, Any]], *, start_ms: int, end_ms: int
+) -> tuple[list[dict[str, Any]], int]:
+    by_ts: dict[int, dict[str, Any]] = {}
+    for raw in existing:
+        try:
+            ts = _floor_s(int(raw.get("timestamp") or 0))
+        except (TypeError, ValueError):
+            continue
+        if start_ms <= ts < end_ms:
+            row = {c: raw.get(c) for c in ORDERBOOK_COLUMNS}
+            row["timestamp"] = ts
+            by_ts[ts] = row
+    if not by_ts:
+        return existing, 0
+    keys = sorted(by_ts)
+    added = 0
+    last: dict[str, Any] | None = None
+    # Forward fill, then backfill leading hole from first snapshot.
+    first = by_ts[keys[0]]
+    for ts in range(_floor_s(start_ms), _floor_s(end_ms), 1000):
+        if ts in by_ts:
+            last = by_ts[ts]
+            continue
+        src = last or first
+        row = dict(src)
+        row["timestamp"] = ts
+        by_ts[ts] = row
+        added += 1
+    return [by_ts[k] for k in sorted(by_ts)], added
+
+
 def _merge_tx(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep the richer multiset of Orbscan legs for one transaction."""
     if not new:
@@ -233,10 +555,12 @@ def _market_is_live(meta: dict[str, Any]) -> bool:
 
 async def repair_market_dir(market_dir: Path) -> dict[str, Any]:
     """
-    Fetch Data API trades for this market and merge into trades.parquet.
-
-    Respects current trades_mode (taker vs full). Refuses while the market
-    is still the live collector window (in-memory flush would overwrite).
+    Fill missed history for a finished market:
+      - Polymarket trades (Data API, respects trades_mode)
+      - Binance aggTrades
+      - 1s Binance_BTC (klines; depth bands stay 0 where reconstructed)
+      - 1s Chainlink/TWAP holes from Binance 1s close
+      - 1s orderbooks via nearest-snapshot fill
     """
     meta = _read_meta(market_dir)
     if not meta:
@@ -248,14 +572,6 @@ async def repair_market_dir(market_dir: Path) -> dict[str, Any]:
             "market_id": market_id,
             "error": "market is still live — repair after it rolls off",
         }
-
-    cid = str(meta.get("condition_id") or "").strip()
-    if not cid:
-        return {
-            "ok": False,
-            "market_id": market_id,
-            "error": "no condition_id in meta.json",
-        }
     try:
         start_ms = int(meta.get("start_time") or 0)
         end_ms = int(meta.get("end_time") or 0)
@@ -265,63 +581,115 @@ async def repair_market_dir(market_dir: Path) -> dict[str, Any]:
         return {"ok": False, "market_id": market_id, "error": "invalid market window"}
 
     mode = get_trades_mode()
-    token_up = str(meta.get("up_token_id") or "").strip() or None
-    token_down = str(meta.get("down_token_id") or "").strip() or None
-    trades_path = market_dir / TABLE_FILES["trades"]
-    before = load_trade_rows(trades_path)
+    filled: dict[str, int] = {}
+    errors: list[str] = []
 
-    client = DataApiTrades()
+    cid = str(meta.get("condition_id") or "").strip()
+    pm_before = 0
+    pm_after = 0
+    pm_api = 0
+    if cid:
+        token_up = str(meta.get("up_token_id") or "").strip() or None
+        token_down = str(meta.get("down_token_id") or "").strip() or None
+        trades_path = market_dir / TABLE_FILES["trades"]
+        before = load_trade_rows(trades_path)
+        pm_before = len(before)
+        client = DataApiTrades()
+        try:
+            incoming = await client.fetch_window(
+                condition_id=cid,
+                token_up=token_up,
+                token_down=token_down,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                max_pages=50,
+                trades_mode=mode,
+            )
+            pm_api = len(incoming)
+            merged = merge_trade_rows(before, incoming)
+            if mode == "taker":
+                merged = [r for r in merged if bool(r.get("is_taker", True))]
+                merged = assign_fill_keys(merged)
+            pm_after = write_trade_rows(trades_path, merged)
+            filled["trades.parquet"] = max(0, pm_after - pm_before)
+            meta["trades_repaired_complete"] = True
+        except Exception as exc:
+            logger.warning("VPS PM trade repair failed for {}: {}", market_id, exc)
+            errors.append(f"trades.parquet: {exc}")
+        finally:
+            await client.close()
+    else:
+        errors.append("trades.parquet: no condition_id")
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=8.0)) as http:
+        klines: dict[int, float] = {}
+        try:
+            klines = await fetch_binance_klines_1s(http, start_ms=start_ms, end_ms=end_ms)
+        except Exception as exc:
+            errors.append(f"binance 1s klines: {exc}")
+        try:
+            incoming_bt = await fetch_binance_agg_trades(
+                http, start_ms=start_ms, end_ms=end_ms
+            )
+            bt_path = market_dir / TABLE_FILES["binance_trades"]
+            old_bt = load_table_rows(bt_path)
+            merged_bt = merge_binance_trades(old_bt, incoming_bt)
+            write_table_rows(bt_path, "binance_trades", merged_bt)
+            filled["binance_trades.parquet"] = max(0, len(merged_bt) - len(old_bt))
+        except Exception as exc:
+            errors.append(f"binance_trades.parquet: {exc}")
+
+        if klines:
+            try:
+                px_path = market_dir / TABLE_FILES["binance_price_orderbook"]
+                px_rows, n = fill_binance_px_1s(
+                    load_table_rows(px_path), klines, start_ms=start_ms, end_ms=end_ms
+                )
+                write_table_rows(px_path, "binance_price_orderbook", px_rows)
+                filled["binance_price_orderbook.parquet"] = n
+            except Exception as exc:
+                errors.append(f"binance_price_orderbook.parquet: {exc}")
+            try:
+                cl_path = market_dir / TABLE_FILES["chainlink_price"]
+                cl_rows, n = fill_chainlink_1s(
+                    load_table_rows(cl_path), klines, start_ms=start_ms, end_ms=end_ms
+                )
+                write_table_rows(cl_path, "chainlink_price", cl_rows)
+                filled["chainlink_price.parquet"] = n
+            except Exception as exc:
+                errors.append(f"chainlink_price.parquet: {exc}")
+
     try:
-        incoming = await client.fetch_window(
-            condition_id=cid,
-            token_up=token_up,
-            token_down=token_down,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            max_pages=50,
-            trades_mode=mode,
+        ob_path = market_dir / TABLE_FILES["orderbooks"]
+        ob_rows, n = fill_orderbooks_1s(
+            load_table_rows(ob_path), start_ms=start_ms, end_ms=end_ms
         )
+        if n:
+            write_table_rows(ob_path, "orderbooks", ob_rows)
+        filled["orderbooks.parquet"] = n
     except Exception as exc:
-        logger.warning("VPS trade repair fetch failed for {}: {}", market_id, exc)
-        return {
-            "ok": False,
-            "market_id": market_id,
-            "error": f"Data API fetch failed: {exc}",
-            "trades_mode": mode,
-        }
-    finally:
-        await client.close()
-
-    merged = merge_trade_rows(before, incoming)
-    if mode == "taker":
-        merged = [r for r in merged if bool(r.get("is_taker", True))]
-        merged = assign_fill_keys(merged)
-    written = write_trade_rows(trades_path, merged)
-    added = max(0, written - len(before))
+        errors.append(f"orderbooks.parquet: {exc}")
 
     now_ms = int(time.time() * 1000)
     meta["trades_mode"] = mode
     meta["trades_repaired_at"] = now_ms
-    meta["trades_count"] = written
+    if pm_after:
+        meta["trades_count"] = pm_after
+    meta["repair_filled"] = filled
     _write_meta(market_dir, meta)
 
-    logger.info(
-        "Repaired market {} mode={} before={} api={} after={} (+{})",
-        market_id,
-        mode,
-        len(before),
-        len(incoming),
-        written,
-        added,
-    )
+    added = int(filled.get("trades.parquet") or 0)
+    logger.info("Repaired market {} filled={} errors={}", market_id, filled, errors)
     return {
         "ok": True,
         "market_id": market_id,
         "trades_mode": mode,
-        "rows_before": len(before),
-        "rows_from_api": len(incoming),
-        "rows_after": written,
+        "rows_before": pm_before,
+        "rows_from_api": pm_api,
+        "rows_after": pm_after,
         "rows_added": added,
+        "filled": filled,
+        "errors": errors,
         "repaired_at": now_ms,
     }
 

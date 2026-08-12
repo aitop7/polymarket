@@ -597,4 +597,13 @@ async def backfill_trades_for_market_dir(market_dir: Path) -> int:
             written,
             market_dir.name,
         )
+        try:
+            meta["trades_repaired_complete"] = True
+            meta["trades_count"] = int(written)
+            path = market_dir / "meta.json"
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            pass
     return written
