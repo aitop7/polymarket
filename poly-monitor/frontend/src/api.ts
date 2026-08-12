@@ -136,7 +136,9 @@ export const api = {
         rows_from_api?: number
         trades_mode?: string
         error?: string
+        endpoint_missing?: boolean
       }
+      warning?: string | null
       error?: string | null
     }>(`/api/markets/${id}/repair`, { method: 'POST' }),
   book: (id: string, t?: number) =>

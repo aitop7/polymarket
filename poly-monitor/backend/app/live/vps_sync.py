@@ -832,12 +832,19 @@ class VpsSyncClient:
             return {"ok": False, "error": "missing market_id"}
         try:
             async with self._http(read_s=120.0) as client:
+                remote = await self.get_market(client, mid)
                 url = f"{self._base()}/markets/{mid}/repair"
                 resp = await client.post(url)
                 if resp.status_code == 404:
+                    if remote is None:
+                        return {"ok": False, "error": f"VPS has no market {mid}"}
                     return {
                         "ok": False,
-                        "error": "VPS 404 — market missing or serve needs POST /markets/{id}/repair",
+                        "endpoint_missing": True,
+                        "error": (
+                            "VPS serve is old (no POST /repair). "
+                            "On the VPS: git pull, then pm2 restart fetch-live-serve"
+                        ),
                     }
                 if resp.status_code >= 400:
                     detail = ""
@@ -900,15 +907,15 @@ class VpsSyncClient:
                 }
 
             trade_added = int(vps_repair.get("rows_added") or 0)
-            if self._trades_need_backfill(stub):
-                try:
-                    from app.core.trade_repair import backfill_trades_for_market_dir
+            # Always fill locally on explicit Repair (covers old VPS serve / API lag).
+            try:
+                from app.core.trade_repair import backfill_trades_for_market_dir
 
-                    local_added = int(await backfill_trades_for_market_dir(local_path) or 0)
-                    trade_added += local_added
-                    local_path, stub = self._local_stub(mid)
-                except Exception as exc:
-                    logger.warning("Repair local trade backfill failed for %s: %s", mid, exc)
+                local_added = int(await backfill_trades_for_market_dir(local_path) or 0)
+                trade_added += local_added
+                local_path, stub = self._local_stub(mid)
+            except Exception as exc:
+                logger.warning("Repair local trade backfill failed for %s: %s", mid, exc)
 
             if local_path is None:
                 return {
@@ -929,7 +936,12 @@ class VpsSyncClient:
 
             analysis = self._analyze_gaps(stub)
             vps_ok = bool(vps_repair.get("ok"))
-            ok = True if not vps_enabled else vps_ok
+            endpoint_missing = bool(vps_repair.get("endpoint_missing"))
+            warning = None
+            if vps_enabled and not vps_ok:
+                warning = str(vps_repair.get("error") or "VPS repair failed")
+            # Succeed if VPS repaired, or we filled locally while serve is only outdated.
+            ok = vps_ok or (not vps_enabled) or endpoint_missing or trade_added > 0
             return {
                 "ok": ok,
                 "market_id": mid,
@@ -943,7 +955,8 @@ class VpsSyncClient:
                 "max_trade_quiet_ms": int(analysis.get("max_trade_quiet_ms") or 0),
                 "notes": list(analysis.get("notes") or []),
                 "notes_by_file": dict(analysis.get("notes_by_file") or {}),
-                "error": None if ok else vps_repair.get("error"),
+                "warning": warning if ok else None,
+                "error": None if ok else warning,
             }
 
     async def recheck_history_market(self, market_id: str) -> dict[str, Any]:

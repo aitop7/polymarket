@@ -308,10 +308,7 @@ export default function ControlSidebar(props: Props) {
     try {
       const res = await api.repairMarket(mid)
       applyHealthResult(mid, res, true)
-      const added = res.vps_repair?.rows_added ?? res.trade_rows_added ?? 0
-      if (added > 0) {
-        setRecheckError(null)
-      }
+      setRecheckError(res.warning || res.error || null)
     } catch (err) {
       setRecheckError(err instanceof Error ? err.message : 'Repair failed')
     } finally {
