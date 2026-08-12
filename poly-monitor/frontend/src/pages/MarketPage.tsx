@@ -1367,7 +1367,7 @@ export default function MarketPage({ mode }: Props) {
         t: Number(t.timestamp),
         pricePct: Number(t.price) * 100,
         side: (t.side === 'SELL' ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
-        outcome: t.outcome === 'Down' ? 'Down' : 'Up',
+        outcome: (t.outcome === 'Down' ? 'Down' : 'Up') as 'Up' | 'Down',
       }))
       .filter((m) => Number.isFinite(m.t) && Number.isFinite(m.pricePct))
   }, [liveActive, selectedWallet, traderDetail, playheadTs, displayActivityTrades])
