@@ -10,9 +10,33 @@ import pandas as pd
 
 from app.core.config import settings
 
+# Chart / monitor series cadence. Source parquets may be 500ms (pm_orderbooks /
+# pm_chainlink); we always emit one point per second.
+CHART_SERIES_STEP_MS = 1000
+
 
 def fetch_live_root() -> Path:
     return Path(settings.fetch_live_data_dir)
+
+
+def resample_series_frame(
+    df: pd.DataFrame, *, step_ms: int = CHART_SERIES_STEP_MS
+) -> pd.DataFrame:
+    """Collapse a mixed-cadence join onto a fixed step grid (default 1s).
+
+    Within each bucket, ``last`` keeps the last non-null per column so a 500ms
+    book row and a 1s Binance/Chainlink row in the same second both contribute.
+    """
+    if df.empty or "timestamp" not in df.columns:
+        return df
+    step = max(1, int(step_ms))
+    out = df.copy()
+    ts = pd.to_numeric(out["timestamp"], errors="coerce")
+    out = out.loc[ts.notna()].copy()
+    if out.empty:
+        return out
+    out["timestamp"] = ((ts.loc[out.index].astype("int64")) // step) * step
+    return out.groupby("timestamp", as_index=False, sort=True).last()
 
 
 def fetch_live_market_dir(market_id: str | None) -> Path | None:
@@ -92,6 +116,7 @@ def load_fetch_live_series(market_id: str | None) -> list[dict[str, Any]]:
     for extra in frames[1:]:
         df = df.merge(extra, on="timestamp", how="outer")
     df = df.sort_values("timestamp", kind="mergesort").reset_index(drop=True)
+    df = resample_series_frame(df)
 
     out: list[dict[str, Any]] = []
     for row in df.itertuples(index=False):

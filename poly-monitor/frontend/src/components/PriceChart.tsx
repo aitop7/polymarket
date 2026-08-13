@@ -203,6 +203,11 @@ type ChartDatum = Point & {
 
 const DEFAULT_EMA_PERIOD = 20
 
+/** Valid outcome price in probability units (reject hollow 0 / stubs). */
+function validOutcomePx(v: number | null | undefined): v is number {
+  return v != null && Number.isFinite(v) && v > 0.005 && v < 0.995
+}
+
 /** Point EMA over finite samples only; undefined until the first finite value. */
 function emaSeries(values: Array<number | null | undefined>, period: number): Array<number | undefined> {
   const n = Math.max(1, Math.floor(period))
@@ -462,13 +467,28 @@ export default function PriceChart({
   const setHoverTime = onHoverTimeChange ?? setLocalHoverTime
 
   const chartData = useMemo(() => {
-    const mapped = data.map((d) => ({
-      ...d,
-      // undefined (not null): Recharts treats null as 0 on Line charts
-      upPct: d.up != null && Number.isFinite(d.up) ? d.up * 100 : undefined,
-      downPct: d.down != null && Number.isFinite(d.down) ? d.down * 100 : undefined,
-    }))
-    if (mode !== 'outcomes') return mapped
+    if (mode !== 'outcomes') {
+      return data.map((d) => ({
+        ...d,
+        upPct: undefined,
+        downPct: undefined,
+      }))
+    }
+    // Forward-fill so BTC/TWAP-only or volume-only timestamps don't spike to 0¢.
+    let lastUp: number | undefined
+    let lastDown: number | undefined
+    const mapped = data.map((d) => {
+      const upRaw = validOutcomePx(d.up) ? d.up * 100 : undefined
+      const downRaw = validOutcomePx(d.down) ? d.down * 100 : undefined
+      if (upRaw != null) lastUp = upRaw
+      if (downRaw != null) lastDown = downRaw
+      return {
+        ...d,
+        // undefined (not null): Recharts treats null as 0 on Line charts
+        upPct: upRaw ?? lastUp,
+        downPct: downRaw ?? lastDown,
+      }
+    })
     let i = 0
     while (
       i < mapped.length &&

@@ -295,10 +295,18 @@ def series_for_chart(
         return []
     from app.core.pricing import quotes_from_up_buy
     from app.core.trade_volume import attach_volumes_to_series, volumes_for_market_id
-    from app.live.fetch_live_series import break_outcome_jumps, scrub_leading_outcome_extremes
+    from app.live.fetch_live_series import (
+        break_outcome_jumps,
+        resample_series_frame,
+        scrub_leading_outcome_extremes,
+    )
 
-    step = max(1, len(df) // max_points)
-    rows = df.iloc[::step]
+    # Always 1s grid — even when pm_orderbooks / pm_chainlink are 500ms.
+    chart_df = resample_series_frame(df)
+    if chart_df.empty:
+        return []
+    step = max(1, len(chart_df) // max_points)
+    rows = chart_df.iloc[::step]
     out: list[dict[str, Any]] = []
     for _, r in rows.iterrows():
         up_buy = _chart_up_buy(r)
@@ -309,13 +317,13 @@ def series_for_chart(
             up_v, down_v = q["up_price"], q["down_price"]
         point: dict[str, Any] = {
             "t": int(r["timestamp"]),
-            "btc": float(r["btc_price"]) if "btc_price" in df.columns and pd.notna(r.get("btc_price")) else None,
+            "btc": float(r["btc_price"]) if "btc_price" in chart_df.columns and pd.notna(r.get("btc_price")) else None,
             "up": up_v,
             "down": down_v,
         }
-        if "btc_twap_30s" in df.columns and pd.notna(r.get("btc_twap_30s")):
+        if "btc_twap_30s" in chart_df.columns and pd.notna(r.get("btc_twap_30s")):
             point["twap"] = float(r["btc_twap_30s"])
-        if "btc_chainlink" in df.columns and pd.notna(r.get("btc_chainlink")):
+        if "btc_chainlink" in chart_df.columns and pd.notna(r.get("btc_chainlink")):
             point["chainlink"] = float(r["btc_chainlink"])
         out.append(point)
     # Same as live: drop open 1¢/99¢ placeholders and break prior-window bleed jumps.

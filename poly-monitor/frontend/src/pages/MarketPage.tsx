@@ -25,7 +25,8 @@ import PriceChart, {
 import TradeSidebar from '../components/TradeSidebar'
 import VolumeChart from '../components/VolumeChart'
 
-const DEFAULT_X_SPAN_MS = 180_000
+const DEFAULT_X_SPAN_MS = 300_000 // 5m market window fallback
+const MARKET_WINDOW_MS = 300_000
 
 function volumeFields(p: {
   bn_buy?: number | null
@@ -682,8 +683,8 @@ export default function MarketPage({ mode }: Props) {
         setSeriesLive(
           d.series.map((p) => ({
             t: p.t,
-            up: p.up ?? 0,
-            down: p.down ?? 0,
+            up: p.up ?? null,
+            down: p.down ?? null,
             btc: p.btc,
             twap: p.twap ?? null,
             chainlink: p.chainlink ?? null,
@@ -738,8 +739,8 @@ export default function MarketPage({ mode }: Props) {
       setSeriesLive(
         detail.series.map((p) => ({
           t: p.t,
-          up: p.up ?? 0,
-          down: p.down ?? 0,
+          up: p.up ?? null,
+          down: p.down ?? null,
           btc: p.btc,
           twap: p.twap ?? null,
           chainlink: p.chainlink ?? null,
@@ -1246,8 +1247,8 @@ export default function MarketPage({ mode }: Props) {
         setSeriesLive(
           detail.series.map((p) => ({
             t: p.t,
-            up: p.up ?? 0,
-            down: p.down ?? 0,
+            up: p.up ?? null,
+            down: p.down ?? null,
             btc: p.btc,
             twap: p.twap ?? null,
             chainlink: p.chainlink ?? null,
@@ -1339,8 +1340,8 @@ export default function MarketPage({ mode }: Props) {
   const historySeriesFull = useMemo(() => {
     return (detail?.series ?? []).map((p) => ({
       t: p.t,
-      up: p.up ?? 0,
-      down: p.down ?? 0,
+      up: p.up ?? null,
+      down: p.down ?? null,
       btc: p.btc,
       twap: p.twap ?? null,
       chainlink: p.chainlink ?? null,
@@ -1408,21 +1409,32 @@ export default function MarketPage({ mode }: Props) {
     : (playheadTs ?? detail?.end_time ?? detail?.start_time ?? nowMs)
   const feedLive = liveActive || playing || paused
 
-  const xFullDomain = useMemo((): TimeDomain => {
+  const marketWindow = useMemo((): TimeDomain | null => {
     if (liveActive && liveWindow) {
       return [liveWindow.start, liveWindow.end]
     }
     if (detail?.start_time != null && detail?.end_time != null) {
-      // History: widen left edge when series includes premarket samples.
-      let dataMin = detail.start_time
-      const series = historySeriesFull.length
-        ? historySeriesFull
-        : (detail.series ?? [])
+      return [detail.start_time, detail.end_time]
+    }
+    return null
+  }, [liveActive, liveWindow, detail?.start_time, detail?.end_time])
+
+  // Max zoom-out range: market window plus any premarket samples.
+  const xFullDomain = useMemo((): TimeDomain => {
+    if (marketWindow) {
+      let dataMin = marketWindow[0]
+      const series = liveActive
+        ? chartData.length
+          ? chartData
+          : seriesLive
+        : historySeriesFull.length
+          ? historySeriesFull
+          : (detail?.series ?? [])
       for (const p of series) {
         const t = Number(p.t)
         if (Number.isFinite(t) && t < dataMin) dataMin = t
       }
-      return [dataMin, detail.end_time]
+      return [dataMin, marketWindow[1]]
     }
     if (chartData.length >= 2) {
       return [chartData[0].t, chartData[chartData.length - 1].t]
@@ -1431,28 +1443,28 @@ export default function MarketPage({ mode }: Props) {
       return [chartData[0].t, chartData[0].t + DEFAULT_X_SPAN_MS]
     }
     return [nowMs - DEFAULT_X_SPAN_MS, nowMs]
-  }, [liveActive, liveWindow, detail, chartData, historySeriesFull, nowMs])
+  }, [
+    marketWindow,
+    liveActive,
+    chartData,
+    seriesLive,
+    historySeriesFull,
+    detail?.series,
+    nowMs,
+  ])
 
-  // Live / history play (or scrub): trailing window. Idle full-market: whole 5m.
+  // Default view: full 5m market only. Premarket is reachable via zoom-out / pan.
   const xDefaultDomain = useMemo((): TimeDomain => {
-    const [f0, f1] = xFullDomain
-    if (!liveActive && !playing && !paused && playheadTs == null) {
-      const end = Number.isFinite(f1) && f1 > f0 ? f1 : f0 + 300_000
-      const start = Number.isFinite(f0) ? f0 : end - 300_000
-      return [start, end]
+    if (marketWindow) {
+      const [m0, m1] = marketWindow
+      if (m1 > m0) return [m0, m1]
+      return [m0, m0 + MARKET_WINDOW_MS]
     }
-    const latestData =
-      playheadTs != null
-        ? playheadTs
-        : chartData.length > 0
-          ? chartData[chartData.length - 1].t
-          : f0
-    const end = liveActive
-      ? Math.min(f1, Math.max(latestData, nowMs))
-      : Math.min(f1, Math.max(f0 + 1, latestData))
-    const start = end - DEFAULT_X_SPAN_MS
+    const [f0, f1] = xFullDomain
+    const end = Number.isFinite(f1) && f1 > f0 ? f1 : f0 + MARKET_WINDOW_MS
+    const start = Math.max(f0, end - MARKET_WINDOW_MS)
     return [start, end]
-  }, [xFullDomain, chartData, liveActive, nowMs, playing, paused, playheadTs])
+  }, [marketWindow, xFullDomain])
 
   // When following live, always use the sliding default window.
   useEffect(() => {
