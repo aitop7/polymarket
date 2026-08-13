@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { api, type DataHealth, type MarketSummary } from '../api'
+import { type DataHealth, type MarketSummary } from '../api'
 import { healthThresholdHeadline } from '../dataHealth'
 
 function outcomeTone(m: MarketSummary): 'up' | 'down' | 'pending' {
@@ -220,7 +220,6 @@ export default function ControlSidebar(props: Props) {
     marketEndMs,
     playheadMs,
     onSeek,
-    onHealthUpdated,
   } = props
 
   const histDisabled = liveActive || indexing
@@ -233,11 +232,6 @@ export default function ControlSidebar(props: Props) {
   const [dragTs, setDragTs] = useState<number | null>(null)
   const dragging = useRef(false)
   const [healthDialog, setHealthDialog] = useState<MarketSummary | null>(null)
-  const [rechecking, setRechecking] = useState(false)
-  const [recheckError, setRecheckError] = useState<string | null>(null)
-  const [orderbooksSource, setOrderbooksSource] = useState<string | null>(null)
-  const [chainlinkSource, setChainlinkSource] = useState<string | null>(null)
-  const healthBusy = rechecking
 
   const dialogHealth = healthTone(healthDialog?.data_health)
   const dialogGroups = useMemo(
@@ -248,69 +242,11 @@ export default function ControlSidebar(props: Props) {
   const openHealthDialog = (m: MarketSummary, e: MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    setRecheckError(null)
-    setOrderbooksSource(null)
-    setChainlinkSource(null)
     setHealthDialog(m)
   }
 
   const closeHealthDialog = () => {
-    if (healthBusy) return
     setHealthDialog(null)
-    setRecheckError(null)
-    setOrderbooksSource(null)
-    setChainlinkSource(null)
-  }
-
-  const applyHealthResult = (
-    mid: string,
-    res: {
-      data_health?: DataHealth | string
-      data_health_comment?: string | null
-      notes_by_file?: Record<string, string[]>
-      notes?: string[]
-      orderbooks_source?: string | null
-      chainlink_source?: string | null
-    },
-    reload = false,
-  ) => {
-    const health = (res.data_health || 'unchecked') as DataHealth
-    const fromFiles = res.notes_by_file
-      ? Object.entries(res.notes_by_file)
-          .flatMap(([file, gaps]) => [file, ...gaps.map((g) => `  ${g}`)])
-          .join('\n')
-      : ''
-    const comment = res.data_health_comment || fromFiles || (res.notes || []).join('\n') || null
-    if (res.orderbooks_source != null) {
-      setOrderbooksSource(res.orderbooks_source || null)
-    }
-    if (res.chainlink_source != null) {
-      setChainlinkSource(res.chainlink_source || null)
-    }
-    setHealthDialog((prev) =>
-      prev && prev.market_id === mid
-        ? {
-            ...prev,
-            data_health: health,
-            data_health_comment: comment,
-          }
-        : prev,
-    )
-    onHealthUpdated?.(mid, health, comment, { reload })
-  }
-
-  const runHealthRecheck = async () => {
-    if (!healthDialog || healthBusy) return
-    const mid = healthDialog.market_id
-    setRechecking(true)
-    setRecheckError(null)
-    try {
-      applyHealthResult(mid, await api.recheckMarketHealth(mid))
-    } catch (err) {
-      setRecheckError(err instanceof Error ? err.message : 'Recheck failed')
-    } finally {
-      setRechecking(false)
-    }
   }
 
   const displayTs = dragTs ?? playheadMs ?? start
@@ -328,17 +264,14 @@ export default function ControlSidebar(props: Props) {
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !healthBusy) {
-        setHealthDialog(null)
-        setRecheckError(null)
-      }
+      if (e.key === 'Escape') setHealthDialog(null)
     }
     window.addEventListener('keydown', onKey)
     return () => {
       document.body.style.overflow = prev
       window.removeEventListener('keydown', onKey)
     }
-  }, [healthDialog, healthBusy])
+  }, [healthDialog])
 
   const elapsedLabel = useMemo(() => {
     if (start == null || displayTs == null) return '0:00'
@@ -567,7 +500,6 @@ export default function ControlSidebar(props: Props) {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault()
                           e.stopPropagation()
-                          setRecheckError(null)
                           setHealthDialog(m)
                         }
                       }}
@@ -754,21 +686,11 @@ export default function ControlSidebar(props: Props) {
                 </span>
               </div>
               <p className="health-dialog-summary">{healthTitle(dialogHealth, null)}</p>
-              {orderbooksSource ? (
-                <p className="health-dialog-books-source">
-                  Order books scored from <code>{orderbooksSource}</code>
-                </p>
-              ) : null}
-              {chainlinkSource ? (
-                <p className="health-dialog-books-source">
-                  Chainlink scored from <code>{chainlinkSource}</code>
-                </p>
-              ) : null}
               <div className="health-dialog-body">
                 {dialogHealth === 'great' && dialogGroups.length === 0 ? (
                   <p className="health-dialog-empty">No missing gaps in price, book, or trade files.</p>
                 ) : dialogGroups.length === 0 ? (
-                  <p className="health-dialog-empty">No gap details stored yet. Recheck to scan files.</p>
+                  <p className="health-dialog-empty">No gap details stored for this market.</p>
                 ) : (
                   <ul className="health-dialog-files">
                     {dialogGroups.map((group) => (
@@ -786,23 +708,9 @@ export default function ControlSidebar(props: Props) {
                   </ul>
                 )}
               </div>
-              {recheckError && <p className="health-dialog-error">{recheckError}</p>}
               <div className="health-dialog-actions">
-                <button
-                  type="button"
-                  className="health-dialog-btn ghost"
-                  onClick={closeHealthDialog}
-                  disabled={healthBusy}
-                >
+                <button type="button" className="health-dialog-btn ghost" onClick={closeHealthDialog}>
                   Close
-                </button>
-                <button
-                  type="button"
-                  className="health-dialog-btn primary"
-                  onClick={() => void runHealthRecheck()}
-                  disabled={healthBusy || histDisabled}
-                >
-                  {rechecking ? 'Rechecking…' : 'Recheck'}
                 </button>
               </div>
             </div>
