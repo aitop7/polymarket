@@ -331,7 +331,13 @@ async def get_wallet_summary(
         raise HTTPException(400, str(exc)) from exc
     if not refresh:
         cached = wallet_store.get_summary(addr)
-        if cached is not None:
+        # Ignore closed-only / pre-aligned cache.
+        if (
+            cached is not None
+            and cached.get("scope") == "btc_updown_5m"
+            and cached.get("includes_open") is True
+            and cached.get("markets_aligned") is True
+        ):
             wallet_store.touch_viewed(addr)
             return cached
     try:
@@ -359,8 +365,13 @@ async def get_wallet_pnl(
         raise HTTPException(400, str(exc)) from exc
     if not refresh:
         cached = wallet_store.get_pnl(addr, interval)
-        # Ignore pre-rewrite all-market user-pnl cache.
-        if cached is not None and cached.get("scope") == "btc_updown_5m":
+        # Ignore closed-only / pre-aligned cache.
+        if (
+            cached is not None
+            and cached.get("scope") == "btc_updown_5m"
+            and cached.get("includes_open") is True
+            and cached.get("markets_aligned") is True
+        ):
             wallet_store.touch_viewed(addr)
             return cached
     try:
@@ -398,8 +409,14 @@ async def get_wallet_daily_pnl(
     # Only the primary (no-before) snapshot is served/saved from cache.
     if not refresh and not before:
         cached = wallet_store.get_daily(addr)
-        # Ignore pre-rewrite cache (no scan_limit / has_more).
-        if cached is not None and cached.get("scan_limit") is not None:
+        # Ignore stale snapshots that aren't markets-aligned day totals.
+        if (
+            cached is not None
+            and cached.get("scan_limit") is not None
+            and cached.get("includes_open")
+            and cached.get("by_market_day")
+            and cached.get("markets_aligned")
+        ):
             wallet_store.touch_viewed(addr)
             return cached
     try:
@@ -432,11 +449,12 @@ async def get_wallet_daily_pnl(
 async def get_wallet_activity(
     address: str,
     date: str | None = Query(None, description="ET calendar day YYYY-MM-DD"),
+    slug: str | None = Query(None, description="BTC 5m market slug (fills for that window)"),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0, le=20000),
     refresh: bool = Query(False),
 ) -> dict[str, Any]:
-    """Wallet activity tape (optional date filter). Links to Polygonscan + Orbscan."""
+    """Wallet activity tape (optional date or market-slug filter)."""
     from app.core.wallet_activity import fetch_wallet_activity, normalize_wallet
     from app.core import wallet_store
 
@@ -449,18 +467,21 @@ async def get_wallet_activity(
         addr = normalize_wallet(address)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    if date and not refresh and offset == 0:
+    # Day cache only for unscoped day pages (not slug lookups).
+    if date and not slug and not refresh and offset == 0:
         cached = wallet_store.get_day_activity(addr, date)
         if cached is not None:
             wallet_store.touch_viewed(addr)
             return cached
     try:
-        data = await fetch_wallet_activity(addr, date=date, limit=limit, offset=offset)
+        data = await fetch_wallet_activity(
+            addr, date=date, slug=slug, limit=limit, offset=offset
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Wallet activity failed: {exc}") from exc
-    if date and offset == 0:
+    if date and not slug and offset == 0:
         wallet_store.save_day(addr, date, activity=data)
     return {**data, "cached": False}
 
@@ -488,9 +509,16 @@ async def get_wallet_markets(
         raise HTTPException(400, str(exc)) from exc
     if date and not refresh:
         cached = wallet_store.get_day_markets(addr, date)
+        # Drop pre-tape-fallback cache (no pnl_source) so activity-only markets
+        # get sell+redeem−buy PnL instead of "—".
         if cached is not None:
-            wallet_store.touch_viewed(addr)
-            return cached
+            cached_markets = cached.get("markets") or []
+            if cached_markets and all(
+                m.get("pnl_source") in {"closed", "activity", "none"} and "unredeemed" in m
+                for m in cached_markets
+            ) and "activity_pnl" in cached and "closed_pnl" in cached:
+                wallet_store.touch_viewed(addr)
+                return cached
     try:
         # Reuse same-day activity cache when present so markets rebuild doesn't
         # re-hit Polymarket activity (the slow path that made cached switches lag).

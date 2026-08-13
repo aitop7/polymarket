@@ -307,10 +307,11 @@ export const api = {
   },
   walletActivity: (
     address: string,
-    opts?: { date?: string; limit?: number; offset?: number; refresh?: boolean },
+    opts?: { date?: string; slug?: string; limit?: number; offset?: number; refresh?: boolean },
   ) => {
     const q = new URLSearchParams({ _ts: String(Date.now()) })
     if (opts?.date) q.set('date', opts.date)
+    if (opts?.slug) q.set('slug', opts.slug)
     if (opts?.limit != null) q.set('limit', String(opts.limit))
     if (opts?.offset != null) q.set('offset', String(opts.offset))
     if (opts?.refresh) q.set('refresh', 'true')
@@ -468,6 +469,7 @@ export type WalletSummary = {
   orbscan_url: string
   polymarket_url: string
   comment?: string | null
+  scope?: string | null
 }
 
 export type WalletPnlPoint = { t: number; pnl: number }
@@ -485,9 +487,13 @@ export type WalletPnlResponse = {
 export type WalletDailyRow = {
   date: string
   t: number
+  /** Closed + activity-tape extras (aligned with PnL by market). */
   pnl: number
+  /** Closed-settles-only PnL. */
+  realized_pnl?: number | null
   cum_pnl?: number | null
   n_positions?: number
+  n_open?: number
 }
 
 export type WalletDailyResponse = {
@@ -497,7 +503,12 @@ export type WalletDailyResponse = {
   scan_limit?: number
   has_more?: boolean
   before?: string | null
+  includes_open?: boolean
+  by_market_day?: boolean
+  markets_aligned?: boolean
+  n_open?: number
   daily: WalletDailyRow[]
+  cached?: boolean
 }
 
 export type WalletActivityItem = {
@@ -550,10 +561,15 @@ export type WalletMarketPnl = {
   icon?: string | null
   outcomes?: (string | null)[]
   pnl?: number | null
+  pnl_source?: 'closed' | 'activity' | 'none' | string | null
   status?: string | null
   timestamp?: number | null
   end_date?: string | null
   total_bought?: number
+  unredeemed?: boolean
+  redeemable?: boolean
+  open_shares?: number | null
+  open_value?: number | null
 }
 
 export type WalletMarketsResponse = {
@@ -563,6 +579,8 @@ export type WalletMarketsResponse = {
   total_count?: number
   has_more?: boolean
   total_pnl: number
+  closed_pnl?: number
+  activity_pnl?: number
   markets: WalletMarketPnl[]
 }
 

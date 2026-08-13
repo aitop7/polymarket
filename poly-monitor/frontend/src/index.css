@@ -4518,6 +4518,12 @@ select {
   padding-top: 0.85rem;
 }
 
+.wallet-profile-scope {
+  margin-top: 0.45rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.01em;
+}
+
 .wallet-stat-value {
   font-size: 1.05rem;
   font-weight: 700;
@@ -4688,6 +4694,25 @@ select {
   font-size: 0.82rem;
   font-weight: 600;
   background: var(--bg-elev);
+}
+
+.wallet-activity-selected-left {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.wallet-activity-selected-left > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-market-window-hint {
+  font-size: 0.68rem;
+  font-weight: 500;
 }
 
 .wallet-activity-selected-title > span:first-child {
@@ -4996,6 +5021,29 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.wallet-unredeemed-pill {
+  flex: 0 0 auto;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 3px;
+  padding: 0.05rem 0.28rem;
+  line-height: 1.15;
+}
+
+.wallet-unredeemed-hint {
+  color: #92400e !important;
+  font-weight: 600;
 }
 
 .wallet-activity-panel {
@@ -5079,7 +5127,7 @@ select {
 
 .wallet-fill-row {
   display: grid;
-  grid-template-columns: 5.4rem minmax(4.5rem, 0.9fr) minmax(5.5rem, 1.1fr) 3.4rem 2.4rem;
+  grid-template-columns: 5.6rem minmax(4.5rem, 0.9fr) minmax(5.5rem, 1.1fr) 3.4rem 2.4rem;
   gap: 0.35rem 0.5rem;
   align-items: center;
   padding: 0.42rem 0.75rem;
@@ -5097,10 +5145,37 @@ select {
   box-shadow: inset 3px 0 0 var(--accent, #3b82f6);
 }
 
+.wallet-fill-row.after-window {
+  opacity: 0.9;
+}
+
 .wallet-fill-time {
   color: var(--muted);
   font-size: 0.72rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.wallet-fill-time-clock {
   white-space: nowrap;
+}
+
+.wallet-fill-after {
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #b45309;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-radius: 3px;
+  padding: 0.04rem 0.26rem;
+  line-height: 1.15;
+  max-width: 100%;
 }
 
 .wallet-fill-action {

@@ -132,6 +132,22 @@ def _et_day_bounds(date_et: str) -> tuple[int, int]:
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
 
+def _slug_activity_bounds(slug: str) -> tuple[int, int] | None:
+    """Activity window for a BTC 5m market slug (trades + late redeems)."""
+    s = (slug or "").strip()
+    if not _BTC_UPDOWN_5M_SLUG_RE.match(s):
+        return None
+    try:
+        start_sec = int(s.rsplit("-", 1)[-1])
+    except ValueError:
+        return None
+    if start_sec <= 0:
+        return None
+    start_ms = start_sec * 1000
+    # 2m before open → 30m after open covers fills + post-window redeems.
+    return start_ms - 120_000, start_ms + 30 * 60_000
+
+
 def _display_name(row: dict[str, Any], wallet: str) -> str:
     name = str(row.get("name") or "").strip()
     pseudo = str(row.get("pseudonym") or "").strip()
@@ -208,27 +224,13 @@ async def _get_json(
 
 
 async def fetch_wallet_summary(address: str) -> dict[str, Any]:
+    """Profile + BTC Up/Down 5m position/PnL headline stats for the user card."""
     wallet = normalize_wallet(address)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=8.0)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=8.0)) as client:
         trades = await _get_json(
             client,
             f"{DATA_API_URL}/trades",
             params={"user": wallet, "limit": 1, "takerOnly": "false"},
-        )
-        closed = await _get_json(
-            client,
-            f"{DATA_API_URL}/closed-positions",
-            params={
-                "user": wallet,
-                "limit": 50,
-                "sortBy": "REALIZEDPNL",
-                "sortDirection": "DESC",
-            },
-        )
-        positions = await _get_json(
-            client,
-            f"{DATA_API_URL}/positions",
-            params={"user": wallet, "limit": 100, "sizeThreshold": 0},
         )
         try:
             lb = await _get_json(
@@ -239,62 +241,70 @@ async def fetch_wallet_summary(address: str) -> dict[str, Any]:
         except Exception:
             lb = []
 
+        # Scan closed BTC positions for all-time PnL + biggest win (not all-market LB).
+        total_pnl = 0.0
+        biggest_win: dict[str, Any] | None = None
+        closed_n = 0
+        closed_keys: set[str] = set()
+        offset = 0
+        page = 50
+        max_btc = 8_000
+        while closed_n < max_btc and offset <= 200_000:
+            try:
+                batch = await _get_json(
+                    client,
+                    f"{DATA_API_URL}/closed-positions",
+                    params={
+                        "user": wallet,
+                        "limit": page,
+                        "offset": offset,
+                        "sortBy": "TIMESTAMP",
+                        "sortDirection": "DESC",
+                    },
+                )
+            except httpx.HTTPStatusError:
+                break
+            if not isinstance(batch, list) or not batch:
+                break
+            for raw in batch:
+                item = _norm_closed_position(raw)
+                if item is None:
+                    continue
+                closed_n += 1
+                try:
+                    pnl = float(item.get("realized_pnl") or 0.0)
+                except (TypeError, ValueError):
+                    pnl = 0.0
+                total_pnl += pnl
+                closed_keys.update(_market_lookup_keys(item))
+                if biggest_win is None or pnl > float(biggest_win["realized_pnl"]):
+                    biggest_win = {
+                        "realized_pnl": pnl,
+                        "title": item.get("title"),
+                        "slug": item.get("slug"),
+                        "outcome": item.get("outcome"),
+                    }
+                if closed_n >= max_btc:
+                    break
+            if len(batch) < page or closed_n >= max_btc:
+                break
+            offset += len(batch)
+
+        extras = await _btc_unrealized_extras(
+            client, wallet, closed_keys, activity_lookback_ms=45 * 86_400_000
+        )
+
     profile_src: dict[str, Any] = {}
     if isinstance(trades, list) and trades:
         profile_src = trades[0]
     elif isinstance(lb, list) and lb:
         profile_src = lb[0]
 
-    biggest_win = None
-    if isinstance(closed, list):
-        for top in closed:
-            slug = str(top.get("slug") or top.get("eventSlug") or "") or None
-            title = str(top.get("title") or "") or None
-            if not is_btc_updown_5m(slug=slug, title=title):
-                continue
-            try:
-                pnl = float(top.get("realizedPnl") or 0)
-            except (TypeError, ValueError):
-                pnl = 0.0
-            biggest_win = {
-                "realized_pnl": pnl,
-                "title": top.get("title"),
-                "slug": top.get("slug") or top.get("eventSlug"),
-                "outcome": top.get("outcome"),
-            }
-            break
-
-    total_pnl = None
-    if isinstance(lb, list) and lb:
-        try:
-            total_pnl = float(lb[0].get("amount"))
-        except (TypeError, ValueError):
-            total_pnl = None
-
-    open_btc = [
-        p
-        for p in (positions if isinstance(positions, list) else [])
-        if is_btc_updown_5m(
-            slug=str(p.get("slug") or p.get("eventSlug") or "") or None,
-            title=str(p.get("title") or "") or None,
-        )
-    ]
-    closed_btc = [
-        p
-        for p in (closed if isinstance(closed, list) else [])
-        if is_btc_updown_5m(
-            slug=str(p.get("slug") or p.get("eventSlug") or "") or None,
-            title=str(p.get("title") or "") or None,
-        )
-    ]
-    open_n = len(open_btc)
-    closed_n = len(closed_btc)
-    positions_value = 0.0
-    for p in open_btc:
-        try:
-            positions_value += float(p.get("currentValue") or 0)
-        except (TypeError, ValueError):
-            pass
+    closed_pnl = _round_pnl_to_cents(total_pnl) if closed_n else 0.0
+    activity_pnl = float(extras.get("activity_pnl") or 0.0)
+    open_pnl = float(extras.get("open_pnl") or 0.0)
+    # Same formula as PnL-by-day / PnL-by-market: closed + tape + leftover open marks.
+    combined = _round_pnl_to_cents(closed_pnl + activity_pnl + open_pnl)
 
     return {
         "wallet": wallet,
@@ -306,13 +316,19 @@ async def fetch_wallet_summary(address: str) -> dict[str, Any]:
             or ""
         )
         or None,
-        "positions_value": positions_value,
+        "scope": "btc_updown_5m",
+        "includes_open": True,
+        "markets_aligned": True,
+        "positions_value": float(extras.get("positions_value") or 0.0),
         "biggest_win": biggest_win,
-        "total_pnl": total_pnl,
-        "open_positions": open_n,
+        "total_pnl": combined,
+        "closed_pnl": closed_pnl,
+        "open_pnl": open_pnl,
+        "activity_pnl": activity_pnl,
+        "open_positions": int(extras.get("n_open") or 0),
         "closed_sample": closed_n,
         "polygonscan_url": f"https://polygonscan.com/address/{wallet}",
-        "orbscan_url": f"https://orbscan.com/profile/{wallet}",
+        "orbscan_url": f"https://orbscan.com/address/{wallet}",
         "polymarket_url": f"https://polymarket.com/profile/{wallet}",
     }
 
@@ -387,6 +403,25 @@ async def fetch_wallet_pnl(address: str, interval: str = "1d") -> dict[str, Any]
                 break
             offset += len(batch)
 
+        open_pnl = 0.0
+        open_n = 0
+        activity_pnl = 0.0
+        closed_keys: set[str] = set()
+        for item in closed:
+            closed_keys.update(_market_lookup_keys(item))
+        extras = await _btc_unrealized_extras(
+            client,
+            wallet,
+            closed_keys,
+            cutoff_ms=cutoff,
+            now_ms=now_ms,
+            activity_lookback_ms=45 * 86_400_000,
+        )
+        activity_pnl = float(extras.get("activity_pnl") or 0.0)
+        open_pnl = float(extras.get("open_pnl") or 0.0)
+        open_n = int(extras.get("n_open") or 0)
+        extra_pnl = float(extras.get("extra_pnl") or 0.0)
+
     # Oldest → newest cumulative realized PnL.
     closed.sort(key=lambda r: int(r.get("timestamp") or 0))
     points: list[dict[str, Any]] = []
@@ -429,7 +464,8 @@ async def fetch_wallet_pnl(address: str, interval: str = "1d") -> dict[str, Any]
             points = in_win
 
     start_pnl = points[0]["pnl"] if points else None
-    end_pnl = points[-1]["pnl"] if points else None
+    closed_end_pnl = points[-1]["pnl"] if points else None
+    end_pnl = closed_end_pnl
 
     # Age from first BTC settle.
     age_days = None
@@ -437,40 +473,118 @@ async def fetch_wallet_pnl(address: str, interval: str = "1d") -> dict[str, Any]
         age_days = max(0.0, (now_ms - int(points[0]["t"])) / 86_400_000.0)
 
     use_absolute = key in {"all", "max"} or _period_too_short(key, age_days)
-    if end_pnl is None:
+    if closed_end_pnl is None and open_n == 0 and activity_pnl == 0:
         headline = None
     elif use_absolute or start_pnl is None or len(points) < 2:
-        headline = end_pnl
+        base = float(closed_end_pnl or 0.0)
+        headline = _round_pnl_to_cents(base + extra_pnl)
     else:
-        headline = _round_pnl_to_cents(float(end_pnl) - float(start_pnl))
+        headline = _round_pnl_to_cents(float(closed_end_pnl) - float(start_pnl) + extra_pnl)
 
-    if headline is not None:
-        headline = _round_pnl_to_cents(float(headline))
+    # Fold unredeemed extras into the series so the chart end matches the headline.
+    if extra_pnl and (points or extra_pnl != 0):
+        last = float(closed_end_pnl or 0.0) + extra_pnl
+        points = [
+            *points,
+            {"t": now_ms, "pnl": _round_pnl_to_cents(last)},
+        ]
+        end_pnl = _round_pnl_to_cents(last)
 
     return {
         "wallet": wallet,
         "interval": key,
         "fidelity": fidelity,
         "scope": "btc_updown_5m",
+        "includes_open": True,
+        "markets_aligned": True,
         "start_pnl": start_pnl,
         "end_pnl": end_pnl,
         "pnl": headline,
+        "closed_pnl": closed_end_pnl,
+        "open_pnl": open_pnl,
+        "activity_pnl": activity_pnl,
         "absolute": use_absolute,
         "account_age_days": age_days,
         "has_more": (not exhausted) and len(closed) >= max_btc,
         "n_positions": len(closed),
+        "n_open": open_n,
         "series": points,
     }
 
 
+def _open_position_mark_pnl(pos: dict[str, Any]) -> float:
+    """Economic PnL for an open/unredeemed position (matches market tape estimate)."""
+    try:
+        if pos.get("cash_pnl") is not None:
+            return float(pos["cash_pnl"])
+    except (TypeError, ValueError):
+        pass
+    try:
+        if pos.get("realized_pnl") is not None:
+            return float(pos["realized_pnl"])
+    except (TypeError, ValueError):
+        pass
+    try:
+        cur = float(pos.get("current_value") or 0)
+    except (TypeError, ValueError):
+        cur = 0.0
+    try:
+        size = float(pos.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0.0
+    try:
+        avg = float(pos["avg_price"]) if pos.get("avg_price") is not None else None
+    except (TypeError, ValueError):
+        avg = None
+    cost = (avg * size) if avg is not None else 0.0
+    return cur - cost
+
+
+def _slug_market_day(slug: str | None) -> str | None:
+    """ET calendar day of a BTC 5m market window (from slug open time)."""
+    slug_ts = _slug_window_start_ms(slug)
+    if slug_ts is None:
+        return None
+    return datetime.fromtimestamp(int(slug_ts) / 1000, tz=_ET).strftime("%Y-%m-%d")
+
+
 def _settle_day(pos: dict[str, Any]) -> str | None:
-    """Prefer closed-position endDate (ET calendar day); fall back to timestamp."""
+    """Attribute a position to its market-window ET day (not redeem/settle day).
+
+    Midnight windows (e.g. 11:55PM–12:00AM) redeem next calendar day; day buckets
+    must still use the slug open day so the market appears once with full PnL.
+    """
+    day = _slug_market_day(pos.get("slug") if isinstance(pos.get("slug"), str) else None)
+    if day:
+        return day
     end_date = pos.get("end_date")
     if isinstance(end_date, str) and len(end_date) >= 10:
         return end_date[:10]
     ts = pos.get("timestamp")
     if ts is not None:
         return datetime.fromtimestamp(int(ts) / 1000, tz=_ET).strftime("%Y-%m-%d")
+    return None
+
+
+def _open_market_day(pos: dict[str, Any]) -> str | None:
+    """ET calendar day for an open/unredeemed market (same rules as closed)."""
+    return _settle_day(pos)
+
+
+def _row_market_day(row: dict[str, Any]) -> str | None:
+    """Best-effort market-window day for a market/activity/closed row."""
+    day = _slug_market_day(row.get("slug") if isinstance(row.get("slug"), str) else None)
+    if day:
+        return day
+    end_date = row.get("end_date")
+    if isinstance(end_date, str) and len(end_date) >= 10:
+        return end_date[:10]
+    ts = row.get("timestamp")
+    if ts is not None:
+        try:
+            return datetime.fromtimestamp(int(ts) / 1000, tz=_ET).strftime("%Y-%m-%d")
+        except (TypeError, ValueError, OSError):
+            return None
     return None
 
 
@@ -481,15 +595,16 @@ async def _aggregate_btc_closed_by_day(
     max_btc: int = 3000,
     max_offset: int = 200_000,
     before: str | None = None,
-) -> tuple[dict[str, dict[str, Any]], bool]:
+) -> tuple[dict[str, dict[str, Any]], bool, dict[str, set[str]]]:
     """
-    Sum realized BTC Up/Down 5m PnL by settle day.
+    Sum realized BTC Up/Down 5m PnL by market-window day.
 
-    Trades API history is shallow for hyperactive wallets, so closed-positions
-    is the durable source for “every traded day”.
+    Also returns per-day market lookup keys (condition_id / slug) so activity-tape
+    extras can skip markets that already have closed PnL.
     """
     max_btc = max(50, min(int(max_btc), 50_000))
     by_day: dict[str, dict[str, Any]] = {}
+    closed_keys_by_day: dict[str, set[str]] = {}
     offset = 0
     n_btc = 0
     exhausted = False
@@ -532,14 +647,20 @@ async def _aggregate_btc_closed_by_day(
                 by_day[day] = {
                     "date": day,
                     "pnl": float(pnl or 0.0),
+                    "realized_pnl": float(pnl or 0.0),
                     "n_positions": 1,
+                    "n_open": 0,
                     "t": int(ts) if ts else 0,
                 }
             else:
                 bucket["pnl"] = float(bucket["pnl"]) + float(pnl or 0.0)
+                bucket["realized_pnl"] = float(bucket["realized_pnl"]) + float(pnl or 0.0)
                 bucket["n_positions"] = int(bucket["n_positions"]) + 1
                 if ts and int(ts) > int(bucket.get("t") or 0):
                     bucket["t"] = int(ts)
+            keys = closed_keys_by_day.setdefault(day, set())
+            for key in _market_lookup_keys(item):
+                keys.add(key)
             if n_btc >= max_btc:
                 break
 
@@ -551,9 +672,289 @@ async def _aggregate_btc_closed_by_day(
         offset += len(batch)
 
     has_more = (not exhausted) and n_btc >= max_btc
-    for bucket in by_day.values():
-        bucket["pnl"] = _round_pnl_to_cents(float(bucket["pnl"]))
-    return by_day, has_more
+    return by_day, has_more, closed_keys_by_day
+
+
+def _market_lookup_keys(row: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for v in (row.get("condition_id"), row.get("slug")):
+        s = str(v or "").strip().lower()
+        if s:
+            out.append(s)
+    return out
+
+
+async def _paginate_btc_activity_range(
+    client: httpx.AsyncClient,
+    wallet: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    max_rows: int = 12_000,
+) -> list[dict[str, Any]]:
+    """BTC 5m activity in [start_ms, end_ms)."""
+    rows: list[dict[str, Any]] = []
+    page_offset = 0
+    max_rows = max(100, min(int(max_rows), 30_000))
+    while len(rows) < max_rows and page_offset <= 50_000:
+        page_limit = min(500, max_rows - len(rows))
+        try:
+            batch = await _get_json(
+                client,
+                f"{DATA_API_URL}/activity",
+                params={
+                    "user": wallet,
+                    "limit": page_limit,
+                    "offset": page_offset,
+                    "start": start_ms // 1000,
+                    "end": end_ms // 1000,
+                },
+            )
+        except httpx.HTTPStatusError:
+            break
+        if not isinstance(batch, list) or not batch:
+            break
+        for raw in batch:
+            item = _norm_activity(raw)
+            if item is None:
+                continue
+            ts = int(item["timestamp"])
+            if ts < start_ms or ts >= end_ms:
+                continue
+            rows.append(item)
+        if len(batch) < page_limit:
+            break
+        page_offset += len(batch)
+    return rows
+
+
+async def _btc_unrealized_extras(
+    client: httpx.AsyncClient,
+    wallet: str,
+    closed_keys: set[str],
+    *,
+    cutoff_ms: int | None = None,
+    now_ms: int | None = None,
+    activity_lookback_ms: int = 30 * 86_400_000,
+) -> dict[str, Any]:
+    """
+    Activity-tape + open marks for markets not already in closed_keys.
+
+    Matches PnL-by-market / aligned daily: prefer tape, then leftover open marks.
+    """
+    now = int(now_ms if now_ms is not None else datetime.now(timezone.utc).timestamp() * 1000)
+    if cutoff_ms is not None:
+        act_start = int(cutoff_ms)
+    else:
+        act_start = max(0, now - int(activity_lookback_ms))
+    act_end = now + 45 * 60_000
+
+    acts = await _paginate_btc_activity_range(
+        client, wallet, act_start, act_end, max_rows=12_000
+    )
+    groups = _group_activity_by_market(acts)
+    tape = 0.0
+    tape_keys: set[str] = set()
+    for m in groups:
+        if _is_live_btc_market(m.get("slug"), now_ms=now):
+            continue
+        slug_ts = _slug_window_start_ms(m.get("slug"))
+        acts_rows = list(m.get("activity") or [])
+        first_ts = acts_rows[0].get("timestamp") if acts_rows else None
+        ts = slug_ts or first_ts or now
+        if cutoff_ms is not None and int(ts) < int(cutoff_ms):
+            continue
+        keys = _market_lookup_keys(m)
+        if any(k in closed_keys for k in keys):
+            continue
+        tp = _activity_tape_pnl(acts_rows)
+        if tp is None:
+            continue
+        tape += float(tp)
+        tape_keys.update(keys)
+
+    open_extra = 0.0
+    open_n = 0
+    positions_value = 0.0
+    try:
+        raw_open = await _get_json(
+            client,
+            f"{DATA_API_URL}/positions",
+            params={"user": wallet, "limit": 100, "sizeThreshold": 0},
+        )
+    except httpx.HTTPStatusError:
+        raw_open = []
+    if isinstance(raw_open, list):
+        for raw in raw_open:
+            item = _norm_open_position(raw)
+            if item is None:
+                continue
+            if _is_live_btc_market(item.get("slug"), now_ms=now):
+                continue
+            slug_ts = _slug_window_start_ms(item.get("slug"))
+            ts = slug_ts or item.get("timestamp") or now
+            if cutoff_ms is not None and int(ts) < int(cutoff_ms):
+                continue
+            try:
+                positions_value += float(item.get("current_value") or 0)
+            except (TypeError, ValueError):
+                pass
+            keys = _market_lookup_keys(item)
+            if any(k in closed_keys for k in keys):
+                continue
+            if any(k in tape_keys for k in keys):
+                continue
+            open_extra += _open_position_mark_pnl(item)
+            open_n += 1
+
+    activity_pnl = _round_pnl_to_cents(tape)
+    open_pnl = _round_pnl_to_cents(open_extra)
+    return {
+        "activity_pnl": activity_pnl,
+        "open_pnl": open_pnl,
+        "extra_pnl": _round_pnl_to_cents(activity_pnl + open_pnl),
+        "n_open": open_n,
+        "positions_value": positions_value,
+    }
+
+
+async def _apply_markets_style_day_totals(
+    client: httpx.AsyncClient,
+    wallet: str,
+    daily: list[dict[str, Any]],
+    closed_keys_by_day: dict[str, set[str]],
+) -> None:
+    """
+    Set each day's pnl like PnL-by-market: closed settles + activity-tape for
+    markets that never got a closed row (unredeemed / not indexed yet).
+    """
+    if not daily:
+        return
+    date_set = {str(r["date"]) for r in daily}
+    dates_sorted = sorted(date_set)
+    start_ms, _ = _et_day_bounds(dates_sorted[0])
+    _, end_ms = _et_day_bounds(dates_sorted[-1])
+    # Late redeems for the newest day's last windows land just after midnight.
+    end_ms += 45 * 60_000
+
+    acts = await _paginate_btc_activity_range(
+        client, wallet, start_ms, end_ms, max_rows=20_000
+    )
+    groups = _group_activity_by_market(acts)
+    tape_by_day: dict[str, float] = {}
+    tape_keys_by_day: dict[str, set[str]] = {}
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    for m in groups:
+        day = _row_market_day(m)
+        if day is None or day not in date_set:
+            continue
+        if _is_live_btc_market(m.get("slug"), now_ms=now_ms):
+            continue
+        closed_keys = closed_keys_by_day.get(day) or set()
+        keys = _market_lookup_keys(m)
+        if any(k in closed_keys for k in keys):
+            continue
+        tape = _activity_tape_pnl(list(m.get("activity") or []))
+        if tape is None:
+            continue
+        tape_by_day[day] = float(tape_by_day.get(day, 0.0)) + float(tape)
+        tape_keys_by_day.setdefault(day, set()).update(keys)
+
+    # Open marks for claimable/unindexed markets missed by the activity window.
+    try:
+        raw_open = await _get_json(
+            client,
+            f"{DATA_API_URL}/positions",
+            params={"user": wallet, "limit": 100, "sizeThreshold": 0},
+        )
+    except httpx.HTTPStatusError:
+        raw_open = []
+    open_extra_by_day: dict[str, float] = {}
+    if isinstance(raw_open, list):
+        for raw in raw_open:
+            item = _norm_open_position(raw)
+            if item is None:
+                continue
+            if _is_live_btc_market(item.get("slug"), now_ms=now_ms):
+                continue
+            day = _open_market_day(item)
+            if day is None or day not in date_set:
+                continue
+            keys = _market_lookup_keys(item)
+            closed_keys = closed_keys_by_day.get(day) or set()
+            if any(k in closed_keys for k in keys):
+                continue
+            tape_keys = tape_keys_by_day.get(day) or set()
+            if any(k in tape_keys for k in keys):
+                continue
+            open_extra_by_day[day] = float(open_extra_by_day.get(day, 0.0)) + float(
+                _open_position_mark_pnl(item)
+            )
+            for row in daily:
+                if row["date"] == day:
+                    row["n_open"] = int(row.get("n_open") or 0) + 1
+                    break
+
+    for row in daily:
+        day = str(row["date"])
+        realized = _round_pnl_to_cents(float(row.get("realized_pnl") or 0.0))
+        row["realized_pnl"] = realized
+        extra = float(tape_by_day.get(day, 0.0)) + float(open_extra_by_day.get(day, 0.0))
+        row["pnl"] = _round_pnl_to_cents(realized + extra)
+        row.setdefault("n_open", 0)
+
+
+async def _fold_open_into_daily(
+    client: httpx.AsyncClient,
+    wallet: str,
+    by_day: dict[str, dict[str, Any]],
+    *,
+    before: str | None = None,
+) -> int:
+    """Add open/unredeemed mark PnL into ET market-window days. Returns open count."""
+    try:
+        raw_open = await _get_json(
+            client,
+            f"{DATA_API_URL}/positions",
+            params={"user": wallet, "limit": 100, "sizeThreshold": 0},
+        )
+    except httpx.HTTPStatusError:
+        raw_open = []
+    open_n = 0
+    if not isinstance(raw_open, list):
+        return 0
+    for raw in raw_open:
+        item = _norm_open_position(raw)
+        if item is None:
+            continue
+        # Skip the in-progress window — not a settled/unredeemed past market.
+        if _is_live_btc_market(item.get("slug")):
+            continue
+        day = _open_market_day(item)
+        if day is None:
+            continue
+        if before and day >= before:
+            continue
+        mark = _open_position_mark_pnl(item)
+        open_n += 1
+        slug_ts = _slug_window_start_ms(item.get("slug")) or item.get("timestamp") or 0
+        bucket = by_day.get(day)
+        if bucket is None:
+            by_day[day] = {
+                "date": day,
+                "pnl": float(mark),
+                "realized_pnl": 0.0,
+                "n_positions": 0,
+                "n_open": 1,
+                "t": int(slug_ts) if slug_ts else 0,
+            }
+        else:
+            bucket["pnl"] = float(bucket["pnl"]) + float(mark)
+            bucket["n_open"] = int(bucket.get("n_open") or 0) + 1
+            if slug_ts and int(slug_ts) > int(bucket.get("t") or 0):
+                bucket["t"] = int(slug_ts)
+    return open_n
 
 
 async def fetch_wallet_daily_pnl(
@@ -563,7 +964,7 @@ async def fetch_wallet_daily_pnl(
     scan_limit: int = 3000,
     before: str | None = None,
 ) -> dict[str, Any]:
-    """BTC Up/Down 5m realized PnL by settle day (newest first)."""
+    """BTC Up/Down 5m PnL by day (same formula as PnL-by-market totals)."""
     wallet = normalize_wallet(address)
     days = max(1, min(int(days), 730))
     scan_limit = max(50, min(int(scan_limit), 50_000))
@@ -573,14 +974,24 @@ async def fetch_wallet_daily_pnl(
         except ValueError as exc:
             raise ValueError("before must be YYYY-MM-DD") from exc
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=8.0)) as client:
-        by_day, has_more = await _aggregate_btc_closed_by_day(
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0)) as client:
+        by_day, has_more, closed_keys_by_day = await _aggregate_btc_closed_by_day(
             client, wallet, max_btc=scan_limit, before=before
         )
 
-    daily = sorted(by_day.values(), key=lambda r: r["date"], reverse=True)
-    # Keep at most `days` rows for this page.
-    daily = daily[:days]
+        for bucket in by_day.values():
+            bucket["realized_pnl"] = _round_pnl_to_cents(
+                float(bucket.get("realized_pnl") or 0.0)
+            )
+            bucket["pnl"] = bucket["realized_pnl"]
+            bucket.setdefault("n_open", 0)
+
+        daily = sorted(by_day.values(), key=lambda r: r["date"], reverse=True)
+        daily = daily[:days]
+        await _apply_markets_style_day_totals(
+            client, wallet, daily, closed_keys_by_day
+        )
+
     for row in daily:
         row["cum_pnl"] = None  # BTC-only day sums; not account-level cumulative
 
@@ -591,6 +1002,10 @@ async def fetch_wallet_daily_pnl(
         "before": before,
         "traded_days": len(by_day),
         "has_more": has_more or len(by_day) > len(daily),
+        "includes_open": True,
+        "by_market_day": True,
+        "markets_aligned": True,
+        "n_open": 0,
         "daily": daily,
     }
 
@@ -728,7 +1143,7 @@ async def _paginate_closed_positions(
     date: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    """Fetch closed positions, optionally filtered to an ET endDate / settle day."""
+    """Fetch closed positions, optionally filtered to an ET market-window day."""
     limit = max(1, min(int(limit), 500))
     out: list[dict[str, Any]] = []
     offset = 0
@@ -771,15 +1186,13 @@ async def _paginate_closed_positions(
                     break
                 continue
             if date:
-                end_date = item.get("end_date")
-                if isinstance(end_date, str) and len(end_date) >= 10:
-                    end_date = end_date[:10]
-                ts = item.get("timestamp")
-                on_day = end_date == date
-                if not on_day and ts is not None and start_ms is not None and end_ms is not None:
-                    on_day = start_ms <= int(ts) < end_ms
+                market_day = _row_market_day(item)
+                on_day = market_day == date if market_day else False
                 if not on_day:
                     # TIMESTAMP DESC — once we're fully before the day, stop.
+                    # Late redeems for prior-evening windows can timestamp after
+                    # midnight; skip those (wrong market day) without stopping.
+                    ts = item.get("timestamp")
                     if ts is not None and start_ms is not None and int(ts) < start_ms:
                         stop_early = True
                         break
@@ -793,6 +1206,65 @@ async def _paginate_closed_positions(
         offset += len(batch)
 
     return out[:limit]
+
+
+def _slug_window_start_ms(slug: str | None) -> int | None:
+    bounds = _slug_activity_bounds(str(slug or ""))
+    if bounds is None:
+        return None
+    # bounds start is 2m before open; recover official open.
+    return int(bounds[0]) + 120_000
+
+
+def _is_live_btc_market(slug: str | None, *, now_ms: int | None = None) -> bool:
+    """True while the 5m window is still open (exclude from day/market lists)."""
+    start = _slug_window_start_ms(slug)
+    if start is None:
+        return False
+    now = int(
+        now_ms
+        if now_ms is not None
+        else datetime.now(timezone.utc).timestamp() * 1000
+    )
+    return now < start + 5 * 60_000
+
+
+def _activity_tape_pnl(rows: list[dict[str, Any]]) -> float | None:
+    """Net from activity tape: sells + redeems − buys (matches Activity Profit)."""
+    if not rows:
+        return None
+    buy_usd = 0.0
+    sell_usd = 0.0
+    redeem_usd = 0.0
+    for row in rows:
+        typ = str(row.get("type") or "").upper()
+        side = str(row.get("side") or "").upper()
+        try:
+            shares = float(row.get("shares") or 0)
+        except (TypeError, ValueError):
+            shares = 0.0
+        try:
+            usd = float(row.get("usd") or 0)
+        except (TypeError, ValueError):
+            usd = 0.0
+        if typ == "REDEEM":
+            # Losing-side redeems often report usdcSize=0.
+            redeem_usd += max(0.0, usd)
+            continue
+        if typ == "SPLIT":
+            buy_usd += usd if usd > 0 else shares
+            continue
+        if typ == "MERGE":
+            sell_usd += usd if usd > 0 else shares
+            continue
+        if side == "SELL" or typ == "SELL":
+            sell_usd += usd
+            continue
+        if side == "BUY" or typ in {"TRADE", "BUY"} or not side:
+            buy_usd += usd
+    if buy_usd == 0 and sell_usd == 0 and redeem_usd == 0:
+        return None
+    return _round_pnl_to_cents(sell_usd + redeem_usd - buy_usd)
 
 
 def _merge_market_row(
@@ -888,6 +1360,26 @@ async def fetch_wallet_markets(
                     address, date=date, limit=act_limit, _client=client
                 )
                 activity_markets = list(act.get("markets") or [])
+            # Keep only markets whose slug window opens on this ET day (so a
+            # post-midnight redeem does not invent a second-day duplicate).
+            activity_markets = [
+                m for m in activity_markets if (_row_market_day(m) or date) == date
+            ]
+            # Still pull open positions so we can mark unredeemed (lost/won but unclaimed).
+            if include_open:
+                try:
+                    raw_open = await _get_json(
+                        client,
+                        f"{DATA_API_URL}/positions",
+                        params={"user": wallet, "limit": 100, "sizeThreshold": 0},
+                    )
+                except httpx.HTTPStatusError:
+                    raw_open = []
+                if isinstance(raw_open, list):
+                    for raw in raw_open:
+                        item = _norm_open_position(raw)
+                        if item is not None:
+                            open_rows.append(item)
         elif include_open:
             try:
                 raw_open = await _get_json(
@@ -904,7 +1396,10 @@ async def fetch_wallet_markets(
                         open_rows.append(item)
 
     by_cid: dict[str, dict[str, Any]] = {}
-    for row in closed + open_rows:
+    # On a calendar day, closed settles + activity define the list. Open rows are
+    # annotation-only so unredeemed losers don't inject extra markets / cash PnL.
+    merge_rows = closed if date else (closed + open_rows)
+    for row in merge_rows:
         _merge_market_row(
             by_cid,
             condition_id=row.get("condition_id"),
@@ -937,30 +1432,147 @@ async def fetch_wallet_markets(
             pnl_mode="fill",
         )
 
+    # Index activity tapes for markets that never got a closed-position PnL
+    # (still open / not indexed yet). Fall back to sell+redeem−buy from fills.
+    act_by_id: dict[str, list[dict[str, Any]]] = {}
+    for m in activity_markets:
+        acts = list(m.get("activity") or [])
+        if not acts:
+            continue
+        for key in (
+            str(m.get("condition_id") or "").lower(),
+            str(m.get("slug") or "").lower(),
+        ):
+            if key:
+                act_by_id[key] = acts
+
     markets = list(by_cid.values())
+    if date:
+        markets = [m for m in markets if (_row_market_day(m) or date) == date]
     for m in markets:
         if not m.get("has_pnl"):
+            acts = None
+            for key in (
+                str(m.get("condition_id") or "").lower(),
+                str(m.get("slug") or "").lower(),
+            ):
+                if key and key in act_by_id:
+                    acts = act_by_id[key]
+                    break
+            tape_pnl = _activity_tape_pnl(acts or [])
+            if tape_pnl is not None:
+                m["pnl"] = tape_pnl
+                m["has_pnl"] = True
+                m["pnl_source"] = "activity"
+        if not m.get("has_pnl"):
             m["pnl"] = None
+            m["pnl_source"] = "none"
         else:
             m["pnl"] = _round_pnl_to_cents(float(m["pnl"]))
+            m.setdefault("pnl_source", "closed")
         m.pop("has_pnl", None)
+        m.setdefault("unredeemed", False)
+        m.setdefault("redeemable", False)
+        m.setdefault("open_shares", None)
+        m.setdefault("open_value", None)
+
+    # Annotate markets with claimable open value (won but not redeemed).
+    # Do NOT flag $0 losing shares left unclaimed — Polymarket keeps those as
+    # "open", but labeling them unredeemed looks like broken/incomplete PnL.
+    open_by_key: dict[str, dict[str, Any]] = {}
+    for row in open_rows:
+        try:
+            open_value = float(row.get("current_value") or 0)
+        except (TypeError, ValueError):
+            open_value = 0.0
+        payload = {
+            "unredeemed": True,
+            "redeemable": bool(row.get("redeemable")),
+            "open_shares": float(row.get("size") or 0),
+            "open_value": open_value,
+            "open_outcome": row.get("outcome"),
+        }
+        for key in (
+            str(row.get("condition_id") or "").lower(),
+            str(row.get("slug") or "").lower(),
+        ):
+            if key:
+                prev = open_by_key.get(key)
+                if prev is None:
+                    open_by_key[key] = dict(payload)
+                else:
+                    prev["open_shares"] = float(prev.get("open_shares") or 0) + float(
+                        payload["open_shares"] or 0
+                    )
+                    prev["open_value"] = float(prev.get("open_value") or 0) + float(
+                        payload["open_value"] or 0
+                    )
+                    prev["redeemable"] = bool(prev.get("redeemable") or payload["redeemable"])
+
+    for m in markets:
+        hit = None
+        for key in (
+            str(m.get("condition_id") or "").lower(),
+            str(m.get("slug") or "").lower(),
+        ):
+            if key and key in open_by_key:
+                hit = open_by_key[key]
+                break
+        if not hit:
+            continue
+        open_value = float(hit.get("open_value") or 0)
+        # Worthless losing inventory: treat as settled loss, no unredeemed chrome.
+        if open_value <= 0.005:
+            continue
+        m["unredeemed"] = True
+        m["redeemable"] = bool(hit.get("redeemable"))
+        m["open_shares"] = round(float(hit.get("open_shares") or 0), 4)
+        m["open_value"] = _round_pnl_to_cents(open_value)
+        if m.get("status") != "closed":
+            m["status"] = "unredeemed"
+
+    # Never list the live in-progress 5m window (open mark / partial tape).
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    markets = [m for m in markets if not _is_live_btc_market(m.get("slug"), now_ms=now_ms)]
+
+    def _sort_ts(row: dict[str, Any]) -> int:
+        slug_ts = _slug_window_start_ms(row.get("slug"))
+        if slug_ts is not None:
+            return slug_ts
+        try:
+            return int(row.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            return 0
 
     markets.sort(
         key=lambda m: (
-            -(m["timestamp"] or 0),
+            -_sort_ts(m),
             -(abs(m["pnl"]) if m.get("pnl") is not None else -1),
         )
     )
 
     clipped = markets[:limit]
-    total_pnl = sum(float(m["pnl"]) for m in clipped if m.get("pnl") is not None)
+    closed_pnl = sum(
+        float(m["pnl"])
+        for m in clipped
+        if m.get("pnl") is not None and m.get("pnl_source") == "closed"
+    )
+    activity_pnl = sum(
+        float(m["pnl"])
+        for m in clipped
+        if m.get("pnl") is not None and m.get("pnl_source") == "activity"
+    )
+    combined = closed_pnl + activity_pnl
+    # Header total = closed settles + unredeemed/open tape estimates.
     return {
         "wallet": wallet,
         "date": date,
         "count": len(clipped),
         "total_count": len(markets),
         "has_more": len(markets) > len(clipped),
-        "total_pnl": _round_pnl_to_cents(total_pnl) if clipped else 0.0,
+        "total_pnl": _round_pnl_to_cents(combined) if clipped else 0.0,
+        "closed_pnl": _round_pnl_to_cents(closed_pnl) if clipped else 0.0,
+        "activity_pnl": _round_pnl_to_cents(activity_pnl) if clipped else 0.0,
         "markets": clipped,
     }
 
@@ -969,6 +1581,7 @@ async def fetch_wallet_activity(
     address: str,
     *,
     date: str | None = None,
+    slug: str | None = None,
     limit: int = 200,
     offset: int = 0,
     _client: httpx.AsyncClient | None = None,
@@ -976,10 +1589,22 @@ async def fetch_wallet_activity(
     wallet = normalize_wallet(address)
     limit = max(1, min(int(limit), 1000))
     offset = max(0, min(int(offset), 20_000))
+    want_slug = (slug or "").strip() or None
+    if want_slug and not is_btc_updown_5m(slug=want_slug):
+        raise ValueError("slug must be a btc-updown-5m market")
 
     params: dict[str, Any] = {"user": wallet, "limit": min(500, limit)}
     start_ms = end_ms = None
-    if date:
+    # Slug window beats calendar day: closed PnL can settle next ET day while
+    # fills happened during the prior evening market window.
+    if want_slug:
+        bounds = _slug_activity_bounds(want_slug)
+        if bounds is None:
+            raise ValueError("invalid btc-updown-5m slug")
+        start_ms, end_ms = bounds
+        params["start"] = start_ms // 1000
+        params["end"] = end_ms // 1000
+    elif date:
         start_ms, end_ms = _et_day_bounds(date)
         params["start"] = start_ms // 1000
         params["end"] = end_ms // 1000
@@ -1005,6 +1630,8 @@ async def fetch_wallet_activity(
                 item = _norm_activity(raw)
                 if item is None:
                     continue
+                if want_slug and str(item.get("slug") or "").lower() != want_slug.lower():
+                    continue
                 if start_ms is not None and item["timestamp"] < start_ms:
                     continue
                 if end_ms is not None and item["timestamp"] >= end_ms:
@@ -1017,7 +1644,7 @@ async def fetch_wallet_activity(
                 break
 
         pnl_by_condition: dict[str, float] = {}
-        if date:
+        if date and not want_slug:
             closed = await _paginate_closed_positions(
                 client, wallet, date=date, limit=500
             )
@@ -1047,6 +1674,7 @@ async def fetch_wallet_activity(
         return {
             "wallet": wallet,
             "date": date,
+            "slug": want_slug,
             "count": len(clipped),
             "offset": offset,
             "next_offset": page_offset if page_offset > offset else offset + len(clipped),

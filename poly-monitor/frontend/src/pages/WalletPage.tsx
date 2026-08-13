@@ -51,6 +51,22 @@ function slugToWindowStartMs(slug?: string | null): number | null {
   return n > 1e12 ? n : n * 1000
 }
 
+/** Official BTC 5m market window from slug (ET wall-clock range). */
+function slugMarketWindow(slug?: string | null): { startMs: number; endMs: number } | null {
+  const startMs = slugToWindowStartMs(slug)
+  if (startMs == null) return null
+  return { startMs, endMs: startMs + 5 * 60_000 }
+}
+
+function isAfterMarketWindow(
+  ts: number,
+  window: { startMs: number; endMs: number } | null,
+  graceMs = 60_000,
+): boolean {
+  if (!window || !Number.isFinite(ts)) return false
+  return ts >= window.endMs + graceMs
+}
+
 function shorten(addr: string): string {
   const s = addr.trim()
   if (s.length <= 12) return s
@@ -99,6 +115,54 @@ function avatarColorFromName(name?: string | null, wallet?: string | null): stri
   return `hsl(${hue} ${sat}% ${light}%)`
 }
 
+function marketIdentityKey(m: {
+  condition_id?: string | null
+  slug?: string | null
+  title?: string | null
+}): string {
+  return m.condition_id || m.slug || m.title || 'unknown'
+}
+
+function marketIdentityIds(m: {
+  condition_id?: string | null
+  slug?: string | null
+  title?: string | null
+} | null | undefined): Set<string> {
+  const out = new Set<string>()
+  if (!m) return out
+  for (const v of [m.condition_id, m.slug, m.title]) {
+    const s = (v || '').trim().toLowerCase()
+    if (s) out.add(s)
+  }
+  return out
+}
+
+function findActivityMarket(
+  markets: WalletMarketActivity[],
+  expandedKey: string | null,
+  meta?: {
+    condition_id?: string | null
+    slug?: string | null
+    title?: string | null
+  } | null,
+): WalletMarketActivity | null {
+  const ids = marketIdentityIds(meta)
+  if (expandedKey) ids.add(expandedKey.trim().toLowerCase())
+  if (!ids.size) return null
+  for (const m of markets) {
+    const candidates = [
+      m.condition_id,
+      m.slug,
+      m.title,
+      marketIdentityKey(m),
+    ]
+      .filter(Boolean)
+      .map((s) => String(s).trim().toLowerCase())
+    if (candidates.some((c) => ids.has(c))) return m
+  }
+  return null
+}
+
 function fmtSignedUsd(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return '—'
   const sign = n > 0 ? '+' : n < 0 ? '−' : ''
@@ -116,6 +180,21 @@ function fmtTimeShort(ms: number): string {
     }).format(new Date(ms))
   } catch {
     return new Date(ms).toLocaleTimeString()
+  }
+}
+
+function fmtTimeHm(ms: number): string {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    })
+      .format(new Date(ms))
+      .replace(/\s+/g, '')
+  } catch {
+    return ''
   }
 }
 
@@ -146,7 +225,8 @@ function computeWasteEarn(rows: {
     const usd = Number(row.usd) || 0
     if (typ === 'REDEEM') {
       redeemShares += shares
-      redeemUsd += usd > 0 ? usd : shares // redeem pays ~$1/share
+      // Losing-side redeems often report usdcSize=0; do not treat shares as $1 earned.
+      redeemUsd += Math.max(0, usd)
       continue
     }
     // SPLIT: USDC → equal Up + Down shares. MERGE: equal Up + Down → USDC.
@@ -291,6 +371,7 @@ export default function WalletPage() {
   const [dailyMoreLoading, setDailyMoreLoading] = useState(false)
   const [marketsMoreLoading, setMarketsMoreLoading] = useState(false)
   const [activityMoreLoading, setActivityMoreLoading] = useState(false)
+  const [marketFillLoading, setMarketFillLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const [marketDetail, setMarketDetail] = useState<MarketDetail | null>(null)
@@ -307,6 +388,7 @@ export default function WalletPage() {
   const [commentSavedAt, setCommentSavedAt] = useState<number | null>(null)
   const commentTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const commentWalletRef = useRef<string | null>(null)
+  const slugEnrichDoneRef = useRef<Set<string>>(new Set())
 
   const [deleteConfirm, setDeleteConfirm] = useState<SavedWalletRow | null>(null)
 
@@ -357,6 +439,7 @@ export default function WalletPage() {
     commentWalletRef.current = normalized
 
     // Instant profile paint from the saved-wallet list while cache/API loads.
+    // Leave total_pnl empty — saved list can be stale vs markets-aligned totals.
     const savedHit = savedWallets.find((w) => w.wallet === normalized)
     if (savedHit && !refresh) {
       setCommentDraft(savedHit.comment || '')
@@ -365,7 +448,7 @@ export default function WalletPage() {
         name: savedHit.name || shorten(normalized),
         profile_image: savedHit.profile_image ?? null,
         positions_value: Number(savedHit.positions_value ?? 0),
-        total_pnl: savedHit.total_pnl ?? null,
+        total_pnl: null,
         biggest_win: null,
         open_positions: 0,
         closed_sample: 0,
@@ -613,11 +696,10 @@ export default function WalletPage() {
     setError(null)
     try {
       const selectedKey = expandedMarket
+      const selectedMeta =
+        marketPnls.find((m) => marketIdentityKey(m) === selectedKey) ?? null
       const beforeCount =
-        selectedKey == null
-          ? 0
-          : (activityMarkets.find((m) => (m.condition_id || m.slug || m.title || 'unknown') === selectedKey)
-              ?.activity.length ?? 0)
+        findActivityMarket(activityMarkets, selectedKey, selectedMeta)?.activity.length ?? 0
 
       // Prefer deepening from offset 0 with a higher BTC limit so the day cache is
       // rewritten completely (fixes stale partial market tapes). Then keep paging
@@ -633,13 +715,8 @@ export default function WalletPage() {
       let nextOffset = page.next_offset ?? page.count ?? 0
       let hasMore = Boolean(page.has_more)
 
-      const countForSelected = (list: typeof markets) => {
-        if (!selectedKey) return 0
-        const hit = list.find(
-          (m) => (m.condition_id || m.slug || m.title || 'unknown') === selectedKey,
-        )
-        return hit?.activity.length ?? 0
-      }
+      const countForSelected = (list: typeof markets) =>
+        findActivityMarket(list, selectedKey, selectedMeta)?.activity.length ?? 0
 
       let guard = 0
       while (
@@ -658,10 +735,10 @@ export default function WalletPage() {
         const incoming = more.markets || []
         const byKey = new Map<string, WalletMarketActivity>()
         for (const m of markets) {
-          byKey.set(m.condition_id || m.slug || m.title || 'unknown', m)
+          byKey.set(marketIdentityKey(m), m)
         }
         for (const m of incoming) {
-          const key = m.condition_id || m.slug || m.title || 'unknown'
+          const key = marketIdentityKey(m)
           const cur = byKey.get(key)
           if (!cur) {
             byKey.set(key, m)
@@ -689,21 +766,43 @@ export default function WalletPage() {
         hasMore = Boolean(more.has_more)
       }
 
+      // Closed PnL can land on settle day while fills happened in the prior
+      // evening window — pull that market's slug window directly.
+      if (selectedKey && countForSelected(markets) === 0 && selectedMeta?.slug) {
+        const bySlug = await api.walletActivity(wallet, {
+          slug: selectedMeta.slug,
+          limit: 200,
+          refresh: true,
+        })
+        for (const m of bySlug.markets || []) {
+          const existing = findActivityMarket(markets, selectedKey, selectedMeta)
+          if (!existing) {
+            markets = [...markets, m]
+            continue
+          }
+          const seen = new Set(
+            (existing.activity || []).map(
+              (a) => `${a.timestamp}|${a.transaction_hash || ''}|${a.type}`,
+            ),
+          )
+          const extra = (m.activity || []).filter(
+            (a) => !seen.has(`${a.timestamp}|${a.transaction_hash || ''}|${a.type}`),
+          )
+          if (!extra.length) continue
+          existing.activity = [...existing.activity, ...extra].sort(
+            (a, b) => b.timestamp - a.timestamp,
+          )
+          existing.n_events = existing.activity.length
+          existing.volume_usd =
+            Number(existing.volume_usd || 0) + extra.reduce((s, a) => s + (a.usd || 0), 0)
+        }
+      }
+
       setActivityLimit(deepLimit)
       setActivityMarkets(markets)
       setActivityNextOffset(nextOffset)
       setActivityHasMore(hasMore)
       setFromCache(false)
-
-      // Keep header counts in sync for the open market.
-      if (selectedKey) {
-        const hit = markets.find(
-          (m) => (m.condition_id || m.slug || m.title || 'unknown') === selectedKey,
-        )
-        if (hit && hit.n_events !== hit.activity.length) {
-          hit.n_events = hit.activity.length
-        }
-      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -720,7 +819,7 @@ export default function WalletPage() {
       setActivityMarkets([])
       setMarketPnls([])
       setMarketsTotalPnl(null)
-      setMarketsHasMore(false)
+          setMarketsHasMore(false)
       setActivityHasMore(false)
       setPnl(null)
       setExpandedMarket(null)
@@ -772,11 +871,12 @@ export default function WalletPage() {
       setActivityMarkets([])
       setMarketPnls([])
       setMarketsTotalPnl(null)
-      setMarketsHasMore(false)
+          setMarketsHasMore(false)
       setActivityHasMore(false)
       setActivityNextOffset(0)
       return
     }
+    slugEnrichDoneRef.current = new Set()
     let cancelled = false
     setActivityLoading(true)
     setExpandedMarket(null)
@@ -796,7 +896,7 @@ export default function WalletPage() {
         setActivityHasMore(Boolean(act.has_more))
         setMarketPnls(mkts.markets || [])
         setMarketsTotalPnl(mkts.total_pnl ?? null)
-        setMarketsHasMore(Boolean(mkts.has_more))
+            setMarketsHasMore(Boolean(mkts.has_more))
         if (act.cached || mkts.cached) setFromCache(true)
         const firstKey =
           (mkts.markets?.[0]?.condition_id ||
@@ -813,7 +913,7 @@ export default function WalletPage() {
           setActivityMarkets([])
           setMarketPnls([])
           setMarketsTotalPnl(null)
-          setError(e instanceof Error ? e.message : String(e))
+                      setError(e instanceof Error ? e.message : String(e))
         }
       })
       .finally(() => {
@@ -824,6 +924,23 @@ export default function WalletPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- limits bump via Fetch more handlers
   }, [wallet, date])
+
+  // Daily API includes open marks; market panel may still refine via activity
+  // tape (buy-only markets with no open row). Keep selected day in sync.
+  useEffect(() => {
+    if (!date || activityLoading || marketsTotalPnl == null) return
+    setDaily((prev) => {
+      let changed = false
+      const next = prev.map((row) => {
+        if (row.date !== date) return row
+        const realized = row.realized_pnl ?? row.pnl
+        if (row.pnl === marketsTotalPnl && row.realized_pnl === realized) return row
+        changed = true
+        return { ...row, realized_pnl: realized, pnl: marketsTotalPnl }
+      })
+      return changed ? next : prev
+    })
+  }, [date, marketsTotalPnl, activityLoading])
 
   const chartData = useMemo(() => {
     const series = pnl?.series || []
@@ -836,25 +953,91 @@ export default function WalletPage() {
     }))
   }, [pnl])
 
-  const selectedMarketActivity = useMemo(() => {
-    if (!expandedMarket) return null
-    return (
-      activityMarkets.find((m) => {
-        const key = m.condition_id || m.slug || m.title || 'unknown'
-        return key === expandedMarket
-      }) ?? null
-    )
-  }, [activityMarkets, expandedMarket])
-
   const selectedMarketMeta = useMemo(() => {
     if (!expandedMarket) return null
     return (
-      marketPnls.find((m) => {
-        const key = m.condition_id || m.slug || m.title || 'm'
-        return key === expandedMarket
-      }) ?? null
+      marketPnls.find((m) => marketIdentityKey(m) === expandedMarket) ?? null
     )
   }, [marketPnls, expandedMarket])
+
+  const selectedMarketActivity = useMemo(
+    () => findActivityMarket(activityMarkets, expandedMarket, selectedMarketMeta),
+    [activityMarkets, expandedMarket, selectedMarketMeta],
+  )
+
+  // Day activity can miss post-midnight redeems (or only show the redeem on the
+  // next day). Always merge the slug window tape once per selected market.
+  useEffect(() => {
+    if (!wallet || !expandedMarket || activityLoading || activityMoreLoading) return
+    const slug = selectedMarketMeta?.slug
+    if (!slug || !BTC_SLUG_RE.test(slug)) return
+    if (slugEnrichDoneRef.current.has(slug)) return
+    slugEnrichDoneRef.current.add(slug)
+    let cancelled = false
+    setMarketFillLoading(true)
+    api
+      .walletActivity(wallet, { slug, limit: 200, refresh: true })
+      .then((res) => {
+        if (cancelled) return
+        const incoming = res.markets || []
+        if (!incoming.length) return
+        setActivityMarkets((prev) => {
+          const next = [...prev]
+          for (const m of incoming) {
+            const idx = next.findIndex(
+              (row) => findActivityMarket([row], expandedMarket, selectedMarketMeta) != null,
+            )
+            if (idx < 0) {
+              next.push(m)
+              continue
+            }
+            const hit = next[idx]
+            const seen = new Set(
+              (hit.activity || []).map(
+                (a) => `${a.timestamp}|${a.transaction_hash || ''}|${a.type}`,
+              ),
+            )
+            const extra = (m.activity || []).filter(
+              (a) => !seen.has(`${a.timestamp}|${a.transaction_hash || ''}|${a.type}`),
+            )
+            if (!extra.length && (hit.activity || []).length >= (m.activity || []).length) {
+              continue
+            }
+            const activity = (
+              extra.length
+                ? [...hit.activity, ...extra]
+                : m.activity?.length
+                  ? m.activity
+                  : hit.activity
+            ).sort((a, b) => b.timestamp - a.timestamp)
+            next[idx] = {
+              ...hit,
+              activity,
+              n_events: activity.length,
+              volume_usd: activity.reduce((s, a) => s + (a.usd || 0), 0),
+              pnl: m.pnl ?? hit.pnl,
+            }
+          }
+          return next
+        })
+      })
+      .catch(() => {
+        /* keep day tape if slug lookup fails */
+        slugEnrichDoneRef.current.delete(slug)
+      })
+      .finally(() => {
+        if (!cancelled) setMarketFillLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    wallet,
+    expandedMarket,
+    selectedMarketMeta,
+    activityLoading,
+    activityMoreLoading,
+  ])
 
   const sideFlow = useMemo(() => {
     const rows = selectedMarketActivity?.activity || []
@@ -926,6 +1109,11 @@ export default function WalletPage() {
 
   const selectedSlug =
     selectedMarketActivity?.slug || selectedMarketMeta?.slug || null
+
+  const selectedMarketWindow = useMemo(
+    () => slugMarketWindow(selectedSlug),
+    [selectedSlug],
+  )
 
   const traderMarks = useMemo((): TraderMark[] => {
     const rows = selectedMarketActivity?.activity || []
@@ -1274,6 +1462,7 @@ export default function WalletPage() {
                   <div className="wallet-stat-label">All-time PnL</div>
                 </div>
               </div>
+              <div className="wallet-profile-scope muted">BTC Up/Down 5m · incl. unredeemed</div>
               <div className="wallet-comment">
                 <label className="wallet-comment-label" htmlFor="wallet-trader-comment">
                   Comment
@@ -1478,7 +1667,12 @@ export default function WalletPage() {
             <div className="wallet-panel">
               <div className="wallet-panel-head">
                 <h2>PnL by day</h2>
-                <span className="muted">{daily.length} days</span>
+                <span
+                  className="muted"
+                  title="Per-day total matches PnL by market (closed + unredeemed tape)."
+                >
+                  {daily.length} days
+                </span>
               </div>
               <div className="wallet-daily-list">
                 {daily.length === 0 && (
@@ -1492,6 +1686,11 @@ export default function WalletPage() {
                     type="button"
                     className={`wallet-daily-row${date === row.date ? ' active' : ''}`}
                     onClick={() => setDate(row.date)}
+                    title={
+                      row.realized_pnl != null && row.realized_pnl !== row.pnl
+                        ? `Includes unredeemed. Realized (closed only): ${fmtSignedUsd(row.realized_pnl)}`
+                        : 'Closed settles; opens to full day total when markets load'
+                    }
                   >
                     <span className="wallet-daily-date">{row.date}</span>
                     <span className={`wallet-daily-pnl ${row.pnl >= 0 ? 'up' : 'down'}`}>
@@ -1515,7 +1714,10 @@ export default function WalletPage() {
             <div className="wallet-panel">
               <div className="wallet-panel-head">
                 <h2>PnL by market · {date}</h2>
-                <span className="muted">
+                <span
+                  className="muted"
+                  title="Total = closed settles + unredeemed/open tape estimates"
+                >
                   {activityLoading
                     ? 'Loading…'
                     : `${marketPnls.length} mkts${
@@ -1530,7 +1732,7 @@ export default function WalletPage() {
                   </p>
                 )}
                 {marketPnls.map((m) => {
-                  const key = m.condition_id || m.slug || m.title || 'm'
+                  const key = marketIdentityKey(m)
                   return (
                     <button
                       key={key}
@@ -1543,6 +1745,14 @@ export default function WalletPage() {
                     >
                       <span className="wallet-market-pnl-title">
                         {shortMarketLabel(m.title, m.slug)}
+                        {m.unredeemed && (
+                          <span
+                            className="wallet-unredeemed-pill"
+                            title="Won shares still unclaimed (claimable value > $0)"
+                          >
+                            unredeemed
+                          </span>
+                        )}
                       </span>
                       <span
                         className={`wallet-daily-pnl ${(m.pnl ?? 0) >= 0 ? 'up' : 'down'}`}
@@ -1592,7 +1802,9 @@ export default function WalletPage() {
                       )}
                     </>
                   ) : (
-                    <span className="muted">{expandedMarket ? 'None' : '—'}</span>
+                    <span className="muted">
+                      {marketFillLoading ? 'Loading…' : expandedMarket ? 'None' : '—'}
+                    </span>
                   )}
                 </div>
               </div>
@@ -1601,17 +1813,48 @@ export default function WalletPage() {
                 selectedMarketActivity?.title ||
                 selectedMarketActivity?.slug) && (
                 <div className="wallet-activity-selected-title">
-                  <span
-                    title={
-                      selectedMarketMeta?.title ||
-                      selectedMarketActivity?.title ||
-                      undefined
-                    }
-                  >
-                    {shortMarketLabel(
-                      selectedMarketMeta?.title || selectedMarketActivity?.title,
-                      selectedMarketMeta?.slug || selectedMarketActivity?.slug,
+                  <span className="wallet-activity-selected-left">
+                    <span
+                      title={
+                        selectedMarketMeta?.title ||
+                        selectedMarketActivity?.title ||
+                        undefined
+                      }
+                    >
+                      {shortMarketLabel(
+                        selectedMarketMeta?.title || selectedMarketActivity?.title,
+                        selectedMarketMeta?.slug || selectedMarketActivity?.slug,
+                      )}
+                    </span>
+                    {selectedMarketMeta?.unredeemed && (
+                      <span
+                        className="wallet-market-window-hint wallet-unredeemed-hint"
+                        title="Winning shares still unclaimed — claimable value is left on this market."
+                      >
+                        Unredeemed
+                        {selectedMarketMeta.open_shares != null &&
+                          selectedMarketMeta.open_shares > 0 && (
+                            <>
+                              {' '}
+                              · {formatCompactUsd(selectedMarketMeta.open_shares)} sh
+                              {selectedMarketMeta.open_value != null
+                                ? ` · $${formatCompactUsd(selectedMarketMeta.open_value)}`
+                                : ''}
+                            </>
+                          )}
+                      </span>
                     )}
+                    {selectedMarketWindow &&
+                      selectedMarketActivity?.activity.some((row) =>
+                        isAfterMarketWindow(Number(row.timestamp), selectedMarketWindow),
+                      ) && (
+                        <span
+                          className="wallet-market-window-hint muted"
+                          title={`Official market window ${fmtTimeHm(selectedMarketWindow.startMs)}–${fmtTimeHm(selectedMarketWindow.endMs)} ET. Redeems and late fills can land after the slot closes.`}
+                        >
+                          fills after {fmtTimeHm(selectedMarketWindow.endMs)} marked
+                        </span>
+                      )}
                   </span>
                   {showMarketMoneyBar ? (
                     <span
@@ -1724,7 +1967,13 @@ export default function WalletPage() {
                 {!activityLoading && !expandedMarket && (
                   <p className="muted wallet-fill-empty">Select a market</p>
                 )}
-                {!activityLoading && expandedMarket && !selectedMarketActivity && (
+                {!activityLoading && expandedMarket && marketFillLoading && !selectedMarketActivity && (
+                  <p className="muted wallet-fill-empty">Loading fills…</p>
+                )}
+                {!activityLoading &&
+                  expandedMarket &&
+                  !marketFillLoading &&
+                  !selectedMarketActivity && (
                   <p className="muted wallet-fill-empty">No fills</p>
                 )}
                 {selectedMarketActivity?.activity.map((row, i) => {
@@ -1735,6 +1984,10 @@ export default function WalletPage() {
                   const isSell = !isRedeem && side === 'SELL'
                   const outcome = row.outcome || ''
                   const outcomeUp = outcome.toLowerCase() === 'up'
+                  const afterWindow = isAfterMarketWindow(
+                    Number(row.timestamp),
+                    selectedMarketWindow,
+                  )
                   const active =
                     activityHighlightTs != null &&
                     Math.abs(Number(row.timestamp) - activityHighlightTs) <= 750
@@ -1748,11 +2001,23 @@ export default function WalletPage() {
                   return (
                     <div
                       key={`${row.transaction_hash || 'x'}-${row.timestamp}-${i}`}
-                      className={`wallet-fill-row${active ? ' active' : ''}`}
+                      className={`wallet-fill-row${active ? ' active' : ''}${
+                        afterWindow ? ' after-window' : ''
+                      }`}
                       onMouseEnter={() => setActivityHighlightTs(Number(row.timestamp))}
                       onMouseLeave={() => setActivityHighlightTs(null)}
                     >
-                      <span className="wallet-fill-time">{fmtTimeShort(row.timestamp)}</span>
+                      <span
+                        className="wallet-fill-time"
+                        title={
+                          afterWindow && selectedMarketWindow
+                            ? `After market window (${fmtTimeHm(selectedMarketWindow.startMs)}–${fmtTimeHm(selectedMarketWindow.endMs)} ET)`
+                            : undefined
+                        }
+                      >
+                        <span className="wallet-fill-time-clock">{fmtTimeShort(row.timestamp)}</span>
+                        {afterWindow && <span className="wallet-fill-after">after</span>}
+                      </span>
                       <span className="wallet-fill-action">
                         <span
                           className={
