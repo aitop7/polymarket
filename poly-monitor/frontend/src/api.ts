@@ -137,6 +137,22 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => json<{ ok: boolean }>('/api/health'),
   strategies: () => json<{ name: string; description: string; params: Record<string, unknown> }[]>('/api/strategies'),
+  strategiesCatalog: () =>
+    json<{ strategies: StrategyCatalogItem[] }>('/api/strategies/catalog', { cache: 'no-store' }),
+  strategyCatalogItem: (name: string) =>
+    json<StrategyCatalogItem>(`/api/strategies/catalog/${encodeURIComponent(name)}`, { cache: 'no-store' }),
+  lgbmModel: () => json<LgbmModelInfo>('/api/strategies/lgbm/model', { cache: 'no-store' }),
+  lgbmTrainStatus: () => json<LgbmTrainJob>('/api/strategies/lgbm/train', { cache: 'no-store' }),
+  lgbmTrain: (body?: {
+    num_boost_round?: number
+    early_stopping_rounds?: number
+    max_markets?: number | null
+  }) =>
+    json<{ ok: boolean; job: LgbmTrainJob }>('/api/strategies/lgbm/train', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    }),
   markets: (split: string, opts?: { limit?: number; date?: string; rebuild_index?: boolean }) => {
     const q = new URLSearchParams({ split })
     if (opts?.limit != null) q.set('limit', String(opts.limit))
@@ -593,6 +609,53 @@ export type SavedWalletRow = {
   comment?: string | null
   updated_at?: number
   last_viewed_at?: number
+}
+
+export type StrategyDataRequirement = {
+  name: string
+  path: string
+  why: string
+}
+
+export type StrategyCatalogItem = {
+  name: string
+  title?: string
+  description?: string
+  idea?: string
+  when_to_use?: string
+  data_required?: StrategyDataRequirement[]
+  trainable?: boolean
+  train_defaults?: Record<string, unknown>
+  runtime_params?: Record<string, unknown>
+  params?: Record<string, unknown>
+  outputs?: string[]
+}
+
+export type LgbmTrainJob = {
+  status: 'idle' | 'running' | 'succeeded' | 'failed' | string
+  started_at?: string | null
+  finished_at?: string | null
+  error?: string | null
+  log_tail?: string[]
+  metrics?: Record<string, unknown> | null
+  params?: Record<string, unknown> | null
+  pid?: number | null
+  log_path?: string | null
+}
+
+export type LgbmModelInfo = {
+  models_dir: string
+  features_dir: string
+  model_path: string
+  model_exists: boolean
+  model_mtime?: string | null
+  metrics_path?: string
+  metrics?: Record<string, unknown> | null
+  feature_names?: string[] | null
+  schema_features?: string[]
+  n_schema_features?: number
+  splits?: Record<string, { path: string; exists: boolean; n_markets: number }>
+  train_job?: LgbmTrainJob
 }
 
 export type LiveTick = {

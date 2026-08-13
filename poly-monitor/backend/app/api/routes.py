@@ -72,6 +72,12 @@ class WalletCommentBody(BaseModel):
     comment: str = ""
 
 
+class LgbmTrainRequest(BaseModel):
+    num_boost_round: int = Field(default=500, ge=10, le=5000)
+    early_stopping_rounds: int = Field(default=50, ge=1, le=500)
+    max_markets: int | None = Field(default=None, ge=1, le=50_000)
+
+
 @router.get("/health")
 def health() -> dict[str, Any]:
     from app.core.live_dataset import data_health_thresholds
@@ -88,6 +94,50 @@ def health() -> dict[str, Any]:
 @router.get("/strategies")
 def get_strategies() -> list[dict[str, Any]]:
     return list_strategies()
+
+
+@router.get("/strategies/catalog")
+def get_strategies_catalog() -> dict[str, Any]:
+    from app.strategies.catalog import catalog_strategies
+
+    return {"strategies": catalog_strategies()}
+
+
+@router.get("/strategies/catalog/{name}")
+def get_strategy_catalog_item(name: str) -> dict[str, Any]:
+    from app.strategies.catalog import catalog_strategy
+
+    row = catalog_strategy(name)
+    if row is None:
+        raise HTTPException(404, f"Unknown strategy: {name}")
+    return row
+
+
+@router.get("/strategies/lgbm/model")
+def get_lgbm_model_info() -> dict[str, Any]:
+    from app.core.strategy_train import get_model_info
+
+    return get_model_info()
+
+
+@router.get("/strategies/lgbm/train")
+def get_lgbm_train_status() -> dict[str, Any]:
+    from app.core.strategy_train import get_train_status
+
+    return get_train_status()
+
+
+@router.post("/strategies/lgbm/train")
+def post_lgbm_train(body: LgbmTrainRequest = LgbmTrainRequest()) -> dict[str, Any]:
+    from app.core.strategy_train import start_lgbm_train
+
+    result = start_lgbm_train(body.model_dump())
+    if not result.get("ok"):
+        raise HTTPException(
+            409 if "already" in str(result.get("error") or "").lower() else 400,
+            result.get("error") or "Train failed",
+        )
+    return result
 
 
 @router.get("/markets/dates")

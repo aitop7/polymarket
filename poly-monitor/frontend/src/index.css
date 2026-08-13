@@ -5263,3 +5263,366 @@ select {
   color: var(--border-strong);
 }
 
+
+/* —— Strategy page —— */
+.strategy-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.strategy-hero h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.45rem;
+  letter-spacing: -0.02em;
+}
+
+.strategy-hero p {
+  margin: 0;
+  max-width: 52rem;
+}
+
+.strategy-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.strategy-rail {
+  padding: 0.75rem;
+  position: sticky;
+  top: 4.25rem;
+}
+
+.strategy-rail-head {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.55rem;
+}
+
+.strategy-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.strategy-list-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 10px;
+  padding: 0.55rem 0.6rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  color: inherit;
+}
+
+.strategy-list-item strong {
+  font-size: 0.92rem;
+}
+
+.strategy-list-item span.muted {
+  font-size: 0.75rem;
+}
+
+.strategy-list-item:hover {
+  background: var(--bg-elev);
+}
+
+.strategy-list-item.active {
+  background: var(--bg-elev);
+  border-color: var(--border);
+}
+
+.strategy-pill {
+  align-self: flex-start;
+  margin-top: 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 650;
+  color: #92400e;
+  background: #fef3c7;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+}
+
+.strategy-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.strategy-panel {
+  padding: 1rem 1.1rem 1.15rem;
+}
+
+.strategy-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.strategy-panel-head h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.strategy-code-tag {
+  font-size: 0.78rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+}
+
+.strategy-section {
+  margin-top: 1rem;
+}
+
+.strategy-section h3 {
+  margin: 0 0 0.45rem;
+  font-size: 0.84rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.strategy-section p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.strategy-when {
+  margin-top: 0.55rem !important;
+}
+
+.strategy-data-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.strategy-data-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fafbfc;
+}
+
+.strategy-data-list code,
+.strategy-outputs code,
+.strategy-path-line code {
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+
+.strategy-outputs {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.strategy-param-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.strategy-param-table th,
+.strategy-param-table td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.strategy-param-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.strategy-param-table code {
+  font-size: 0.8rem;
+}
+
+.strategy-metric-grid,
+.strategy-split-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.55rem;
+}
+
+.strategy-metric-card,
+.strategy-split-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  background: #fafbfc;
+  min-width: 0;
+}
+
+.strategy-metric-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 650;
+}
+
+.strategy-metric-value {
+  font-size: 1rem;
+  font-weight: 650;
+  margin-top: 0.2rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.strategy-metric-sub,
+.strategy-path-line {
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.strategy-train-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.65rem;
+  align-items: end;
+}
+
+.strategy-train-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.strategy-train-form input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem 0.55rem;
+  font: inherit;
+  color: var(--text);
+  background: #fff;
+}
+
+.strategy-train-btn,
+.strategy-refresh {
+  border: 1px solid var(--border-strong);
+  background: var(--text);
+  color: #fff;
+  border-radius: 8px;
+  padding: 0.5rem 0.85rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.strategy-refresh {
+  background: #fff;
+  color: var(--text);
+}
+
+.strategy-train-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.strategy-job {
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #fafbfc;
+  font-size: 0.84rem;
+}
+
+.strategy-job-running {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.strategy-job-succeeded {
+  border-color: #6ee7b7;
+  background: #ecfdf5;
+}
+
+.strategy-job-failed {
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+
+.strategy-log {
+  margin: 0.55rem 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  background: #0f1117;
+  color: #e5e7eb;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.strategy-feature-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.strategy-feature-chips code {
+  font-size: 0.72rem;
+  padding: 0.18rem 0.4rem;
+  border-radius: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+}
+
+.strategy-error {
+  color: var(--down);
+  background: var(--down-dim);
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.88rem;
+}
+
+.strategy-empty {
+  margin: 0;
+  font-size: 0.88rem;
+}
+
+@media (max-width: 900px) {
+  .strategy-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .strategy-rail {
+    position: static;
+  }
+}
