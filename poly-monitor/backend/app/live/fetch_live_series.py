@@ -49,7 +49,10 @@ def load_fetch_live_series(market_id: str | None) -> list[dict[str, Any]]:
     """
     Join chainlink / binance / orderbooks parquets into chart points:
     { t, twap, chainlink, btc, up, down }.
+    Prefers pm_orderbooks.parquet over orderbooks.parquet when present.
     """
+    from app.core.live_dataset import resolve_orderbooks_path
+
     d = fetch_live_market_dir(market_id)
     if d is None:
         return []
@@ -73,8 +76,8 @@ def load_fetch_live_series(market_id: str | None) -> list[dict[str, Any]]:
         except Exception:
             pass
 
-    ob_path = d / "orderbooks.parquet"
-    if ob_path.is_file():
+    ob_path = resolve_orderbooks_path(d)
+    if ob_path is not None:
         try:
             ob = pd.read_parquet(ob_path, columns=["timestamp", "up_price", "down_price"])
             ob = ob.rename(columns={"up_price": "up", "down_price": "down"})

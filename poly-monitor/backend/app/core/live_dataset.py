@@ -19,6 +19,27 @@ _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MIN_START_MS = 1_600_000_000_000
 _ET = ZoneInfo("America/New_York")
 
+# Book tables under each fetch_live market dir.
+# pm_orderbooks.parquet is preferred; orderbooks.parquet is the fallback capture.
+ORDERBOOKS_FILE = "orderbooks.parquet"
+PM_ORDERBOOKS_FILE = "pm_orderbooks.parquet"
+
+
+def resolve_orderbooks_path(market_dir: Path | str | None) -> Path | None:
+    """Prefer pm_orderbooks.parquet; fall back to orderbooks.parquet."""
+    if market_dir is None:
+        return None
+    d = Path(market_dir)
+    if not d.is_dir():
+        return None
+    pm = d / PM_ORDERBOOKS_FILE
+    if pm.is_file():
+        return pm
+    ob = d / ORDERBOOKS_FILE
+    if ob.is_file():
+        return ob
+    return None
+
 # Persisted on meta.json after first history integrity check (gap severity).
 DATA_HEALTH_GREAT = "great"
 DATA_HEALTH_GOOD = "good"
@@ -397,8 +418,8 @@ def load_live_market_frame(market_id: str) -> pd.DataFrame:
         except Exception:
             pass
 
-    ob = d / "orderbooks.parquet"
-    if ob.is_file():
+    ob = resolve_orderbooks_path(d)
+    if ob is not None:
         try:
             frames.append(pd.read_parquet(ob))
         except Exception:
@@ -456,7 +477,10 @@ def live_market_summary(market_id: str) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         resolved_at = None
     rows = None
+    orderbooks_source = None
     try:
+        ob = resolve_orderbooks_path(d)
+        orderbooks_source = ob.name if ob is not None else None
         df = load_live_market_frame(market_id)
         rows = int(len(df))
         if not end and not df.empty:
@@ -475,6 +499,7 @@ def live_market_summary(market_id: str) -> dict[str, Any] | None:
         "btc_open_price": open_f,
         "data_health": read_data_health(meta),
         "data_health_comment": read_data_health_comment(meta),
+        "orderbooks_source": orderbooks_source,
         "has_features": False,
         "has_training": True,
     }

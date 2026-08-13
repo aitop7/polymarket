@@ -184,7 +184,14 @@ class VpsSyncClient:
         }
         if not remote_files:
             # Require price/orderbook tables when we have no remote listing.
+            # pm_orderbooks.parquet satisfies the orderbooks requirement.
+            from app.core.live_dataset import ORDERBOOKS_FILE, resolve_orderbooks_path
+
             for name in ("meta.json", *_PRICE_1S_FILES):
+                if name == ORDERBOOKS_FILE:
+                    if resolve_orderbooks_path(dest) is None:
+                        return True
+                    continue
                 if not (dest / name).is_file():
                     return True
             return False
@@ -372,8 +379,10 @@ class VpsSyncClient:
         """
         from app.core.live_dataset import (
             DATA_HEALTH_BAD,
+            ORDERBOOKS_FILE,
             grade_data_health,
             grade_trade_health,
+            resolve_orderbooks_path,
             worse_data_health,
         )
 
@@ -450,12 +459,26 @@ class VpsSyncClient:
         except (OSError, json.JSONDecodeError, TypeError):
             skip_pm_trade_quiet = False
 
+        preferred_books = resolve_orderbooks_path(dest)
         for name in _PRICE_1S_FILES:
-            remote_has: bool | None = True if local_only else (name in remote_names)
-            if not local_only and name not in remote_names:
-                continue
+            if name == ORDERBOOKS_FILE:
+                # Prefer pm_orderbooks.parquet when present; else live orderbooks.
+                if preferred_books is not None:
+                    path = preferred_books
+                    name = preferred_books.name
+                    remote_has = True
+                else:
+                    remote_has = True if local_only else (ORDERBOOKS_FILE in remote_names)
+                    if not local_only and ORDERBOOKS_FILE not in remote_names:
+                        continue
+                    path = dest / ORDERBOOKS_FILE
+            else:
+                remote_has = True if local_only else (name in remote_names)
+                if not local_only and name not in remote_names:
+                    continue
+                path = dest / name
             gap, file_notes = self._price_series_stats(
-                dest / name, name=name, start=start, end=end, remote_has=remote_has
+                path, name=name, start=start, end=end, remote_has=remote_has
             )
             # Worst single hole in this file — never sum across holes.
             max_gap = max(max_gap, gap)

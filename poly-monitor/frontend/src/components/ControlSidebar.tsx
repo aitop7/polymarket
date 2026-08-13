@@ -750,8 +750,147 @@ export default function ControlSidebar(props: Props) {
         </div>
       </div>
 
+      <div
+        className={`sidebar-section playback-section${beforeTwap ? ' sidebar-section-last' : ''}`}
+      >
+        <div className="sidebar-heading playback-heading">
+          <span>Playback</span>
+          {activeReplay && (
+            <span className={`playback-status${paused ? ' paused' : ''}`}>
+              {paused ? 'Paused' : 'Playing'}
+            </span>
+          )}
+        </div>
+
+        <div className="playback-transport">
+          <button
+            type="button"
+            className="playback-icon-btn"
+            onClick={onPrev}
+            disabled={!hasPrev || histDisabled}
+            title="Previous market"
+            aria-label="Previous market"
+          >
+            <IconPrev />
+          </button>
+
+          {!playing ? (
+            <button
+              type="button"
+              className="playback-icon-btn primary"
+              onClick={onPlay}
+              disabled={!marketId || histDisabled}
+              title="Play"
+              aria-label="Play"
+            >
+              <IconPlay />
+            </button>
+          ) : paused ? (
+            <button
+              type="button"
+              className="playback-icon-btn primary"
+              onClick={onResume}
+              disabled={liveActive}
+              title="Resume"
+              aria-label="Resume"
+            >
+              <IconPlay />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="playback-icon-btn primary"
+              onClick={onPause}
+              disabled={liveActive}
+              title="Pause"
+              aria-label="Pause"
+            >
+              <IconPause />
+            </button>
+          )}
+
+          <button
+            type="button"
+            className="playback-icon-btn danger"
+            onClick={onStop}
+            disabled={liveActive || (!playing && !paused && playheadMs == null)}
+            title="Stop"
+            aria-label="Stop"
+          >
+            <IconStop />
+          </button>
+
+          <button
+            type="button"
+            className="playback-icon-btn"
+            onClick={onNext}
+            disabled={!hasNext || histDisabled}
+            title="Next market"
+            aria-label="Next market"
+          >
+            <IconNext />
+          </button>
+
+          <select
+            className="playback-speed"
+            value={speed}
+            onChange={(e) => onSpeed(Number(e.target.value))}
+            disabled={liveActive}
+            title="Playback speed"
+            aria-label="Playback speed"
+          >
+            <option value={1}>1×</option>
+            <option value={5}>5×</option>
+            <option value={10}>10×</option>
+            <option value={30}>30×</option>
+            <option value={60}>60×</option>
+            <option value={120}>120×</option>
+          </select>
+        </div>
+
+        <div className="playback-timeline">
+          <span className="playback-time">{elapsedLabel}</span>
+          <input
+            type="range"
+            className="playback-scrubber"
+            min={0}
+            max={1000}
+            step={1}
+            value={Math.round(progress * 1000)}
+            disabled={seekDisabled}
+            aria-label="Seek in market"
+            style={{
+              background: `linear-gradient(to right, var(--accent) ${progress * 100}%, #e5e7eb ${progress * 100}%)`,
+            }}
+            onPointerDown={() => {
+              dragging.current = true
+            }}
+            onChange={(e) => onSliderInput(Number(e.target.value))}
+            onPointerUp={(e) => commitSeek(Number((e.target as HTMLInputElement).value))}
+            onKeyUp={(e) => commitSeek(Number((e.target as HTMLInputElement).value))}
+          />
+          <span className="playback-time">{durationLabel}</span>
+        </div>
+
+        {mode === 'paper' && (
+          <>
+            <label className="sidebar-label">Strategy</label>
+            <select
+              value={strategy}
+              onChange={(e) => onStrategy(e.target.value)}
+              disabled={liveActive}
+            >
+              <option value="none">Manual only</option>
+              <option value="lgbm_edge">LightGBM edge</option>
+              <option value="edge_threshold">Edge threshold</option>
+              <option value="safe_pair">Safe pair (ask sum)</option>
+            </select>
+          </>
+        )}
+      </div>
+
       {!beforeTwap && (
-        <div className="sidebar-section pm-books-section">
+        <div className="sidebar-section pm-books-section sidebar-section-last">
           <div className="sidebar-heading data-heading">
             <span>PM books</span>
             <span
@@ -1013,143 +1152,6 @@ export default function ControlSidebar(props: Props) {
           </div>,
           document.body,
         )}
-
-      <div className="sidebar-section sidebar-section-last playback-section">
-        <div className="sidebar-heading playback-heading">
-          <span>Playback</span>
-          {activeReplay && (
-            <span className={`playback-status${paused ? ' paused' : ''}`}>
-              {paused ? 'Paused' : 'Playing'}
-            </span>
-          )}
-        </div>
-
-        <div className="playback-transport">
-          <button
-            type="button"
-            className="playback-icon-btn"
-            onClick={onPrev}
-            disabled={!hasPrev || histDisabled}
-            title="Previous market"
-            aria-label="Previous market"
-          >
-            <IconPrev />
-          </button>
-
-          {!playing ? (
-            <button
-              type="button"
-              className="playback-icon-btn primary"
-              onClick={onPlay}
-              disabled={!marketId || histDisabled}
-              title="Play"
-              aria-label="Play"
-            >
-              <IconPlay />
-            </button>
-          ) : paused ? (
-            <button
-              type="button"
-              className="playback-icon-btn primary"
-              onClick={onResume}
-              disabled={liveActive}
-              title="Resume"
-              aria-label="Resume"
-            >
-              <IconPlay />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="playback-icon-btn primary"
-              onClick={onPause}
-              disabled={liveActive}
-              title="Pause"
-              aria-label="Pause"
-            >
-              <IconPause />
-            </button>
-          )}
-
-          <button
-            type="button"
-            className="playback-icon-btn danger"
-            onClick={onStop}
-            disabled={liveActive || (!playing && !paused && playheadMs == null)}
-            title="Stop"
-            aria-label="Stop"
-          >
-            <IconStop />
-          </button>
-
-          <button
-            type="button"
-            className="playback-icon-btn"
-            onClick={onNext}
-            disabled={!hasNext || histDisabled}
-            title="Next market"
-            aria-label="Next market"
-          >
-            <IconNext />
-          </button>
-
-          <select
-            className="playback-speed"
-            value={speed}
-            onChange={(e) => onSpeed(Number(e.target.value))}
-            disabled={liveActive}
-            title="Playback speed"
-            aria-label="Playback speed"
-          >
-            <option value={1}>1×</option>
-            <option value={5}>5×</option>
-            <option value={10}>10×</option>
-            <option value={30}>30×</option>
-            <option value={60}>60×</option>
-            <option value={120}>120×</option>
-          </select>
-        </div>
-
-        <div className="playback-timeline">
-          <span className="playback-time">{elapsedLabel}</span>
-          <input
-            type="range"
-            className="playback-scrubber"
-            min={0}
-            max={1000}
-            step={1}
-            value={Math.round(progress * 1000)}
-            disabled={seekDisabled}
-            aria-label="Seek in market"
-            style={{
-              background: `linear-gradient(to right, var(--accent) ${progress * 100}%, #e5e7eb ${progress * 100}%)`,
-            }}
-            onPointerDown={() => {
-              dragging.current = true
-            }}
-            onChange={(e) => onSliderInput(Number(e.target.value))}
-            onPointerUp={(e) => commitSeek(Number((e.target as HTMLInputElement).value))}
-            onKeyUp={(e) => commitSeek(Number((e.target as HTMLInputElement).value))}
-          />
-          <span className="playback-time">{durationLabel}</span>
-        </div>
-
-        {mode === 'paper' && (
-          <>
-            <label className="sidebar-label">Strategy</label>
-            <select
-              value={strategy}
-              onChange={(e) => onStrategy(e.target.value)}
-              disabled={liveActive}
-            >
-              <option value="none">Manual only</option>
-              <option value="lgbm_edge">LightGBM edge</option>
-              <option value="edge_threshold">Edge threshold</option>
-              <option value="safe_pair">Safe pair (ask sum)</option>
-            </select>
-          </>
-        )}
-      </div>
       </>
       )}
     </div>

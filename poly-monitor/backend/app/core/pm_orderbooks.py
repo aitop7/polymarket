@@ -9,11 +9,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from app.core.live_dataset import find_live_market_dir
+from app.core.live_dataset import PM_ORDERBOOKS_FILE, find_live_market_dir
 from app.core.pmdata_client import download_poly_l2, pmdata_enabled
 
 SLOT_MS = 500
-PM_ORDERBOOKS_FILE = "pm_orderbooks.parquet"
+# Alias kept for local call sites; canonical name lives in live_dataset.
 
 BUCKET_SUFFIXES = ("0_1", "1_3", "3_7", "7_15", "15_30", "30_plus")
 DISTANCE_BUCKETS: list[tuple[int, int | None]] = [
