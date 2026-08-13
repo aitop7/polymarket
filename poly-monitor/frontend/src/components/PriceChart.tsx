@@ -62,6 +62,11 @@ type Props = {
   traderMarks?: TraderMark[]
   /** External highlight (e.g. activity-row hover): vertical cursor + emphasized mark */
   highlightTime?: number | null
+  /** Outcomes mode: show EMA overlays on Up/Down */
+  showEma?: boolean
+  onShowEmaChange?: (next: boolean) => void
+  /** EMA period in samples (default 20) */
+  emaPeriod?: number
 }
 
 const SERIES_META: {
@@ -189,7 +194,32 @@ function formatTipDateTime(ms: number): string {
   }
 }
 
-type ChartDatum = Point & { upPct?: number | null; downPct?: number | null }
+type ChartDatum = Point & {
+  upPct?: number | null
+  downPct?: number | null
+  upEma?: number | null
+  downEma?: number | null
+}
+
+const DEFAULT_EMA_PERIOD = 20
+
+/** Point EMA over finite samples only; undefined until the first finite value. */
+function emaSeries(values: Array<number | null | undefined>, period: number): Array<number | undefined> {
+  const n = Math.max(1, Math.floor(period))
+  const alpha = 2 / (n + 1)
+  const out: Array<number | undefined> = new Array(values.length)
+  let ema: number | null = null
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    if (v == null || !Number.isFinite(v)) {
+      out[i] = ema ?? undefined
+      continue
+    }
+    ema = ema == null ? v : alpha * v + (1 - alpha) * ema
+    out[i] = ema
+  }
+  return out
+}
 
 function findNearestPoint(data: ChartDatum[], t: number): ChartDatum | null {
   if (!data.length) return null
@@ -210,6 +240,7 @@ function tipFromDataAtTime(
   data: ChartDatum[],
   t: number,
   seriesVisible: BtcSeriesVisibility,
+  showEma = false,
 ): HoverTip | null {
   const point = findNearestPoint(data, t)
   if (!point) return null
@@ -235,12 +266,28 @@ function tipFromDataAtTime(
         valueText: formatTipValue('outcomes', point.upPct),
       })
     }
+    if (showEma && point.upEma != null && Number.isFinite(point.upEma)) {
+      rows.push({
+        label: 'Up EMA',
+        color: '#059669',
+        dataKey: 'upEma',
+        valueText: formatTipValue('outcomes', point.upEma),
+      })
+    }
     if (point.downPct != null && Number.isFinite(point.downPct)) {
       rows.push({
         label: 'Down',
         color: '#ef4444',
         dataKey: 'downPct',
         valueText: formatTipValue('outcomes', point.downPct),
+      })
+    }
+    if (showEma && point.downEma != null && Number.isFinite(point.downEma)) {
+      rows.push({
+        label: 'Down EMA',
+        color: '#dc2626',
+        dataKey: 'downEma',
+        valueText: formatTipValue('outcomes', point.downEma),
       })
     }
   }
@@ -392,6 +439,9 @@ export default function PriceChart({
   onHoverTimeChange,
   traderMarks = [],
   highlightTime = null,
+  showEma = false,
+  onShowEmaChange,
+  emaPeriod = DEFAULT_EMA_PERIOD,
 }: Props) {
   const showBtc = mode === 'btc'
   const twapFillId = `twapAreaFill-${mode}`
@@ -431,8 +481,21 @@ export default function PriceChart({
     while (j > i && mapped[j - 1].upPct == null && mapped[j - 1].downPct == null) {
       j -= 1
     }
-    return i || j < mapped.length ? mapped.slice(i, j) : mapped
-  }, [data, mode])
+    const sliced = i || j < mapped.length ? mapped.slice(i, j) : mapped
+    const upEma = emaSeries(
+      sliced.map((d) => d.upPct),
+      emaPeriod,
+    )
+    const downEma = emaSeries(
+      sliced.map((d) => d.downPct),
+      emaPeriod,
+    )
+    return sliced.map((d, idx) => ({
+      ...d,
+      upEma: upEma[idx],
+      downEma: downEma[idx],
+    }))
+  }, [data, mode, emaPeriod])
 
   // Prefer TWAP; only fall back to Binance when Current Price has no samples at all.
   const plotVisible = useMemo((): BtcSeriesVisibility => {
@@ -448,7 +511,7 @@ export default function PriceChart({
     () =>
       hoverTime == null
         ? null
-        : tipFromDataAtTime(mode, chartData, hoverTime, plotVisible),
+        : tipFromDataAtTime(mode, chartData, hoverTime, plotVisible, showEma),
     [
       hoverTime,
       mode,
@@ -456,6 +519,7 @@ export default function PriceChart({
       plotVisible.twap,
       plotVisible.chainlink,
       plotVisible.binance,
+      showEma,
     ],
   )
 
@@ -665,6 +729,22 @@ export default function PriceChart({
               ))}
             </div>
           ) : null}
+          {!collapsed && !showBtc && onShowEmaChange ? (
+            <div className="chart-series-toggles" role="group" aria-label="Outcomes series visibility">
+              <label className={`chart-series-toggle ${showEma ? 'on' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={showEma}
+                  onChange={() => onShowEmaChange(!showEma)}
+                />
+                <span
+                  className="chart-series-swatch"
+                  style={{ background: '#059669' }}
+                />
+                EMA
+              </label>
+            </div>
+          ) : null}
         </div>
       </div>
       {!collapsed && (
@@ -837,11 +917,13 @@ export default function PriceChart({
                   dataKey="upPct"
                   name="Up"
                   stroke="#10b981"
+                  strokeOpacity={showEma ? 0.5 : 1}
+                  strokeDasharray={showEma ? '4 3' : undefined}
                   dot={false}
                   activeDot={(dotProps) => (
                     <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#10b981" />
                   )}
-                  strokeWidth={2}
+                  strokeWidth={showEma ? 1.5 : 2}
                   isAnimationActive={false}
                   connectNulls={false}
                 />
@@ -850,14 +932,46 @@ export default function PriceChart({
                   dataKey="downPct"
                   name="Down"
                   stroke="#ef4444"
+                  strokeOpacity={showEma ? 0.5 : 1}
+                  strokeDasharray={showEma ? '4 3' : undefined}
                   dot={false}
                   activeDot={(dotProps) => (
                     <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#ef4444" />
                   )}
-                  strokeWidth={2}
+                  strokeWidth={showEma ? 1.5 : 2}
                   isAnimationActive={false}
                   connectNulls={false}
                 />
+                {showEma ? (
+                  <>
+                    <Line
+                      type="monotone"
+                      dataKey="upEma"
+                      name="Up EMA"
+                      stroke="#059669"
+                      strokeOpacity={1}
+                      dot={false}
+                      activeDot={false}
+                      strokeWidth={2.5}
+                      isAnimationActive={false}
+                      connectNulls
+                      legendType="none"
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="downEma"
+                      name="Down EMA"
+                      stroke="#dc2626"
+                      strokeOpacity={1}
+                      dot={false}
+                      activeDot={false}
+                      strokeWidth={2.5}
+                      isAnimationActive={false}
+                      connectNulls
+                      legendType="none"
+                    />
+                  </>
+                ) : null}
                 {traderMarks.length > 0 ? (
                   <Scatter
                     name="Trader fills"

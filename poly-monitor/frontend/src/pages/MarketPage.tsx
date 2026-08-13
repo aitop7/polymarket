@@ -384,6 +384,7 @@ export default function MarketPage({ mode }: Props) {
     chainlink: false,
     binance: false,
   })
+  const [showOutcomeEma, setShowOutcomeEma] = useState(false)
   const [sharedHoverTime, setSharedHoverTime] = useState<number | null>(null)
   const [chartXDomain, setChartXDomain] = useState<TimeDomain | null>(null)
   const [followLiveX, setFollowLiveX] = useState(true)
@@ -1673,6 +1674,8 @@ export default function MarketPage({ mode }: Props) {
             hoverTime={sharedHoverTime}
             onHoverTimeChange={setSharedHoverTime}
             traderMarks={traderMarks}
+            showEma={showOutcomeEma}
+            onShowEmaChange={setShowOutcomeEma}
           />
           <VolumeChart
             data={chartData}

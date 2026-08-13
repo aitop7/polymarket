@@ -3412,6 +3412,16 @@ select {
   opacity: 0.35;
 }
 
+.chart-series-swatch-dashed {
+  background-image: repeating-linear-gradient(
+    90deg,
+    transparent,
+    transparent 2px,
+    rgba(255, 255, 255, 0.55) 2px,
+    rgba(255, 255, 255, 0.55) 4px
+  ) !important;
+}
+
 .chart-reset-btn {
   border: 1px solid var(--border);
   background: #fff;
