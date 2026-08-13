@@ -6081,3 +6081,59 @@ select {
   color: #065f46;
   background: #d1fae5;
 }
+
+/* ?? PMData page ?? */
+.pmdata-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 1280px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.pmdata-hero h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.45rem;
+  letter-spacing: -0.02em;
+}
+
+.pmdata-hero p {
+  margin: 0;
+  max-width: 52rem;
+  color: var(--muted, #6b7280);
+  line-height: 1.45;
+}
+
+.pmdata-hero code {
+  font-size: 0.85em;
+}
+
+.pmdata-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.pmdata-panel {
+  background: var(--panel, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 10px;
+  padding: 0.85rem 0.9rem 1rem;
+  min-height: 0;
+}
+
+.pmdata-panel .pm-books-list {
+  max-height: min(62vh, 640px);
+}
+
+.pmdata-panel .pm-books-slot {
+  cursor: default;
+}
+
+@media (max-width: 900px) {
+  .pmdata-grid {
+    grid-template-columns: 1fr;
+  }
+}

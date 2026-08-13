@@ -38,12 +38,13 @@ def _download_bytes(url: str, *, timeout_s: float = 180.0) -> bytes:
     }
     with httpx.Client(timeout=timeout_s, follow_redirects=True) as client:
         resp = client.get(url, headers=headers)
-        if resp.status_code == 401 or resp.status_code == 403:
-            raise RuntimeError(f"PMData auth failed ({resp.status_code}) — check PMDATA_API_KEY")
         if resp.status_code == 404:
             raise FileNotFoundError(f"PMData file not found: {url}")
         if resp.status_code >= 400:
-            detail = (resp.text or "")[:240]
+            detail = (resp.text or "").strip()[:240] or resp.reason_phrase
+            # Chainlink often returns 403 for plan/paywall, not bad keys.
+            if resp.status_code in (401, 403):
+                raise RuntimeError(f"PMData denied ({resp.status_code}): {detail}")
             raise RuntimeError(f"PMData download failed ({resp.status_code}): {detail}")
         return resp.content
 
