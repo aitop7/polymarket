@@ -300,6 +300,16 @@ def get_markets(
     return {"split": split, "date": date, "count": len(markets), "markets": markets}
 
 
+@router.get("/markets/pm-orderbooks/missing")
+def get_missing_pm_orderbooks(
+    date: str | None = Query(None, description="ET date YYYY-MM-DD; omit for all history"),
+) -> dict[str, Any]:
+    """List TWAP history markets that do not yet have pm_orderbooks.parquet."""
+    from app.core.pm_orderbooks import list_missing_pm_orderbooks
+
+    return list_missing_pm_orderbooks(date_et=date)
+
+
 async def _ensure_twap_history(market_id: str, split: str | None) -> None:
     """If selecting a TWAP history market, repair local gaps from VPS when needed."""
     from app.core.live_dataset import find_live_market_dir
@@ -373,6 +383,28 @@ async def repair_market(market_id: str) -> dict[str, Any]:
         status = 409 if "still live" in str(result.get("error") or "") else 502
         raise HTTPException(status, str(result.get("error") or "repair failed"))
     return result
+
+
+@router.post("/markets/{market_id}/pm-orderbooks")
+def generate_pm_orderbooks(
+    market_id: str,
+    force: bool = Query(False, description="Re-download PMData poly_l2 ignoring cache"),
+) -> dict[str, Any]:
+    """Download PMData L2 for the market slug and write pm_orderbooks.parquet (0.5s grid)."""
+    from app.core.pm_orderbooks import generate_pm_orderbooks_for_market
+    from app.core.pmdata_client import pmdata_enabled
+
+    mid = str(market_id or "").strip()
+    if not mid:
+        raise HTTPException(400, "market_id required")
+    if not pmdata_enabled():
+        raise HTTPException(400, "PMDATA_API_KEY is not configured in poly-monitor/.env")
+    try:
+        return generate_pm_orderbooks_for_market(mid, force_download=bool(force))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/markets/{market_id}/book")

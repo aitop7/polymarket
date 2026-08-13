@@ -238,6 +238,41 @@ export default function ControlSidebar(props: Props) {
   const [recheckError, setRecheckError] = useState<string | null>(null)
   const healthBusy = rechecking || repairing
 
+  type PmMissingRow = {
+    market_id: string
+    slug?: string | null
+    date_et?: string | null
+    time_et?: string | null
+    start_time: number
+    end_time: number
+  }
+  const [pmMissing, setPmMissing] = useState<PmMissingRow[]>([])
+  const [pmMissingStats, setPmMissingStats] = useState({ total: 0, present: 0, missing: 0 })
+  const [pmLoading, setPmLoading] = useState(false)
+  const [pmGenerating, setPmGenerating] = useState(false)
+  const [pmGenIds, setPmGenIds] = useState<Set<string>>(() => new Set())
+  const [pmProgress, setPmProgress] = useState({ done: 0, total: 0 })
+  const [pmMessage, setPmMessage] = useState<string | null>(null)
+  const [pmMessageTone, setPmMessageTone] = useState<'info' | 'ok' | 'err'>('info')
+  const pmAbort = useRef(false)
+  const pmActiveRowRef = useRef<HTMLDivElement | null>(null)
+  const PM_GEN_CONCURRENCY = 32
+
+  const pmCoveragePct =
+    pmMissingStats.total > 0
+      ? Math.round((pmMissingStats.present / pmMissingStats.total) * 100)
+      : 0
+  const pmGroups = useMemo(() => {
+    const map = new Map<string, PmMissingRow[]>()
+    for (const m of pmMissing) {
+      const key = m.date_et || 'Unknown'
+      const list = map.get(key)
+      if (list) list.push(m)
+      else map.set(key, [m])
+    }
+    return [...map.entries()]
+  }, [pmMissing])
+
   const dialogHealth = healthTone(healthDialog?.data_health)
   const dialogGroups = useMemo(
     () => parseHealthNotes(healthDialog?.data_health_comment),
@@ -349,6 +384,122 @@ export default function ControlSidebar(props: Props) {
       window.removeEventListener('keydown', onKey)
     }
   }, [healthDialog, healthBusy])
+
+  const refreshPmMissing = async () => {
+    setPmLoading(true)
+    try {
+      // All history (not the selected day / current market): oldest → newest.
+      const res = await api.missingPmOrderbooks()
+      setPmMissing(res.missing || [])
+      setPmMissingStats({
+        total: res.n_total || 0,
+        present: res.n_present || 0,
+        missing: res.n_missing || 0,
+      })
+    } catch (err) {
+      setPmMessageTone('err')
+      setPmMessage(err instanceof Error ? err.message : 'Failed to list missing PM books')
+    } finally {
+      setPmLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (liveActive || collection !== 'twap') {
+      setPmMissing([])
+      setPmMissingStats({ total: 0, present: 0, missing: 0 })
+      setPmProgress({ done: 0, total: 0 })
+      setPmMessage(null)
+      setPmMessageTone('info')
+      return
+    }
+    void refreshPmMissing()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveActive, collection])
+
+  useEffect(() => {
+    if (!pmGenIds.size) return
+    pmActiveRowRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [pmGenIds])
+
+  const markPmActive = (mid: string, on: boolean) => {
+    setPmGenIds((prev) => {
+      const next = new Set(prev)
+      if (on) next.add(mid)
+      else next.delete(mid)
+      return next
+    })
+  }
+
+  const generateOnePm = async (mid: string) => {
+    markPmActive(mid, true)
+    setPmMessage(null)
+    setPmMessageTone('info')
+    try {
+      const res = await api.generatePmOrderbooks(mid)
+      setPmMissing((prev) => prev.filter((m) => m.market_id !== mid))
+      setPmMissingStats((s) => ({
+        total: s.total,
+        present: s.present + 1,
+        missing: Math.max(0, s.missing - 1),
+      }))
+      const note = res.warning ? ` · ${res.warning}` : ''
+      setPmMessageTone(res.warning ? 'info' : 'ok')
+      setPmMessage(`${mid} · ${res.n_rows ?? 0} rows${note}`)
+    } catch (err) {
+      setPmMessageTone('err')
+      setPmMessage(err instanceof Error ? err.message : `Generate failed for ${mid}`)
+      throw err
+    } finally {
+      markPmActive(mid, false)
+    }
+  }
+
+  const generateAllPmMissing = async () => {
+    if (pmGenerating || !pmMissing.length) return
+    pmAbort.current = false
+    setPmGenerating(true)
+    setPmMessage(null)
+    setPmMessageTone('info')
+    // Already oldest → newest from API; never start from the current/newest slot.
+    const queue = [...pmMissing].sort(
+      (a, b) => (a.start_time || 0) - (b.start_time || 0) || a.market_id.localeCompare(b.market_id),
+    )
+    setPmProgress({ done: 0, total: queue.length })
+    let cursor = 0
+    let done = 0
+    let failed = 0
+    let lastErr: string | null = null
+
+    const worker = async () => {
+      while (!pmAbort.current) {
+        const i = cursor++
+        if (i >= queue.length) return
+        const mid = queue[i].market_id
+        try {
+          await generateOnePm(mid)
+          done += 1
+        } catch (err) {
+          failed += 1
+          lastErr = err instanceof Error ? err.message : String(err)
+        }
+        setPmProgress({ done: done + failed, total: queue.length })
+      }
+    }
+
+    const nWorkers = Math.min(PM_GEN_CONCURRENCY, queue.length)
+    await Promise.all(Array.from({ length: nWorkers }, () => worker()))
+
+    setPmGenerating(false)
+    setPmGenIds(new Set())
+    const stopped = pmAbort.current
+    setPmMessageTone(failed ? 'err' : stopped ? 'info' : 'ok')
+    const summary = stopped
+      ? `Stopped · ${done} generated${failed ? `, ${failed} failed` : ''} · ${nWorkers}× parallel`
+      : `Complete · ${done} generated${failed ? `, ${failed} failed` : ''} · ${nWorkers}× parallel`
+    setPmMessage(lastErr ? `${summary}\n${lastErr}` : summary)
+    void refreshPmMissing()
+  }
 
   const elapsedLabel = useMemo(() => {
     if (start == null || displayTs == null) return '0:00'
@@ -598,6 +749,187 @@ export default function ControlSidebar(props: Props) {
           )}
         </div>
       </div>
+
+      {!beforeTwap && (
+        <div className="sidebar-section pm-books-section">
+          <div className="sidebar-heading data-heading">
+            <span>PM books</span>
+            <span
+              className={`pm-books-pill${
+                pmLoading
+                  ? ''
+                  : pmMissingStats.missing === 0 && pmMissingStats.total > 0
+                    ? ' ok'
+                    : pmMissingStats.missing > 0
+                      ? ' pending'
+                      : ''
+              }`}
+            >
+              {pmLoading ? '…' : `${pmCoveragePct}%`}
+            </span>
+          </div>
+
+          <div
+            className="pm-books-meter"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={pmCoveragePct}
+            aria-label="PM orderbook coverage"
+          >
+            <div className="pm-books-meter-fill" style={{ width: `${pmCoveragePct}%` }} />
+          </div>
+
+          <div className="pm-books-stats">
+            <span>
+              <strong>{pmMissingStats.present.toLocaleString()}</strong> ready
+            </span>
+            <span className="pm-books-stats-sep" aria-hidden>
+              ·
+            </span>
+            <span>
+              <strong>{pmMissingStats.missing.toLocaleString()}</strong> queued
+            </span>
+            <span className="pm-books-stats-note">Oldest first</span>
+          </div>
+
+          <div className="pm-books-actions">
+            {pmGenerating ? (
+              <button
+                type="button"
+                className="sidebar-btn pm-books-stop"
+                onClick={() => {
+                  pmAbort.current = true
+                }}
+              >
+                Stop
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="sidebar-btn primary pm-books-gen"
+                disabled={histDisabled || pmLoading || pmMissing.length === 0}
+                onClick={() => void generateAllPmMissing()}
+                title="Generate pm_orderbooks.parquet for every missing past market, oldest first"
+              >
+                Generate queue
+              </button>
+            )}
+            <button
+              type="button"
+              className="sidebar-btn ghost pm-books-refresh"
+              disabled={histDisabled || pmLoading || pmGenerating}
+              onClick={() => void refreshPmMissing()}
+              title="Refresh missing list"
+              aria-label="Refresh"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
+                <path
+                  fill="currentColor"
+                  d="M17.65 6.35A7.95 7.95 0 0 0 12 4V1L7 6l5 5V7c2.76 0 5 2.24 5 5a5 5 0 0 1-8.66 3.54l-1.42 1.42A7 7 0 0 0 19 12c0-1.93-.78-3.68-2.05-4.95zM6 12c0-1.07.34-2.07.92-2.89l-1.43-1.43A6.97 6.97 0 0 0 5 12a7 7 0 0 0 11.89 5.04l-1.42-1.42A5 5 0 0 1 6 12z"
+                />
+              </svg>
+            </button>
+          </div>
+
+          {pmGenerating && pmProgress.total > 0 && (
+            <div className="pm-books-run">
+              <div className="pm-books-run-head">
+                <span className="pm-books-run-label">Generating · 32×</span>
+                <span className="pm-books-run-count">
+                  {pmProgress.done}/{pmProgress.total}
+                </span>
+              </div>
+              <div className="pm-books-run-bar" aria-hidden>
+                <div
+                  className="pm-books-run-fill"
+                  style={{
+                    width: `${Math.min(100, Math.round((pmProgress.done / pmProgress.total) * 100))}%`,
+                  }}
+                />
+              </div>
+              {pmGenIds.size > 0 && (
+                <div className="pm-books-run-id">
+                  {pmGenIds.size} active · {[...pmGenIds].slice(0, 3).join(', ')}
+                  {pmGenIds.size > 3 ? '…' : ''}
+                </div>
+              )}
+            </div>
+          )}
+
+          {pmMessage && (
+            <p className={`pm-books-msg ${pmMessageTone}`}>{pmMessage}</p>
+          )}
+
+          <div
+            className={`pm-books-list${histDisabled || (!pmLoading && !pmMissing.length) ? ' disabled' : ''}`}
+            role="list"
+            aria-label="Past markets missing pm_orderbooks"
+          >
+            {pmLoading ? (
+              <div className="time-window-empty">Scanning history…</div>
+            ) : pmMissing.length === 0 ? (
+              <div className="time-window-empty pm-books-empty-ok">
+                All past markets covered
+              </div>
+            ) : (
+              pmGroups.map(([date, rows]) => (
+                <div key={date} className="pm-books-group">
+                  <div className="pm-books-group-head">
+                    <span>{date}</span>
+                    <span>{rows.length}</span>
+                  </div>
+                  {rows.map((m) => {
+                    const active = pmGenIds.has(m.market_id)
+                    return (
+                      <div
+                        key={m.market_id}
+                        ref={
+                          active
+                            ? (el) => {
+                                if (el) pmActiveRowRef.current = el
+                              }
+                            : undefined
+                        }
+                        className={`pm-books-row${active ? ' active' : ''}`}
+                        role="listitem"
+                      >
+                        <button
+                          type="button"
+                          className="pm-books-slot"
+                          disabled={histDisabled}
+                          onClick={() => {
+                            if (m.time_et) onTime(m.time_et)
+                          }}
+                          title={m.slug || m.market_id}
+                        >
+                          <span className="pm-books-time">
+                            {formatSlotLabel(m.time_et || '', m.start_time, m.end_time)}
+                          </span>
+                          <span className="pm-books-id">{m.market_id}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="pm-books-one"
+                          disabled={histDisabled || pmGenerating}
+                          onClick={() => void generateOnePm(m.market_id).catch(() => undefined)}
+                          title={`Generate ${m.market_id}`}
+                        >
+                          {active ? (
+                            <span className="pm-books-spinner" aria-label="Generating" />
+                          ) : (
+                            'Run'
+                          )}
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
 
       {healthDialog &&
         createPortal(

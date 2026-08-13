@@ -271,6 +271,37 @@ export const api = {
       warning?: string | null
       error?: string | null
     }>(`/api/markets/${id}/repair`, { method: 'POST' }),
+  generatePmOrderbooks: (id: string, opts?: { force?: boolean }) => {
+    const q = opts?.force ? '?force=true' : ''
+    return json<{
+      ok: boolean
+      market_id: string
+      slug?: string
+      path?: string
+      n_rows?: number
+      slot_ms?: number
+      source?: string
+      warning?: string | null
+    }>(`/api/markets/${id}/pm-orderbooks${q}`, { method: 'POST' })
+  },
+  missingPmOrderbooks: (date?: string) => {
+    const q = date ? `?date=${encodeURIComponent(date)}` : ''
+    return json<{
+      date: string | null
+      n_total: number
+      n_present: number
+      n_missing: number
+      missing: Array<{
+        market_id: string
+        slug?: string | null
+        start_time: number
+        end_time: number
+        date_et?: string | null
+        time_et?: string | null
+        dir?: string | null
+      }>
+    }>(`/api/markets/pm-orderbooks/missing${q}`, { cache: 'no-store' })
+  },
   book: (id: string, t?: number) =>
     json<Record<string, unknown>>(`/api/markets/${id}/book${t != null ? `?t=${t}` : ''}`),
   backtest: (body: Record<string, unknown>) =>

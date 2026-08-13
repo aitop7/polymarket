@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     fetch_live_data_dir: Path = _DEFAULT_LIVE_DIR
     vps_sync_url: str = ""
     vps_sync_token: str = ""
+    pmdata_api_key: str = ""
     host: str = "127.0.0.1"
     port: int = 8000
     cors_origins: str = (
