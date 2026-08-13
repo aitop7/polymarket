@@ -189,6 +189,20 @@ def start_lgbm_train(params: dict[str, Any] | None = None) -> dict[str, Any]:
                 if code == 0:
                     _job["status"] = "succeeded"
                     _job["error"] = None
+                    try:
+                        from app.core.strategy_versions import save_train_result
+
+                        snap = save_train_result(
+                            train_params=dict((_job.get("params") or {})),
+                            metrics=metrics if isinstance(metrics, dict) else None,
+                            label="auto-train",
+                        )
+                        _job["version"] = {
+                            "id": snap.get("id"),
+                            "path": snap.get("path"),
+                        }
+                    except Exception as ver_exc:
+                        _job["version_error"] = str(ver_exc)
                 else:
                     _job["status"] = "failed"
                     _job["error"] = f"Trainer exited with code {code}"

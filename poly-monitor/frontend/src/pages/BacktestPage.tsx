@@ -66,7 +66,11 @@ export default function BacktestPage() {
   const [oncePerMarket, setOncePerMarket] = useState(false)
   const [feeModel, setFeeModel] = useState<'none' | 'polymarket' | 'flat'>('polymarket')
   const [slippage, setSlippage] = useState(0)
+  const [horizonSec, setHorizonSec] = useState(5)
+  const [deltaSec, setDeltaSec] = useState(1)
+  const [minFailDrop, setMinFailDrop] = useState(0.02)
   const isSafePair = strategy === 'safe_pair'
+  const isMomentumPair = strategy === 'momentum_pair'
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -96,6 +100,18 @@ export default function BacktestPage() {
       })
       .catch(() => setStrategies([]))
   }, [])
+
+  useEffect(() => {
+    if (strategy === 'momentum_pair') {
+      setMinElapsedSec(0)
+      setMinRemainingSec(5)
+      setCooldownSec(0)
+      setHorizonSec(5)
+      setDeltaSec(1)
+      setMinFailDrop(0.02)
+      setFeeModel('polymarket')
+    }
+  }, [strategy])
 
   useEffect(() => {
     let cancelled = false
@@ -129,25 +145,30 @@ export default function BacktestPage() {
     setSelectedId(null)
     setDetail(null)
     try {
-      const res = await api.backtest({
-        strategy,
-        split: effectiveSplit,
-        limit,
-        starting_cash: startingCash,
-        ...(isTwap && selectedDate ? { date: selectedDate } : {}),
-        params: isSafePair
+      const params = isSafePair
+        ? {
+            min_edge: minEdge,
+            size_usd: sizeUsd,
+            min_ask_shares: minAskShares,
+            max_pairs_per_market: oncePerMarket ? 1 : maxPairs,
+            cooldown_seconds: cooldownSec,
+            min_elapsed_seconds: minElapsedSec,
+            min_remaining_seconds: minRemainingSec,
+            once_per_market: oncePerMarket,
+            taker_fee_rate: 0.07,
+            fee_model: feeModel,
+            slippage,
+          }
+        : isMomentumPair
           ? {
-              min_edge: minEdge,
-              size_usd: sizeUsd,
-              min_ask_shares: minAskShares,
-              max_pairs_per_market: oncePerMarket ? 1 : maxPairs,
+              horizon_seconds: horizonSec,
+              delta_seconds: deltaSec,
+              min_fail_drop: minFailDrop,
+              min_pair_edge: 0,
               cooldown_seconds: cooldownSec,
               min_elapsed_seconds: minElapsedSec,
               min_remaining_seconds: minRemainingSec,
-              once_per_market: oncePerMarket,
-              taker_fee_rate: 0.07,
               fee_model: feeModel,
-              slippage,
             }
           : {
               threshold,
@@ -157,7 +178,14 @@ export default function BacktestPage() {
               cooldown_seconds: cooldownSec,
               min_elapsed_seconds: minElapsedSec,
               min_remaining_seconds: minRemainingSec,
-            },
+            }
+      const res = await api.backtest({
+        strategy,
+        split: effectiveSplit,
+        limit,
+        starting_cash: startingCash,
+        ...(isTwap && selectedDate ? { date: selectedDate } : {}),
+        params,
       })
       setResult(res)
       if (res.markets?.length) {
@@ -478,6 +506,63 @@ export default function BacktestPage() {
                   Once per market
                 </label>
               </>
+            ) : isMomentumPair ? (
+              <>
+                <p className="muted" style={{ margin: '0 0 0.55rem', fontSize: '0.72rem', lineHeight: 1.35 }}>
+                  Entry in the first T seconds using predicted UP mid; hedge legs use locked N shares at ask.
+                  Prefer TWAP / live data.
+                </p>
+                <label className="sidebar-label">Horizon T (sec)</label>
+                <input
+                  type="number"
+                  step={1}
+                  min={1}
+                  max={60}
+                  value={horizonSec}
+                  disabled={loading}
+                  onChange={(e) => setHorizonSec(Math.max(1, Number(e.target.value) || 5))}
+                />
+                <label className="sidebar-label">Delta (sec)</label>
+                <input
+                  type="number"
+                  step={1}
+                  min={1}
+                  max={30}
+                  value={deltaSec}
+                  disabled={loading}
+                  onChange={(e) => setDeltaSec(Math.max(1, Number(e.target.value) || 1))}
+                />
+                <label className="sidebar-label">Min fail drop</label>
+                <input
+                  type="number"
+                  step={0.01}
+                  min={0}
+                  max={0.5}
+                  value={minFailDrop}
+                  disabled={loading}
+                  onChange={(e) => setMinFailDrop(Math.max(0, Number(e.target.value) || 0))}
+                />
+                <label className="sidebar-label">Cooldown (sec)</label>
+                <input
+                  type="number"
+                  step={1}
+                  min={0}
+                  max={120}
+                  value={cooldownSec}
+                  disabled={loading}
+                  onChange={(e) => setCooldownSec(Math.max(0, Number(e.target.value) || 0))}
+                />
+                <label className="sidebar-label">Fee model</label>
+                <select
+                  value={feeModel}
+                  disabled={loading}
+                  onChange={(e) => setFeeModel(e.target.value as 'none' | 'polymarket' | 'flat')}
+                >
+                  <option value="polymarket">Polymarket crypto (0.07)</option>
+                  <option value="flat">Flat % of notional</option>
+                  <option value="none">None</option>
+                </select>
+              </>
             ) : (
               <>
                 <label className="sidebar-label">Edge threshold</label>
@@ -512,16 +597,20 @@ export default function BacktestPage() {
                 />
               </>
             )}
-            <label className="sidebar-label">Size (USD)</label>
-            <input
-              type="number"
-              step={1}
-              min={1}
-              value={sizeUsd}
-              disabled={loading}
-              onChange={(e) => setSizeUsd(Math.max(1, Number(e.target.value) || 1))}
-            />
-            {!isSafePair && (
+            {!isMomentumPair && (
+              <>
+                <label className="sidebar-label">Size (USD)</label>
+                <input
+                  type="number"
+                  step={1}
+                  min={1}
+                  value={sizeUsd}
+                  disabled={loading}
+                  onChange={(e) => setSizeUsd(Math.max(1, Number(e.target.value) || 1))}
+                />
+              </>
+            )}
+            {!isSafePair && !isMomentumPair && (
               <>
                 <p className="muted" style={{ margin: '0 0 0.5rem', fontSize: '0.72rem', lineHeight: 1.35 }}>
                   Max notional per order (shares = USD ÷ ask). Polymarket crypto fees apply.

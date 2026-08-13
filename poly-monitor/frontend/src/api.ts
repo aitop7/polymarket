@@ -141,6 +141,41 @@ export const api = {
     json<{ strategies: StrategyCatalogItem[] }>('/api/strategies/catalog', { cache: 'no-store' }),
   strategyCatalogItem: (name: string) =>
     json<StrategyCatalogItem>(`/api/strategies/catalog/${encodeURIComponent(name)}`, { cache: 'no-store' }),
+  strategyVersions: (name: string) =>
+    json<StrategyVersionsResponse>(
+      `/api/strategies/versions/${encodeURIComponent(name)}`,
+      { cache: 'no-store' },
+    ),
+  strategyActiveVersion: (name: string) =>
+    json<StrategyActiveResponse>(
+      `/api/strategies/versions/${encodeURIComponent(name)}/active`,
+      { cache: 'no-store' },
+    ),
+  strategyVersion: (name: string, versionId: string) =>
+    json<StrategyVersionDetail>(
+      `/api/strategies/versions/${encodeURIComponent(name)}/${encodeURIComponent(versionId)}`,
+      { cache: 'no-store' },
+    ),
+  saveStrategyVersion: (
+    name: string,
+    body: {
+      runtime_params: Record<string, unknown>
+      train_params?: Record<string, unknown>
+      label?: string
+      kind?: string
+      make_active?: boolean
+    },
+  ) =>
+    json<StrategyVersionDetail>(`/api/strategies/versions/${encodeURIComponent(name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  activateStrategyVersion: (name: string, versionId: string) =>
+    json<StrategyVersionDetail>(
+      `/api/strategies/versions/${encodeURIComponent(name)}/${encodeURIComponent(versionId)}/activate`,
+      { method: 'POST' },
+    ),
   lgbmModel: () => json<LgbmModelInfo>('/api/strategies/lgbm/model', { cache: 'no-store' }),
   lgbmTrainStatus: () => json<LgbmTrainJob>('/api/strategies/lgbm/train', { cache: 'no-store' }),
   lgbmTrain: (body?: {
@@ -149,6 +184,21 @@ export const api = {
     max_markets?: number | null
   }) =>
     json<{ ok: boolean; job: LgbmTrainJob }>('/api/strategies/lgbm/train', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    }),
+  momentumPairTrainStatus: () =>
+    json<MomentumPairTrainJob>('/api/strategies/momentum_pair/train', { cache: 'no-store' }),
+  momentumPairTrain: (body?: {
+    horizon_seconds?: number
+    delta_seconds?: number
+    train_ratio?: number
+    num_boost_round?: number
+    early_stopping_rounds?: number
+    max_markets?: number | null
+  }) =>
+    json<{ ok: boolean; job: MomentumPairTrainJob }>('/api/strategies/momentum_pair/train', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
@@ -631,6 +681,48 @@ export type StrategyCatalogItem = {
   outputs?: string[]
 }
 
+export type StrategyVersionSummary = {
+  id: string
+  strategy: string
+  created_at?: string | null
+  label?: string
+  kind?: string
+  runtime_params?: Record<string, unknown>
+  train_params?: Record<string, unknown>
+  metrics_summary?: Record<string, unknown> | null
+  has_model?: boolean
+  path?: string
+  active?: boolean
+}
+
+export type StrategyVersionsResponse = {
+  strategy: string
+  dir: string
+  active_version_id?: string | null
+  count: number
+  versions: StrategyVersionSummary[]
+}
+
+export type StrategyVersionDetail = {
+  id: string
+  strategy: string
+  created_at?: string
+  label?: string
+  kind?: string
+  runtime_params?: Record<string, unknown>
+  train_params?: Record<string, unknown>
+  metrics_summary?: Record<string, unknown> | null
+  artifacts?: Record<string, string>
+  path?: string
+  active?: boolean
+}
+
+export type StrategyActiveResponse = {
+  strategy: string
+  active: boolean
+  version: StrategyVersionDetail & { id: string | null }
+}
+
 export type LgbmTrainJob = {
   status: 'idle' | 'running' | 'succeeded' | 'failed' | string
   started_at?: string | null
@@ -641,6 +733,20 @@ export type LgbmTrainJob = {
   params?: Record<string, unknown> | null
   pid?: number | null
   log_path?: string | null
+  version?: { id?: string; path?: string } | null
+}
+
+export type MomentumPairTrainJob = {
+  status: 'idle' | 'running' | 'succeeded' | 'failed' | string
+  progress?: number
+  phase?: string | null
+  message?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  error?: string | null
+  params?: Record<string, unknown> | null
+  metrics?: Record<string, unknown> | null
+  version?: { id?: string; path?: string } | null
 }
 
 export type LgbmModelInfo = {

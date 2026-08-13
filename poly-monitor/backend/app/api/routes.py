@@ -78,6 +78,14 @@ class LgbmTrainRequest(BaseModel):
     max_markets: int | None = Field(default=None, ge=1, le=50_000)
 
 
+class StrategyVersionSaveRequest(BaseModel):
+    runtime_params: dict[str, Any] = Field(default_factory=dict)
+    train_params: dict[str, Any] = Field(default_factory=dict)
+    label: str = ""
+    kind: str = "params"
+    make_active: bool = True
+
+
 @router.get("/health")
 def health() -> dict[str, Any]:
     from app.core.live_dataset import data_health_thresholds
@@ -113,6 +121,67 @@ def get_strategy_catalog_item(name: str) -> dict[str, Any]:
     return row
 
 
+@router.get("/strategies/versions/{name}")
+def get_strategy_versions(name: str) -> dict[str, Any]:
+    from app.core.strategy_versions import list_versions
+
+    try:
+        return list_versions(name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/strategies/versions/{name}/active")
+def get_strategy_active_version(name: str) -> dict[str, Any]:
+    from app.core.strategy_versions import get_active
+
+    try:
+        return get_active(name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/strategies/versions/{name}/{version_id}")
+def get_strategy_version(name: str, version_id: str) -> dict[str, Any]:
+    from app.core.strategy_versions import get_version
+
+    try:
+        return get_version(name, version_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/strategies/versions/{name}")
+def post_strategy_version(name: str, body: StrategyVersionSaveRequest) -> dict[str, Any]:
+    from app.core.strategy_versions import save_version
+
+    try:
+        return save_version(
+            name,
+            runtime_params=body.runtime_params,
+            train_params=body.train_params,
+            label=body.label,
+            kind=body.kind,
+            make_active=body.make_active,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/strategies/versions/{name}/{version_id}/activate")
+def post_activate_strategy_version(name: str, version_id: str) -> dict[str, Any]:
+    from app.core.strategy_versions import activate_version
+
+    try:
+        return activate_version(name, version_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @router.get("/strategies/lgbm/model")
 def get_lgbm_model_info() -> dict[str, Any]:
     from app.core.strategy_train import get_model_info
@@ -132,6 +201,37 @@ def post_lgbm_train(body: LgbmTrainRequest = LgbmTrainRequest()) -> dict[str, An
     from app.core.strategy_train import start_lgbm_train
 
     result = start_lgbm_train(body.model_dump())
+    if not result.get("ok"):
+        raise HTTPException(
+            409 if "already" in str(result.get("error") or "").lower() else 400,
+            result.get("error") or "Train failed",
+        )
+    return result
+
+
+class MomentumPairTrainRequest(BaseModel):
+    horizon_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
+    delta_seconds: float = Field(default=1.0, ge=0.2, le=30.0)
+    train_ratio: float = Field(default=0.8, ge=0.5, le=0.95)
+    num_boost_round: int = Field(default=400, ge=10, le=5000)
+    early_stopping_rounds: int = Field(default=40, ge=1, le=500)
+    max_markets: int | None = Field(default=None, ge=1, le=50_000)
+
+
+@router.get("/strategies/momentum_pair/train")
+def get_momentum_pair_train_status() -> dict[str, Any]:
+    from app.core.momentum_pair_train import get_train_status
+
+    return get_train_status()
+
+
+@router.post("/strategies/momentum_pair/train")
+def post_momentum_pair_train(
+    body: MomentumPairTrainRequest = MomentumPairTrainRequest(),
+) -> dict[str, Any]:
+    from app.core.momentum_pair_train import start_train
+
+    result = start_train(body.model_dump())
     if not result.get("ok"):
         raise HTTPException(
             409 if "already" in str(result.get("error") or "").lower() else 400,

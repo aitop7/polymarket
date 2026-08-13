@@ -188,12 +188,16 @@ def load_market_frame(market_id: str, *, split: str | None = None) -> pd.DataFra
     """
     mid = str(market_id)
     if split == TWAP_SPLIT or (split is None and find_split(mid) == TWAP_SPLIT):
-        return load_live_market_frame(mid)
+        from app.ml.live_features import load_live_feature_frame
+
+        return load_live_feature_frame(mid)
     split = split or find_split(mid)
     if not split:
         raise FileNotFoundError(f"Market not found: {mid}")
     if split == TWAP_SPLIT:
-        return load_live_market_frame(mid)
+        from app.ml.live_features import load_live_feature_frame
+
+        return load_live_feature_frame(mid)
 
     feat_path = settings.features_dir / split / f"{mid}.parquet"
     train_path = settings.training_dir / split / f"{mid}.parquet"

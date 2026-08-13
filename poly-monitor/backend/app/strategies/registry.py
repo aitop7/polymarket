@@ -57,6 +57,23 @@ def list_strategies() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "momentum_pair",
+            "description": (
+                "Predict UP mid T-ahead; buy N on predicted momentum, confirm, "
+                "fail-switch 2N, then hedge to equal shares under $1"
+            ),
+            "params": {
+                "size_usd": 10.0,
+                "horizon_seconds": 5.0,
+                "delta_seconds": 1.0,
+                "min_fail_drop": 0.02,
+                "min_pair_edge": 0.0,
+                "min_elapsed_seconds": 0.0,
+                "min_remaining_seconds": 5.0,
+                "cooldown_seconds": 0.0,
+            },
+        },
+        {
             "name": "none",
             "description": "No automated strategy (manual / monitor only)",
             "params": {},
@@ -110,5 +127,52 @@ def create_strategy(name: str, params: dict[str, Any] | None = None) -> Any:
             cooldown_seconds=float(params.get("cooldown_seconds", 10.0)),
             min_elapsed_seconds=float(params.get("min_elapsed_seconds", _DEFAULT_MIN_ELAPSED_SECONDS)),
             min_remaining_seconds=float(params.get("min_remaining_seconds", _DEFAULT_MIN_REMAINING_SECONDS)),
+        )
+    if name == "momentum_pair":
+        from strategies.momentum_pair import MomentumPairStrategy
+
+        default_model = (
+            settings.models_dir / "momentum_pair_up_mid.txt"
+            if (settings.models_dir / "momentum_pair_up_mid.txt").is_file()
+            else None
+        )
+        # Prefer active version artifact when present.
+        try:
+            from app.core.strategy_versions import get_active, strategy_dir
+
+            active = get_active("momentum_pair")
+            ver = active.get("version") or {}
+            arts = ver.get("artifacts") or {}
+            if arts.get("model") and ver.get("id"):
+                cand = strategy_dir("momentum_pair") / str(arts["model"])
+                if cand.is_file():
+                    default_model = cand
+            rp = ver.get("runtime_params") or {}
+            if isinstance(rp, dict) and rp.get("model_path"):
+                mp = Path(str(rp["model_path"]))
+                if mp.is_file():
+                    default_model = mp
+        except Exception:
+            pass
+        model_path = params.get("model_path") or default_model
+        return MomentumPairStrategy(
+            model_path=model_path,
+            size_usd=float(params.get("size_usd", 10.0)),
+            shares_n=float(params["shares_n"]) if params.get("shares_n") is not None else None,
+            horizon_seconds=float(params.get("horizon_seconds", params.get("T", 5.0))),
+            delta_seconds=float(params.get("delta_seconds", 1.0)),
+            min_fail_drop=float(params.get("min_fail_drop", 0.02)),
+            min_pair_edge=float(params.get("min_pair_edge", 0.0)),
+            min_elapsed_seconds=float(params.get("min_elapsed_seconds", 0.0)),
+            min_remaining_seconds=float(params.get("min_remaining_seconds", 5.0)),
+            entry_window_seconds=(
+                float(params["entry_window_seconds"])
+                if params.get("entry_window_seconds") is not None
+                else None
+            ),
+            cooldown_seconds=float(params.get("cooldown_seconds", 0.0)),
+            fee_rate=float(params.get("fee_rate", params.get("taker_fee_rate", 0.07))),
+            fee_model=str(params.get("fee_model", "polymarket")),
+            allow_missing_model=bool(params.get("allow_missing_model", True)),
         )
     raise ValueError(f"Unknown strategy: {name}")

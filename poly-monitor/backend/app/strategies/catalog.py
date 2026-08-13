@@ -142,6 +142,64 @@ STRATEGY_DOCS: dict[str, dict[str, Any]] = {
         },
         "outputs": [],
     },
+    "momentum_pair": {
+        "title": "Momentum pair",
+        "idea": (
+            "Train a LightGBM regressor for UP mid T seconds ahead (P). "
+            "Early in the window buy N on the side with predicted momentum vs 50¢; "
+            "confirm on actual U/D velocity; if the first UP leg fails (U falling, P' < 0, "
+            "large enough predicted drop), switch with DOWN 2N; otherwise wait for P' "
+            "sign flip to hedge N; finish with equal UP/DOWN shares at combined cost < $1."
+        ),
+        "when_to_use": "Directional open momentum with an explicit fail-switch into a pair.",
+        "data_required": [
+            {
+                "name": "Live VWAP markets",
+                "path": "E:\\DataSets\\poly\\live\\YYYY-MM-DD\\<market_id>\\",
+                "why": (
+                    "fetch_live dirs (orderbooks/chainlink/binance/trades). "
+                    "Features engineered on load; markets re-split 80/20 chronologically."
+                ),
+            },
+            {
+                "name": "UP mid series",
+                "path": "up_mid from book (fallback up_price)",
+                "why": "Regression target y = up_mid(t+T); velocities U', D' from actuals.",
+            },
+            {
+                "name": "Trained price model",
+                "path": "data/strategy_versions/momentum_pair/*.model.txt",
+                "why": "Loaded at runtime as P(t).",
+            },
+        ],
+        "trainable": True,
+        "train_defaults": {
+            "horizon_seconds": 5.0,
+            "num_boost_round": 400,
+            "early_stopping_rounds": 40,
+            "max_markets": None,
+            "learning_rate": 0.05,
+            "num_leaves": 31,
+            "train_ratio": 0.8,
+        },
+        "runtime_params": {
+            "size_usd": 10.0,
+            "horizon_seconds": 5.0,
+            "delta_seconds": 1.0,
+            "min_fail_drop": 0.02,
+            "min_pair_edge": 0.0,
+            "min_elapsed_seconds": 0.0,
+            "min_remaining_seconds": 5.0,
+            "cooldown_seconds": 0.0,
+            "fee_model": "polymarket",
+            "model_path": "fetch_real/models/momentum_pair_up_mid.txt",
+        },
+        "outputs": [
+            "data/strategy_versions/momentum_pair/<timestamp>.model.txt",
+            "data/strategy_versions/momentum_pair/<timestamp>.metrics.json",
+            "fetch_real/models/momentum_pair_up_mid.txt",
+        ],
+    },
 }
 
 
