@@ -213,6 +213,67 @@ def _ffill_orderbooks(df: pd.DataFrame, *, start_ms: int, end_ms: int) -> tuple[
     return df, len(extra)
 
 
+async def repair_binance_for_market_dir(
+    market_dir: Path,
+    *,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+) -> dict[str, int]:
+    """Backfill Binance trades + 1s BTC price from Binance REST only."""
+    meta = _meta(market_dir) or {}
+    try:
+        start = int(start_ms if start_ms is not None else meta.get("start_time") or 0)
+        end = int(end_ms if end_ms is not None else meta.get("end_time") or 0)
+    except (TypeError, ValueError):
+        return {}
+    if start <= 0 or end <= start:
+        return {}
+
+    filled: dict[str, int] = {}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=8.0)) as http:
+        klines = await _klines_1s(http, start_ms=start, end_ms=end)
+        try:
+            incoming = await _agg_trades(http, start_ms=start, end_ms=end)
+            path = market_dir / "binance_trades.parquet"
+            old = _read_df(path)
+            new = pd.DataFrame(incoming)
+            if not new.empty:
+                if old.empty:
+                    merged = new
+                else:
+                    merged = pd.concat([old, new], ignore_index=True)
+                if "timestamp" in merged.columns:
+                    merged = merged.drop_duplicates(
+                        subset=[
+                            c
+                            for c in ("timestamp", "price", "quantity", "buyer_is_maker")
+                            if c in merged.columns
+                        ],
+                        keep="last",
+                    )
+                filled["binance_trades.parquet"] = max(0, len(merged) - len(old))
+                _write_df(path, merged)
+        except Exception as exc:
+            logger.warning("Binance trade repair failed for %s: %s", market_dir.name, exc)
+
+        if klines:
+            px_path = market_dir / "binance_price_orderbook.parquet"
+            px, n = _fill_seconds(
+                _read_df(px_path),
+                start_ms=start,
+                end_ms=end,
+                value_col="Binance_BTC",
+                values=klines,
+            )
+            _write_df(px_path, px)
+            filled["binance_price_orderbook.parquet"] = n
+
+    if meta:
+        meta["repair_filled"] = {**(meta.get("repair_filled") or {}), **filled}
+        _write_meta(market_dir, meta)
+    return filled
+
+
 async def repair_series_for_market_dir(market_dir: Path) -> dict[str, int]:
     """Backfill Binance trades + 1s price/book holes. Returns per-file added counts."""
     meta = _meta(market_dir)

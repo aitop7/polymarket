@@ -355,6 +355,45 @@ export const api = {
       }>
     }>(`/api/markets/pmdata/health-rescore/missing${q}`, { cache: 'no-store' })
   },
+  binanceHealth: (date?: string) => {
+    const q = date ? `?date=${encodeURIComponent(date)}` : ''
+    return json<{
+      date: string | null
+      n_total: number
+      n_great: number
+      n_issues: number
+      counts: Record<string, number>
+      markets: Array<{
+        market_id: string
+        slug?: string | null
+        start_time: number
+        end_time: number
+        date_et?: string | null
+        time_et?: string | null
+        grade: string
+        price_grade?: string
+        trade_grade?: string
+        max_gap_ms?: number
+        max_trade_quiet_ms?: number
+        has_price?: boolean
+        has_trades?: boolean
+      }>
+    }>(`/api/markets/binance-health${q}`, { cache: 'no-store' })
+  },
+  repairBinance: (id: string) =>
+    json<{
+      ok: boolean
+      market_id: string
+      filled?: Record<string, number>
+      grade?: string
+      price_grade?: string
+      trade_grade?: string
+      max_gap_ms?: number
+      max_trade_quiet_ms?: number
+      has_price?: boolean
+      has_trades?: boolean
+      error?: string
+    }>(`/api/markets/${encodeURIComponent(id)}/binance-repair`, { method: 'POST' }),
   rescorePmdataHealth: (id: string) =>
     json<{
       ok: boolean
@@ -453,6 +492,13 @@ export const api = {
     if (opts?.refresh) q.set('refresh', 'true')
     return json<WalletPnlResponse & { cached?: boolean }>(
       `/api/wallets/${encodeURIComponent(address)}/pnl?${q}`,
+      { cache: 'no-store' },
+    )
+  },
+  walletTotalPnl: (address: string, interval: WalletTotalPnlInterval = '1w') => {
+    const q = new URLSearchParams({ interval, _ts: String(Date.now()) })
+    return json<WalletTotalPnlResponse>(
+      `/api/wallets/${encodeURIComponent(address)}/total-pnl?${q}`,
       { cache: 'no-store' },
     )
   },
@@ -615,6 +661,8 @@ export type MarketTradersResponse = {
 
 export type WalletPnlInterval = '1d' | '1w' | '1m' | '1y' | 'ytd' | 'all'
 
+export type WalletTotalPnlInterval = '1d' | '1w' | '1m' | 'all'
+
 export type WalletSummary = {
   wallet: string
   name: string
@@ -628,6 +676,11 @@ export type WalletSummary = {
     outcome?: string | null
   } | null
   total_pnl?: number | null
+  /** Account-level maker + taker fee rebates (not BTC-only). */
+  total_rebates?: number | null
+  maker_rebates?: number | null
+  taker_rebates?: number | null
+  rebate_events?: number | null
   open_positions: number
   closed_sample: number
   polygonscan_url: string
@@ -649,6 +702,27 @@ export type WalletPnlResponse = {
   series: WalletPnlPoint[]
 }
 
+export type WalletTotalPnlPoint = {
+  t: number
+  pnl: number
+  pnl_abs?: number
+  fee: number
+  reward: number
+  deposit: number
+  withdraw: number
+}
+
+export type WalletTotalPnlResponse = {
+  wallet: string
+  interval: string
+  fidelity: string
+  scope?: string
+  pnl: number | null
+  start_pnl?: number | null
+  end_pnl?: number | null
+  series: WalletTotalPnlPoint[]
+}
+
 export type WalletDailyRow = {
   date: string
   t: number
@@ -656,6 +730,8 @@ export type WalletDailyRow = {
   pnl: number
   /** Closed-settles-only PnL. */
   realized_pnl?: number | null
+  /** Account-level fee rebates credited on this ET day. */
+  rebates?: number | null
   cum_pnl?: number | null
   n_positions?: number
   n_open?: number
@@ -672,6 +748,9 @@ export type WalletDailyResponse = {
   by_market_day?: boolean
   markets_aligned?: boolean
   n_open?: number
+  total_rebates?: number | null
+  maker_rebates?: number | null
+  taker_rebates?: number | null
   daily: WalletDailyRow[]
   cached?: boolean
 }

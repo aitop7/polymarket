@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Area,
+  Bar,
   CartesianGrid,
   ComposedChart,
+  Legend,
   Line,
   ResponsiveContainer,
   Tooltip,
@@ -22,6 +24,8 @@ import {
   type WalletPnlInterval,
   type WalletPnlResponse,
   type WalletSummary,
+  type WalletTotalPnlInterval,
+  type WalletTotalPnlResponse,
 } from '../api'
 import PriceChart, {
   type BtcSeriesVisibility,
@@ -37,6 +41,21 @@ const INTERVALS: { id: WalletPnlInterval; label: string; subtitle: string }[] = 
   { id: 'ytd', label: 'YTD', subtitle: 'Year to Date' },
   { id: 'all', label: 'ALL', subtitle: 'All Time' },
 ]
+
+const TOTAL_PNL_INTERVALS: { id: WalletTotalPnlInterval; label: string }[] = [
+  { id: '1d', label: '1D' },
+  { id: '1w', label: '1W' },
+  { id: '1m', label: '1M' },
+  { id: 'all', label: 'ALL' },
+]
+
+const TOTAL_PNL_COLORS = {
+  pnl: '#0f9d8a',
+  fee: '#f59e0b',
+  reward: '#8b5cf6',
+  deposit: '#3b82f6',
+  withdraw: '#ef4444',
+} as const
 
 const ADDR_RE = /^0x[a-fA-F0-9]{40}$/
 const BTC_SLUG_RE = /^btc-updown-5m-(\d+)$/i
@@ -346,10 +365,12 @@ export default function WalletPage() {
   const [wallet, setWallet] = useState<string | null>(null)
   const [date, setDate] = useState<string>('')
   const [interval, setInterval] = useState<WalletPnlInterval>('1d')
+  const [totalPnlInterval, setTotalPnlInterval] = useState<WalletTotalPnlInterval>('1w')
   const loadGen = useRef(0)
 
   const [summary, setSummary] = useState<WalletSummary | null>(null)
   const [pnl, setPnl] = useState<WalletPnlResponse | null>(null)
+  const [totalPnl, setTotalPnl] = useState<WalletTotalPnlResponse | null>(null)
   const [daily, setDaily] = useState<WalletDailyRow[]>([])
   const [dailyHasMore, setDailyHasMore] = useState(false)
   const [dailyScanLimit, setDailyScanLimit] = useState(3000)
@@ -359,6 +380,8 @@ export default function WalletPage() {
   const [activityLimit, setActivityLimit] = useState(500)
   const [marketPnls, setMarketPnls] = useState<WalletMarketPnl[]>([])
   const [marketsTotalPnl, setMarketsTotalPnl] = useState<number | null>(null)
+  /** Date that marketsTotalPnl was computed for — prevents stamping stale totals. */
+  const marketsTotalPnlDateRef = useRef<string | null>(null)
   const [marketsHasMore, setMarketsHasMore] = useState(false)
   const [marketsLimit, setMarketsLimit] = useState(200)
   const [expandedMarket, setExpandedMarket] = useState<string | null>(null)
@@ -367,6 +390,7 @@ export default function WalletPage() {
 
   const [loading, setLoading] = useState(false)
   const [pnlLoading, setPnlLoading] = useState(false)
+  const [totalPnlLoading, setTotalPnlLoading] = useState(false)
   const [activityLoading, setActivityLoading] = useState(false)
   const [dailyMoreLoading, setDailyMoreLoading] = useState(false)
   const [marketsMoreLoading, setMarketsMoreLoading] = useState(false)
@@ -405,6 +429,33 @@ export default function WalletPage() {
     void refreshSavedList()
   }, [])
 
+  const clearMarketsPnl = () => {
+    marketsTotalPnlDateRef.current = null
+    setMarketsTotalPnl(null)
+    setMarketPnls([])
+  }
+
+  const applyMarketsPnl = (
+    forDate: string,
+    total: number | null,
+    markets: WalletMarketPnl[],
+  ) => {
+    marketsTotalPnlDateRef.current = forDate
+    setMarketPnls(markets)
+    setMarketsTotalPnl(total)
+  }
+
+  const selectDailyDate = (next: string) => {
+    if (next === date) return
+    // Clear synchronously so the next render never shows the previous day's total.
+    setActivityLoading(true)
+    clearMarketsPnl()
+    setActivityMarkets([])
+    setExpandedMarket(null)
+    setActivityHighlightTs(null)
+    setDate(next)
+  }
+
   const loadWalletData = async (raw: string, opts?: { refresh?: boolean }) => {
     const addr = raw.trim()
     if (!ADDR_RE.test(addr)) {
@@ -425,13 +476,13 @@ export default function WalletPage() {
     setDaily([])
     setDailyHasMore(false)
     setActivityMarkets([])
-    setMarketPnls([])
-    setMarketsTotalPnl(null)
+    clearMarketsPnl()
     setExpandedMarket(null)
     setMarketDetail(null)
     setChartError(null)
     setActivityHighlightTs(null)
     setPnl(null)
+    setTotalPnl(null)
     setDailyScanLimit(3000)
     setActivityLimit(500)
     setMarketsLimit(200)
@@ -588,13 +639,15 @@ export default function WalletPage() {
     setMarketsLimit(mktLim)
     setLoading(true)
     setPnlLoading(true)
+    setTotalPnlLoading(true)
     setActivityLoading(true)
     setError(null)
     try {
-      const [sum, dailyRes, pnlRes, act, mkts] = await Promise.all([
+      const [sum, dailyRes, pnlRes, totalPnlRes, act, mkts] = await Promise.all([
         api.walletSummary(addr, { refresh: true }),
         api.walletDaily(addr, 120, { refresh: true, scanLimit: scan }),
         api.walletPnl(addr, interval, { refresh: true }),
+        api.walletTotalPnl(addr, totalPnlInterval),
         api.walletActivity(addr, { date, limit: actLim, refresh: true }),
         api.walletMarkets(addr, {
           date,
@@ -609,11 +662,11 @@ export default function WalletPage() {
       setDaily(days)
       setDailyHasMore(Boolean(dailyRes.has_more))
       setPnl(pnlRes)
+      setTotalPnl(totalPnlRes)
       setActivityMarkets(act.markets || [])
       setActivityNextOffset(act.next_offset ?? act.count ?? 0)
       setActivityHasMore(Boolean(act.has_more))
-      setMarketPnls(mkts.markets || [])
-      setMarketsTotalPnl(mkts.total_pnl ?? null)
+      applyMarketsPnl(date, mkts.total_pnl ?? null, mkts.markets || [])
       setMarketsHasMore(Boolean(mkts.has_more))
       const firstKey =
         (mkts.markets?.[0]?.condition_id ||
@@ -630,6 +683,7 @@ export default function WalletPage() {
     } finally {
       setLoading(false)
       setPnlLoading(false)
+      setTotalPnlLoading(false)
       setActivityLoading(false)
     }
   }
@@ -679,8 +733,7 @@ export default function WalletPage() {
       })
       setMarketsLimit(nextLim)
       setActivityLimit(nextAct)
-      setMarketPnls(mkts.markets || [])
-      setMarketsTotalPnl(mkts.total_pnl ?? null)
+      applyMarketsPnl(date, mkts.total_pnl ?? null, mkts.markets || [])
       setMarketsHasMore(Boolean(mkts.has_more))
       setFromCache(false)
     } catch (e) {
@@ -817,11 +870,11 @@ export default function WalletPage() {
       setDaily([])
       setDailyHasMore(false)
       setActivityMarkets([])
-      setMarketPnls([])
-      setMarketsTotalPnl(null)
-          setMarketsHasMore(false)
+      clearMarketsPnl()
+      setMarketsHasMore(false)
       setActivityHasMore(false)
       setPnl(null)
+      setTotalPnl(null)
       setExpandedMarket(null)
       setFromCache(false)
       setError(null)
@@ -867,24 +920,56 @@ export default function WalletPage() {
   }, [wallet, interval])
 
   useEffect(() => {
+    if (!wallet) {
+      setTotalPnl(null)
+      return
+    }
+    let cancelled = false
+    setTotalPnlLoading(true)
+    api
+      .walletTotalPnl(wallet, totalPnlInterval)
+      .then((res) => {
+        if (!cancelled) setTotalPnl(res)
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setTotalPnl(null)
+          setError(e instanceof Error ? e.message : String(e))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setTotalPnlLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [wallet, totalPnlInterval])
+
+  useEffect(() => {
     if (!wallet || !date) {
       setActivityMarkets([])
-      setMarketPnls([])
-      setMarketsTotalPnl(null)
-          setMarketsHasMore(false)
+      clearMarketsPnl()
+      setMarketsHasMore(false)
       setActivityHasMore(false)
       setActivityNextOffset(0)
       return
     }
     slugEnrichDoneRef.current = new Set()
+    const loadDate = date
     let cancelled = false
     setActivityLoading(true)
     setExpandedMarket(null)
     setActivityHighlightTs(null)
+    // Drop previous day's totals immediately so sync/UI never flash stale PnL.
+    clearMarketsPnl()
+    setActivityMarkets([])
+    setMarketsHasMore(false)
+    setActivityHasMore(false)
+    setActivityNextOffset(0)
     Promise.all([
-      api.walletActivity(wallet, { date, limit: activityLimit }),
+      api.walletActivity(wallet, { date: loadDate, limit: activityLimit }),
       api.walletMarkets(wallet, {
-        date,
+        date: loadDate,
         limit: marketsLimit,
         activityLimit,
       }),
@@ -894,9 +979,8 @@ export default function WalletPage() {
         setActivityMarkets(act.markets || [])
         setActivityNextOffset(act.next_offset ?? act.count ?? 0)
         setActivityHasMore(Boolean(act.has_more))
-        setMarketPnls(mkts.markets || [])
-        setMarketsTotalPnl(mkts.total_pnl ?? null)
-            setMarketsHasMore(Boolean(mkts.has_more))
+        applyMarketsPnl(loadDate, mkts.total_pnl ?? null, mkts.markets || [])
+        setMarketsHasMore(Boolean(mkts.has_more))
         if (act.cached || mkts.cached) setFromCache(true)
         const firstKey =
           (mkts.markets?.[0]?.condition_id ||
@@ -911,9 +995,8 @@ export default function WalletPage() {
       .catch((e) => {
         if (!cancelled) {
           setActivityMarkets([])
-          setMarketPnls([])
-          setMarketsTotalPnl(null)
-                      setError(e instanceof Error ? e.message : String(e))
+          clearMarketsPnl()
+          setError(e instanceof Error ? e.message : String(e))
         }
       })
       .finally(() => {
@@ -927,8 +1010,10 @@ export default function WalletPage() {
 
   // Daily API includes open marks; market panel may still refine via activity
   // tape (buy-only markets with no open row). Keep selected day in sync.
+  // Only apply when marketsTotalPnl belongs to the currently selected date.
   useEffect(() => {
     if (!date || activityLoading || marketsTotalPnl == null) return
+    if (marketsTotalPnlDateRef.current !== date) return
     setDaily((prev) => {
       let changed = false
       const next = prev.map((row) => {
@@ -952,6 +1037,17 @@ export default function WalletPage() {
       delta: p.pnl - base,
     }))
   }, [pnl])
+
+  const totalPnlChartData = useMemo(() => totalPnl?.series || [], [totalPnl])
+  const totalPnlValue = totalPnl?.pnl ?? null
+  const totalPnlPositive = (totalPnlValue ?? 0) >= 0
+
+  const selectedDayRebates = useMemo(() => {
+    if (!date) return null
+    const row = daily.find((d) => d.date === date)
+    if (!row || row.rebates == null) return null
+    return row.rebates
+  }, [daily, date])
 
   const selectedMarketMeta = useMemo(() => {
     if (!expandedMarket) return null
@@ -1108,7 +1204,7 @@ export default function WalletPage() {
       sideFlow.sellDown.shares > 0)
 
   const selectedSlug =
-    selectedMarketActivity?.slug || selectedMarketMeta?.slug || null
+    selectedMarketMeta?.slug || selectedMarketActivity?.slug || null
 
   const selectedMarketWindow = useMemo(
     () => slugMarketWindow(selectedSlug),
@@ -1146,16 +1242,21 @@ export default function WalletPage() {
       setChartError(null)
       setSharedXDomain(null)
       setSharedHoverTime(null)
+      setChartLoading(false)
       return
     }
     let cancelled = false
+    const slug = selectedSlug
     setChartLoading(true)
     setChartError(null)
     setSharedHoverTime(null)
+    // Drop previous market's series/domain immediately so the timeline never sticks.
+    setMarketDetail(null)
+    setSharedXDomain(null)
 
     ;(async () => {
       try {
-        const startMs = slugToWindowStartMs(selectedSlug)
+        const startMs = slugToWindowStartMs(slug)
         let marketId: string | null = null
         if (startMs != null) {
           try {
@@ -1168,6 +1269,7 @@ export default function WalletPage() {
         if (!marketId) {
           if (!cancelled) {
             setMarketDetail(null)
+            setSharedXDomain(null)
             setChartError('No local price history for this market window')
           }
           return
@@ -1175,17 +1277,23 @@ export default function WalletPage() {
         const detail = await api.market(marketId, 'twap')
         if (cancelled) return
         setMarketDetail(detail)
+        const series = detail.series || []
+        let domain: TimeDomain | null = null
         if (detail.start_time != null && detail.end_time != null) {
-          setSharedXDomain([detail.start_time, detail.end_time])
-        } else if (detail.series?.length) {
-          setSharedXDomain([
-            detail.series[0].t,
-            detail.series[detail.series.length - 1].t,
-          ])
+          let left = detail.start_time
+          for (const p of series) {
+            const t = Number(p.t)
+            if (Number.isFinite(t) && t < left) left = t
+          }
+          domain = [left, detail.end_time]
+        } else if (series.length) {
+          domain = [series[0].t, series[series.length - 1].t]
         }
+        setSharedXDomain(domain)
       } catch (e) {
         if (!cancelled) {
           setMarketDetail(null)
+          setSharedXDomain(null)
           setChartError(e instanceof Error ? e.message : String(e))
         }
       } finally {
@@ -1196,7 +1304,7 @@ export default function WalletPage() {
     return () => {
       cancelled = true
     }
-  }, [selectedSlug])
+  }, [selectedSlug, expandedMarket])
 
   const priceChartData = useMemo(
     () =>
@@ -1213,7 +1321,12 @@ export default function WalletPage() {
 
   const xFullDomain = useMemo((): TimeDomain => {
     if (marketDetail?.start_time != null && marketDetail?.end_time != null) {
-      return [marketDetail.start_time, marketDetail.end_time]
+      let left = marketDetail.start_time
+      for (const p of priceChartData) {
+        const t = Number(p.t)
+        if (Number.isFinite(t) && t < left) left = t
+      }
+      return [left, marketDetail.end_time]
     }
     if (priceChartData.length >= 2) {
       return [priceChartData[0].t, priceChartData[priceChartData.length - 1].t]
@@ -1226,7 +1339,10 @@ export default function WalletPage() {
     return [now - 300_000, now]
   }, [marketDetail, priceChartData, traderMarks])
 
+  // Always prefer an explicit domain; fall back to full window for the loaded market.
   const chartXDomain = sharedXDomain ?? xFullDomain
+
+  const chartMarketKey = marketDetail?.market_id || selectedSlug || 'none'
 
   const intervalMeta = INTERVALS.find((x) => x.id === interval) || INTERVALS[0]
   const pnlValue = pnl?.pnl ?? null
@@ -1461,8 +1577,16 @@ export default function WalletPage() {
                   </div>
                   <div className="wallet-stat-label">All-time PnL</div>
                 </div>
+                <div title="Account-level maker + taker fee rebates (not BTC-only)">
+                  <div className={`wallet-stat-value ${(summary.total_rebates ?? 0) >= 0 ? 'up' : 'down'}`}>
+                    {summary.total_rebates != null ? fmtSignedUsd(summary.total_rebates) : '—'}
+                  </div>
+                  <div className="wallet-stat-label">Rebates</div>
+                </div>
               </div>
-              <div className="wallet-profile-scope muted">BTC Up/Down 5m · incl. unredeemed</div>
+              <div className="wallet-profile-scope muted">
+                BTC Up/Down 5m · incl. unredeemed · rebates are account-wide
+              </div>
               <div className="wallet-comment">
                 <label className="wallet-comment-label" htmlFor="wallet-trader-comment">
                   Comment
@@ -1591,6 +1715,174 @@ export default function WalletPage() {
           </section>
         )}
 
+        {wallet && (summary || totalPnl || totalPnlLoading) && (
+          <section className="wallet-total-pnl-card">
+            <div className="wallet-total-pnl-header">
+              <div className="wallet-total-pnl-title-block">
+                <div className="wallet-total-pnl-title">Total PnL</div>
+                <div className={`wallet-total-pnl-value ${totalPnlPositive ? 'up' : 'down'}`}>
+                  {totalPnlLoading && !totalPnl ? '…' : fmtSignedUsd(totalPnlValue)}
+                </div>
+                <div className="wallet-total-pnl-legend" aria-label="Chart legend">
+                  <span>
+                    <i style={{ background: TOTAL_PNL_COLORS.pnl }} className="wallet-total-pnl-swatch line" />
+                    Total PnL
+                  </span>
+                  <span>
+                    <i style={{ background: TOTAL_PNL_COLORS.fee }} className="wallet-total-pnl-swatch" />
+                    Fee
+                  </span>
+                  <span>
+                    <i style={{ background: TOTAL_PNL_COLORS.reward }} className="wallet-total-pnl-swatch" />
+                    Reward
+                  </span>
+                  <span>
+                    <i style={{ background: TOTAL_PNL_COLORS.deposit }} className="wallet-total-pnl-swatch" />
+                    Deposit
+                  </span>
+                  <span>
+                    <i style={{ background: TOTAL_PNL_COLORS.withdraw }} className="wallet-total-pnl-swatch" />
+                    Withdraw
+                  </span>
+                </div>
+              </div>
+              <div className="wallet-interval-pills" role="group" aria-label="Total PnL interval">
+                {TOTAL_PNL_INTERVALS.map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    className={`wallet-interval-pill${totalPnlInterval === opt.id ? ' active' : ''}`}
+                    disabled={totalPnlLoading}
+                    onClick={() => setTotalPnlInterval(opt.id)}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="wallet-total-pnl-chart">
+              {totalPnlChartData.length > 1 ? (
+                <ResponsiveContainer width="100%" height={280}>
+                  <ComposedChart
+                    data={totalPnlChartData}
+                    margin={{ top: 12, right: 12, left: 4, bottom: 4 }}
+                  >
+                    <defs>
+                      <linearGradient id="walletTotalPnlFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={TOTAL_PNL_COLORS.pnl} stopOpacity={0.22} />
+                        <stop offset="100%" stopColor={TOTAL_PNL_COLORS.pnl} stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                    <XAxis
+                      dataKey="t"
+                      type="number"
+                      domain={['dataMin', 'dataMax']}
+                      tickFormatter={(v) => fmtChartTick(Number(v), totalPnlInterval === 'all' ? 'all' : totalPnlInterval)}
+                      tick={{ fontSize: 11, fill: 'var(--muted)' }}
+                      minTickGap={48}
+                    />
+                    <YAxis
+                      yAxisId="pnl"
+                      width={56}
+                      tick={{ fontSize: 11, fill: 'var(--muted)' }}
+                      tickFormatter={(v) => {
+                        const n = Number(v)
+                        const abs = Math.abs(n)
+                        if (abs >= 1000) return `${n < 0 ? '-' : ''}$${(abs / 1000).toFixed(abs >= 10000 ? 0 : 1)}K`
+                        return fmtSignedUsd(n)
+                      }}
+                    />
+                    <YAxis yAxisId="flow" orientation="right" hide />
+                    <Tooltip
+                      contentStyle={{
+                        background: 'var(--bg-panel)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 8,
+                        fontSize: 12,
+                      }}
+                      labelFormatter={(v) => fmtChartTipTime(Number(v))}
+                      formatter={(value, name) => {
+                        const labels: Record<string, string> = {
+                          pnl: 'Total PnL',
+                          fee: 'Fee',
+                          reward: 'Reward',
+                          deposit: 'Deposit',
+                          withdraw: 'Withdraw',
+                        }
+                        const key = String(name)
+                        return [`$${formatUsd(Number(value ?? 0))}`, labels[key] || key]
+                      }}
+                    />
+                    <Legend content={() => null} />
+                    <Bar
+                      yAxisId="flow"
+                      dataKey="fee"
+                      name="fee"
+                      fill={TOTAL_PNL_COLORS.fee}
+                      maxBarSize={10}
+                      isAnimationActive={false}
+                    />
+                    <Bar
+                      yAxisId="flow"
+                      dataKey="reward"
+                      name="reward"
+                      fill={TOTAL_PNL_COLORS.reward}
+                      maxBarSize={10}
+                      isAnimationActive={false}
+                    />
+                    <Bar
+                      yAxisId="flow"
+                      dataKey="deposit"
+                      name="deposit"
+                      fill={TOTAL_PNL_COLORS.deposit}
+                      maxBarSize={10}
+                      isAnimationActive={false}
+                    />
+                    <Bar
+                      yAxisId="flow"
+                      dataKey="withdraw"
+                      name="withdraw"
+                      fill={TOTAL_PNL_COLORS.withdraw}
+                      maxBarSize={10}
+                      isAnimationActive={false}
+                    />
+                    <Area
+                      yAxisId="pnl"
+                      type="monotone"
+                      dataKey="pnl"
+                      name="pnl"
+                      stroke="none"
+                      fill="url(#walletTotalPnlFill)"
+                      isAnimationActive={false}
+                      legendType="none"
+                      tooltipType="none"
+                    />
+                    <Line
+                      yAxisId="pnl"
+                      type="monotone"
+                      dataKey="pnl"
+                      name="pnl"
+                      stroke={TOTAL_PNL_COLORS.pnl}
+                      strokeWidth={2.25}
+                      dot={false}
+                      activeDot={{ r: 4, fill: TOTAL_PNL_COLORS.pnl }}
+                      isAnimationActive={false}
+                    />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="muted" style={{ margin: '2rem 0', textAlign: 'center' }}>
+                  {totalPnlLoading ? 'Loading total PnL…' : 'No account PnL series for this interval'}
+                </p>
+              )}
+            </div>
+            <div className="wallet-total-pnl-foot muted">
+              Account-wide · Reward = rebates and rewards
+            </div>
+          </section>
+        )}
+
         {wallet && (expandedMarket || selectedSlug) && (
           <section className="wallet-chart-panel">
             <div className="wallet-chart-head">
@@ -1628,6 +1920,7 @@ export default function WalletPage() {
             {!chartLoading && marketDetail && priceChartData.length > 0 && (
               <div className="wallet-chart-stack">
                 <PriceChart
+                  key={`${chartMarketKey}-btc`}
                   data={priceChartData}
                   priceToBeat={marketDetail.btc_open_price}
                   mode="btc"
@@ -1644,6 +1937,7 @@ export default function WalletPage() {
                   highlightTime={activityHighlightTs}
                 />
                 <PriceChart
+                  key={`${chartMarketKey}-outcomes`}
                   data={priceChartData}
                   mode="outcomes"
                   title="Up / Down price"
@@ -1680,24 +1974,39 @@ export default function WalletPage() {
                     {loading ? 'Loading…' : 'No daily PnL yet'}
                   </p>
                 )}
-                {daily.map((row) => (
+                {daily.map((row) => {
+                  const rebate = row.rebates ?? 0
+                  const hasRebate = Math.abs(rebate) > 0.005
+                  const tipParts = [
+                    row.realized_pnl != null && row.realized_pnl !== row.pnl
+                      ? `Includes unredeemed. Realized (closed only): ${fmtSignedUsd(row.realized_pnl)}`
+                      : 'Closed settles; opens to full day total when markets load',
+                    hasRebate
+                      ? `Account rebates: ${fmtSignedUsd(rebate)}`
+                      : null,
+                  ].filter(Boolean)
+                  return (
                   <button
                     key={row.date}
                     type="button"
                     className={`wallet-daily-row${date === row.date ? ' active' : ''}`}
-                    onClick={() => setDate(row.date)}
-                    title={
-                      row.realized_pnl != null && row.realized_pnl !== row.pnl
-                        ? `Includes unredeemed. Realized (closed only): ${fmtSignedUsd(row.realized_pnl)}`
-                        : 'Closed settles; opens to full day total when markets load'
-                    }
+                    onClick={() => selectDailyDate(row.date)}
+                    title={tipParts.join(' · ')}
                   >
                     <span className="wallet-daily-date">{row.date}</span>
-                    <span className={`wallet-daily-pnl ${row.pnl >= 0 ? 'up' : 'down'}`}>
-                      {fmtSignedUsd(row.pnl)}
+                    <span className="wallet-daily-nums">
+                      <span className={`wallet-daily-pnl ${row.pnl >= 0 ? 'up' : 'down'}`}>
+                        {fmtSignedUsd(row.pnl)}
+                      </span>
+                      {hasRebate ? (
+                        <span className={`wallet-daily-rebate ${rebate >= 0 ? 'up' : 'down'}`}>
+                          R {fmtSignedUsd(rebate)}
+                        </span>
+                      ) : null}
                     </span>
                   </button>
-                ))}
+                  )
+                })}
               </div>
               <div className="wallet-panel-foot">
                 <button
@@ -1716,12 +2025,16 @@ export default function WalletPage() {
                 <h2>PnL by market · {date}</h2>
                 <span
                   className="muted"
-                  title="Total = closed settles + unredeemed/open tape estimates"
+                  title="Total = closed settles + unredeemed/open tape estimates. Rebates are account-wide."
                 >
                   {activityLoading
                     ? 'Loading…'
                     : `${marketPnls.length} mkts${
                         marketsTotalPnl != null ? ` · ${fmtSignedUsd(marketsTotalPnl)}` : ''
+                      }${
+                        selectedDayRebates != null && Math.abs(selectedDayRebates) > 0.005
+                          ? ` · R ${fmtSignedUsd(selectedDayRebates)}`
+                          : ''
                       }`}
                 </span>
               </div>

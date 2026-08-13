@@ -4772,6 +4772,7 @@ select {
 
 .wallet-profile-card,
 .wallet-pnl-card,
+.wallet-total-pnl-card,
 .wallet-panel {
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -4869,7 +4870,7 @@ select {
 
 .wallet-profile-stats {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 0.5rem;
   border-top: 1px solid var(--border);
   padding-top: 0.85rem;
@@ -5028,6 +5029,78 @@ select {
 .wallet-pnl-chart {
   margin-top: 0.35rem;
   height: 170px;
+}
+
+.wallet-total-pnl-card {
+  padding: 1rem 1.1rem 0.75rem;
+}
+
+.wallet-total-pnl-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.wallet-total-pnl-title {
+  font-weight: 650;
+  font-size: 0.95rem;
+}
+
+.wallet-total-pnl-value {
+  margin-top: 0.2rem;
+  font-size: 1.65rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.wallet-total-pnl-value.up {
+  color: var(--up);
+}
+
+.wallet-total-pnl-value.down {
+  color: var(--down);
+}
+
+.wallet-total-pnl-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.9rem;
+  margin-top: 0.55rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.wallet-total-pnl-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+}
+
+.wallet-total-pnl-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.wallet-total-pnl-swatch.line {
+  height: 2px;
+  width: 14px;
+  border-radius: 1px;
+}
+
+.wallet-total-pnl-chart {
+  margin-top: 0.35rem;
+  height: 290px;
+}
+
+.wallet-total-pnl-foot {
+  margin-top: 0.35rem;
+  font-size: 0.68rem;
 }
 
 .wallet-split-row {
@@ -5243,10 +5316,25 @@ select {
   font-weight: 550;
 }
 
+.wallet-daily-nums {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.08rem;
+  min-width: 0;
+}
+
 .wallet-daily-pnl {
   font-weight: 700;
   font-size: 0.84rem;
   font-variant-numeric: tabular-nums;
+}
+
+.wallet-daily-rebate {
+  font-size: 0.68rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.92;
 }
 
 .wallet-daily-pnl.up,
@@ -6152,7 +6240,7 @@ select {
 
 .pmdata-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.65rem;
   align-items: stretch;
   flex: 1 1 auto;
@@ -6175,6 +6263,7 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 0.4rem;
+  flex: 0 0 auto;
 }
 
 .pmq-title {
@@ -6278,6 +6367,7 @@ select {
   border-radius: 999px;
   background: #eef0f4;
   overflow: hidden;
+  flex: 0 0 auto;
 }
 
 .pmq-meter-fill {
@@ -6295,6 +6385,7 @@ select {
   font-size: 0.68rem;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
 }
 
 .pmq-meta strong {
@@ -6314,17 +6405,19 @@ select {
 
 .pmq-msg {
   margin: 0;
-  padding: 0.28rem 0.4rem;
+  padding: 0.35rem 0.45rem;
   border-radius: 5px;
-  font-size: 0.65rem;
-  line-height: 1.3;
+  font-size: 0.68rem;
+  line-height: 1.35;
   color: var(--muted);
   background: #f8fafc;
   border: 1px solid #eef0f4;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 3.2rem;
+  flex: 0 0 auto;
+  max-height: 4.5rem;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .pmq-msg.ok {
@@ -6438,6 +6531,55 @@ select {
   padding: 0.05rem 0.28rem;
 }
 
+.pmq-grade {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 0.58rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  padding: 0.05rem 0.32rem;
+}
+
+.pmq-grade.health-great {
+  color: #0f766e;
+  background: rgba(15, 118, 110, 0.12);
+}
+
+.pmq-grade.health-good {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.pmq-grade.health-ok {
+  color: #a16207;
+  background: rgba(202, 138, 4, 0.14);
+}
+
+.pmq-grade.health-low {
+  color: #c2410c;
+  background: rgba(234, 88, 12, 0.12);
+}
+
+.pmq-grade.health-bad {
+  color: #be123c;
+  background: rgba(225, 29, 72, 0.12);
+}
+
+.pmq-grade.health-unchecked {
+  color: #6b7280;
+  background: #f3f4f6;
+}
+
+.pmq-binance-counts {
+  font-variant-numeric: tabular-nums;
+}
+
+.pmq-row-static .pmq-row-main {
+  padding-right: 0.5rem;
+}
+
 .pmq-run-one {
   flex: 0 0 auto;
   min-width: 2.4rem;
@@ -6481,7 +6623,21 @@ select {
   }
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1400px) {
+  .pmdata-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pmq {
+    min-height: 280px;
+  }
+
+  .pmq-list {
+    max-height: 360px;
+  }
+}
+
+@media (max-width: 900px) {
   .pmdata-grid {
     grid-template-columns: 1fr;
   }
@@ -6489,10 +6645,6 @@ select {
   .pmdata-page {
     height: auto;
     min-height: calc(100vh - 3.25rem);
-  }
-
-  .pmq {
-    min-height: 280px;
   }
 
   .pmq-list {

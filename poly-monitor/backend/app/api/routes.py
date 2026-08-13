@@ -320,6 +320,40 @@ def get_missing_pm_chainlink(
     return list_missing_pm_chainlink(date_et=date)
 
 
+@router.get("/markets/binance-health")
+def get_binance_health(
+    date: str | None = Query(None, description="Optional ET calendar day YYYY-MM-DD"),
+) -> dict[str, Any]:
+    """List history markets with Binance price/trade health grades."""
+    from app.live.vps_sync import get_vps_sync
+
+    return get_vps_sync().list_binance_health(date_et=date)
+
+
+@router.post("/markets/{market_id}/binance-repair")
+async def repair_binance_market(market_id: str) -> dict[str, Any]:
+    """Fill Binance price/trades from Binance REST and re-score Binance health."""
+    from app.live.vps_sync import get_vps_sync
+
+    mid = str(market_id or "").strip()
+    if not mid:
+        raise HTTPException(400, "market_id required")
+    result = await get_vps_sync().repair_binance_market(mid)
+    if not result.get("ok"):
+        raise HTTPException(404, str(result.get("error") or "binance repair failed"))
+    return result
+
+
+@router.get("/markets/pmdata/health-rescore/missing")
+def get_pmdata_health_rescore_missing(
+    date: str | None = Query(None, description="Optional ET calendar day YYYY-MM-DD"),
+) -> dict[str, Any]:
+    """List history markets with PM files whose health stamp is not yet from PMData."""
+    from app.core.live_dataset import list_pmdata_health_rescore_queue
+
+    return list_pmdata_health_rescore_queue(date_et=date)
+
+
 async def _ensure_twap_history(market_id: str, split: str | None) -> None:
     """If selecting a TWAP history market, repair local gaps from VPS when needed."""
     from app.core.live_dataset import find_live_market_dir
@@ -364,16 +398,6 @@ async def get_market(market_id: str, split: str | None = None) -> dict[str, Any]
             "down_sell": last_q["down_sell"],
         },
     }
-
-
-@router.get("/markets/pmdata/health-rescore/missing")
-def get_pmdata_health_rescore_missing(
-    date: str | None = Query(None, description="Optional ET calendar day YYYY-MM-DD"),
-) -> dict[str, Any]:
-    """List history markets with PM files whose health stamp is not yet from PMData."""
-    from app.core.live_dataset import list_pmdata_health_rescore_queue
-
-    return list_pmdata_health_rescore_queue(date_et=date)
 
 
 @router.post("/markets/{market_id}/health/rescore-pmdata")
@@ -560,7 +584,11 @@ async def get_wallet_summary(
     refresh: bool = Query(False, description="Force live fetch and overwrite cache"),
 ) -> dict[str, Any]:
     """Wallet profile summary (positions value, biggest win, explorer links)."""
-    from app.core.wallet_activity import fetch_wallet_summary, normalize_wallet
+    from app.core.wallet_activity import (
+        fetch_wallet_rebates,
+        fetch_wallet_summary,
+        normalize_wallet,
+    )
     from app.core import wallet_store
 
     try:
@@ -576,6 +604,19 @@ async def get_wallet_summary(
             and cached.get("includes_open") is True
             and cached.get("markets_aligned") is True
         ):
+            if cached.get("total_rebates") is None:
+                try:
+                    reb = await fetch_wallet_rebates(addr)
+                    cached = {
+                        **cached,
+                        "total_rebates": reb.get("total_rebates"),
+                        "maker_rebates": reb.get("maker_rebates"),
+                        "taker_rebates": reb.get("taker_rebates"),
+                        "rebate_events": reb.get("rebate_events"),
+                    }
+                    wallet_store.save_summary(addr, cached)
+                except Exception:
+                    pass
             wallet_store.touch_viewed(addr)
             return cached
     try:
@@ -622,6 +663,26 @@ async def get_wallet_pnl(
     return {**data, "cached": False}
 
 
+@router.get("/wallets/{address}/total-pnl")
+async def get_wallet_total_pnl_chart(
+    address: str,
+    interval: str = Query("1w", pattern="^(1d|1w|1m|all|max)$"),
+) -> dict[str, Any]:
+    """Account-level Total PnL chart with reward/deposit/withdraw cashflow bars."""
+    from app.core.wallet_activity import fetch_wallet_total_pnl_chart, normalize_wallet
+
+    try:
+        addr = normalize_wallet(address)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        return await fetch_wallet_total_pnl_chart(addr, interval=interval)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Wallet total PnL chart failed: {exc}") from exc
+
+
 @router.get("/wallets/{address}/daily")
 async def get_wallet_daily_pnl(
     address: str,
@@ -655,6 +716,29 @@ async def get_wallet_daily_pnl(
             and cached.get("by_market_day")
             and cached.get("markets_aligned")
         ):
+            daily_rows = list(cached.get("daily") or [])
+            needs_rebates = cached.get("total_rebates") is None or any(
+                "rebates" not in row for row in daily_rows
+            )
+            if needs_rebates:
+                try:
+                    from app.core.wallet_activity import (
+                        _attach_day_rebates,
+                        fetch_wallet_rebates,
+                    )
+
+                    reb = await fetch_wallet_rebates(addr)
+                    _attach_day_rebates(daily_rows, reb.get("rebates_by_day") or {})
+                    cached = {
+                        **cached,
+                        "daily": daily_rows,
+                        "total_rebates": reb.get("total_rebates"),
+                        "maker_rebates": reb.get("maker_rebates"),
+                        "taker_rebates": reb.get("taker_rebates"),
+                    }
+                    wallet_store.save_daily(addr, cached)
+                except Exception:
+                    pass
             wallet_store.touch_viewed(addr)
             return cached
     try:

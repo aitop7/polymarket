@@ -146,6 +146,314 @@ def _et_day_bounds(date_et: str) -> tuple[int, int]:
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
 
+def _et_date_from_ms(ts_ms: int) -> str | None:
+    try:
+        return datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=_ET).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+_REBATE_TYPES = frozenset({"MAKER_REBATE", "TAKER_REBATE"})
+
+
+def _norm_rebate(row: dict[str, Any]) -> dict[str, Any] | None:
+    typ = str(row.get("type") or "").upper()
+    if typ not in _REBATE_TYPES:
+        return None
+    ts = _ts_ms(row.get("timestamp"))
+    if ts is None:
+        return None
+    try:
+        usd = float(row.get("usdcSize") if row.get("usdcSize") is not None else row.get("size") or 0)
+    except (TypeError, ValueError):
+        usd = 0.0
+    day = _et_date_from_ms(ts)
+    if not day:
+        return None
+    tx = str(row.get("transactionHash") or row.get("transaction_hash") or "") or None
+    return {
+        "timestamp": ts,
+        "date": day,
+        "type": typ,
+        "usd": usd,
+        "transaction_hash": tx,
+        "polygonscan_url": f"https://polygonscan.com/tx/{tx}" if tx else None,
+    }
+
+
+async def _paginate_rebate_activity(
+    client: httpx.AsyncClient,
+    wallet: str,
+    *,
+    max_rows: int = 5_000,
+) -> list[dict[str, Any]]:
+    """Account-level MAKER_REBATE / TAKER_REBATE rows (not market-scoped)."""
+    page = 100
+    offset = 0
+    out: list[dict[str, Any]] = []
+    while offset < max_rows:
+        try:
+            batch = await _get_json(
+                client,
+                f"{DATA_API_URL}/activity",
+                params={
+                    "user": wallet,
+                    "limit": page,
+                    "offset": offset,
+                    "type": "MAKER_REBATE,TAKER_REBATE",
+                },
+            )
+        except httpx.HTTPStatusError:
+            break
+        if not isinstance(batch, list) or not batch:
+            break
+        for raw in batch:
+            item = _norm_rebate(raw if isinstance(raw, dict) else {})
+            if item is not None:
+                out.append(item)
+        if len(batch) < page:
+            break
+        offset += len(batch)
+        if len(out) >= max_rows:
+            break
+    return out[:max_rows]
+
+
+def _rebate_rollups(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_day: dict[str, float] = {}
+    maker = 0.0
+    taker = 0.0
+    for row in rows:
+        day = str(row.get("date") or "")
+        try:
+            usd = float(row.get("usd") or 0.0)
+        except (TypeError, ValueError):
+            usd = 0.0
+        if day:
+            by_day[day] = float(by_day.get(day) or 0.0) + usd
+        typ = str(row.get("type") or "").upper()
+        if typ == "MAKER_REBATE":
+            maker += usd
+        elif typ == "TAKER_REBATE":
+            taker += usd
+    for day, usd in list(by_day.items()):
+        by_day[day] = _round_pnl_to_cents(usd)
+    total = _round_pnl_to_cents(maker + taker)
+    return {
+        "total_rebates": total,
+        "maker_rebates": _round_pnl_to_cents(maker),
+        "taker_rebates": _round_pnl_to_cents(taker),
+        "rebates_by_day": by_day,
+        "rebate_events": len(rows),
+    }
+
+
+async def fetch_wallet_rebates(address: str) -> dict[str, Any]:
+    """Account-level maker/taker fee rebates from Polymarket activity."""
+    wallet = normalize_wallet(address)
+    async with _http_client(timeout_s=60.0) as client:
+        rows = await _paginate_rebate_activity(client, wallet)
+    roll = _rebate_rollups(rows)
+    return {
+        "wallet": wallet,
+        "scope": "account",
+        **roll,
+        "rebates": rows,
+    }
+
+
+_TOTAL_PNL_INTERVALS = {
+    # Orbscan-style account chart: 1D / 1W / 1M / ALL
+    "1d": ("1d", "1h"),
+    "1w": ("1w", "1h"),
+    "1m": ("1m", "12h"),
+    "all": ("all", "1d"),
+    "max": ("max", "1d"),
+}
+
+_CASHFLOW_TYPES = (
+    "DEPOSIT,WITHDRAWAL,MAKER_REBATE,TAKER_REBATE,REWARD,REFERRAL_REWARD,YIELD"
+)
+
+
+async def _paginate_cashflow_activity(
+    client: httpx.AsyncClient,
+    wallet: str,
+    *,
+    start_ms: int | None = None,
+    max_rows: int = 8_000,
+) -> list[dict[str, Any]]:
+    """Account cashflow rows (deposits, withdrawals, rebates, rewards)."""
+    page = 100
+    offset = 0
+    out: list[dict[str, Any]] = []
+    start_s = max(0, int(start_ms) // 1000) if start_ms else None
+    while offset < max_rows:
+        params: dict[str, Any] = {
+            "user": wallet,
+            "limit": page,
+            "offset": offset,
+            "type": _CASHFLOW_TYPES,
+            "excludeDepositsWithdrawals": "false",
+        }
+        if start_s is not None:
+            params["start"] = start_s
+        try:
+            batch = await _get_json(client, f"{DATA_API_URL}/activity", params=params)
+        except httpx.HTTPStatusError:
+            break
+        if not isinstance(batch, list) or not batch:
+            break
+        stop_old = False
+        for raw in batch:
+            if not isinstance(raw, dict):
+                continue
+            typ = str(raw.get("type") or "").upper()
+            ts = _ts_ms(raw.get("timestamp"))
+            if ts is None:
+                continue
+            if start_ms is not None and ts < start_ms - 86_400_000:
+                stop_old = True
+                break
+            try:
+                usd = float(
+                    raw.get("usdcSize")
+                    if raw.get("usdcSize") is not None
+                    else raw.get("size")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                usd = 0.0
+            out.append({"timestamp": ts, "type": typ, "usd": usd})
+        if stop_old or len(batch) < page:
+            break
+        offset += len(batch)
+        if len(out) >= max_rows:
+            break
+    return out[:max_rows]
+
+
+def _cashflow_bucket(typ: str) -> str | None:
+    t = (typ or "").upper()
+    if t == "DEPOSIT":
+        return "deposit"
+    if t == "WITHDRAWAL":
+        return "withdraw"
+    if t in {"MAKER_REBATE", "TAKER_REBATE", "REWARD", "REFERRAL_REWARD", "YIELD"}:
+        return "reward"
+    return None
+
+
+async def fetch_wallet_total_pnl_chart(
+    address: str, interval: str = "1w"
+) -> dict[str, Any]:
+    """Account-level Total PnL line + fee/reward/deposit/withdraw bars (Orbscan-style)."""
+    wallet = normalize_wallet(address)
+    key = (interval or "1w").strip().lower()
+    if key not in _TOTAL_PNL_INTERVALS:
+        raise ValueError(f"Invalid interval (use {', '.join(_TOTAL_PNL_INTERVALS)})")
+    api_interval, fidelity = _TOTAL_PNL_INTERVALS[key]
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    cutoff = _window_cutoff_ms(key, now_ms=now_ms)
+
+    async with _http_client(timeout_s=90.0) as client:
+        pnl_task = _get_json(
+            client,
+            f"{PNL_API_URL}/user-pnl",
+            params={
+                "user_address": wallet,
+                "interval": api_interval,
+                "fidelity": fidelity,
+            },
+        )
+        flows_task = _paginate_cashflow_activity(
+            client, wallet, start_ms=cutoff, max_rows=8_000
+        )
+        raw_pnl, flows = await asyncio.gather(pnl_task, flows_task)
+
+    points_raw: list[dict[str, Any]] = []
+    if isinstance(raw_pnl, list):
+        for row in raw_pnl:
+            if not isinstance(row, dict):
+                continue
+            ts = _ts_ms(row.get("t"))
+            if ts is None:
+                continue
+            try:
+                p = float(row.get("p"))
+            except (TypeError, ValueError):
+                continue
+            points_raw.append({"t": ts, "pnl_abs": p})
+    points_raw.sort(key=lambda r: int(r["t"]))
+
+    if cutoff is not None:
+        pre = [p for p in points_raw if p["t"] < cutoff]
+        in_win = [p for p in points_raw if p["t"] >= cutoff]
+        if pre and in_win:
+            points_raw = [pre[-1], *in_win]
+        else:
+            points_raw = in_win or points_raw
+
+    base = float(points_raw[0]["pnl_abs"]) if points_raw else 0.0
+    # Relative series (matches Orbscan 1W headline ≈ last − first).
+    series: list[dict[str, Any]] = []
+    for p in points_raw:
+        series.append(
+            {
+                "t": int(p["t"]),
+                "pnl": _round_pnl_to_cents(float(p["pnl_abs"]) - base),
+                "pnl_abs": _round_pnl_to_cents(float(p["pnl_abs"])),
+                "fee": 0.0,
+                "reward": 0.0,
+                "deposit": 0.0,
+                "withdraw": 0.0,
+            }
+        )
+
+    if series:
+        # Assign each cashflow to the next series bucket at/after its timestamp.
+        times = [int(p["t"]) for p in series]
+        for flow in flows:
+            ts = int(flow["timestamp"])
+            if cutoff is not None and ts < cutoff:
+                continue
+            bucket = _cashflow_bucket(str(flow.get("type") or ""))
+            if not bucket:
+                continue
+            # Binary-ish: first index with t >= ts, else last.
+            idx = 0
+            while idx < len(times) and times[idx] < ts:
+                idx += 1
+            if idx >= len(times):
+                idx = len(times) - 1
+            try:
+                usd = abs(float(flow.get("usd") or 0.0))
+            except (TypeError, ValueError):
+                usd = 0.0
+            series[idx][bucket] = _round_pnl_to_cents(float(series[idx][bucket]) + usd)
+
+    headline = series[-1]["pnl"] if series else None
+    return {
+        "wallet": wallet,
+        "interval": key,
+        "fidelity": fidelity,
+        "scope": "account",
+        "pnl": headline,
+        "start_pnl": series[0]["pnl"] if series else None,
+        "end_pnl": headline,
+        "series": series,
+    }
+
+
+def _attach_day_rebates(
+    daily: list[dict[str, Any]],
+    rebates_by_day: dict[str, float],
+) -> None:
+    for row in daily:
+        day = str(row.get("date") or "")
+        row["rebates"] = float(rebates_by_day.get(day) or 0.0)
+
+
 def _slug_activity_bounds(slug: str) -> tuple[int, int] | None:
     """Activity window for a BTC 5m market slug (trades + late redeems)."""
     s = (slug or "").strip()
@@ -431,8 +739,11 @@ async def fetch_wallet_summary(address: str) -> dict[str, Any]:
             if _btc_empty_should_stop(pages_seen=pages_seen, btc_found=closed_n):
                 break
 
-        extras = await _btc_unrealized_extras(
-            client, wallet, closed_keys, activity_lookback_ms=45 * 86_400_000
+        extras, rebate_rows = await asyncio.gather(
+            _btc_unrealized_extras(
+                client, wallet, closed_keys, activity_lookback_ms=45 * 86_400_000
+            ),
+            _paginate_rebate_activity(client, wallet),
         )
 
     profile_src: dict[str, Any] = {}
@@ -446,6 +757,7 @@ async def fetch_wallet_summary(address: str) -> dict[str, Any]:
     open_pnl = float(extras.get("open_pnl") or 0.0)
     # Same formula as PnL-by-day / PnL-by-market: closed + tape + leftover open marks.
     combined = _round_pnl_to_cents(closed_pnl + activity_pnl + open_pnl)
+    rebates = _rebate_rollups(rebate_rows)
 
     return {
         "wallet": wallet,
@@ -466,6 +778,10 @@ async def fetch_wallet_summary(address: str) -> dict[str, Any]:
         "closed_pnl": closed_pnl,
         "open_pnl": open_pnl,
         "activity_pnl": activity_pnl,
+        "total_rebates": rebates["total_rebates"],
+        "maker_rebates": rebates["maker_rebates"],
+        "taker_rebates": rebates["taker_rebates"],
+        "rebate_events": rebates["rebate_events"],
         "open_positions": int(extras.get("n_open") or 0),
         "closed_sample": closed_n,
         "polygonscan_url": f"https://polygonscan.com/address/{wallet}",
@@ -1085,8 +1401,12 @@ async def fetch_wallet_daily_pnl(
             raise ValueError("before must be YYYY-MM-DD") from exc
 
     async with _http_client(timeout_s=120.0) as client:
-        by_day, has_more, closed_keys_by_day = await _aggregate_btc_closed_by_day(
+        closed_task = _aggregate_btc_closed_by_day(
             client, wallet, max_btc=scan_limit, before=before
+        )
+        rebates_task = _paginate_rebate_activity(client, wallet)
+        (by_day, has_more, closed_keys_by_day), rebate_rows = await asyncio.gather(
+            closed_task, rebates_task
         )
 
         for bucket in by_day.values():
@@ -1102,6 +1422,9 @@ async def fetch_wallet_daily_pnl(
             client, wallet, daily, closed_keys_by_day
         )
 
+    rebates = _rebate_rollups(rebate_rows)
+    _attach_day_rebates(daily, rebates["rebates_by_day"])
+
     for row in daily:
         row["cum_pnl"] = None  # BTC-only day sums; not account-level cumulative
 
@@ -1116,6 +1439,9 @@ async def fetch_wallet_daily_pnl(
         "by_market_day": True,
         "markets_aligned": True,
         "n_open": 0,
+        "total_rebates": rebates["total_rebates"],
+        "maker_rebates": rebates["maker_rebates"],
+        "taker_rebates": rebates["taker_rebates"],
         "daily": daily,
     }
 

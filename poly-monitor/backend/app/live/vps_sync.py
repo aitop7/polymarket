@@ -1401,6 +1401,180 @@ class VpsSyncClient:
         )
         return written
 
+    def score_binance_health(
+        self,
+        dest: Path,
+        *,
+        start: int,
+        end: int,
+    ) -> dict[str, Any]:
+        """Grade Binance price + trade files only for one market window."""
+        from app.core.live_dataset import (
+            DATA_HEALTH_BAD,
+            DATA_HEALTH_UNCHECKED,
+            grade_data_health,
+            grade_trade_health,
+            worse_data_health,
+        )
+
+        if start <= 0 or end <= start:
+            return {
+                "grade": DATA_HEALTH_UNCHECKED,
+                "price_grade": DATA_HEALTH_UNCHECKED,
+                "trade_grade": DATA_HEALTH_UNCHECKED,
+                "max_gap_ms": 0,
+                "max_trade_quiet_ms": 0,
+                "has_price": False,
+                "has_trades": False,
+            }
+
+        px_path = dest / "binance_price_orderbook.parquet"
+        tr_path = dest / "binance_trades.parquet"
+        has_price = px_path.is_file() and px_path.stat().st_size > 0
+        has_trades = tr_path.is_file() and tr_path.stat().st_size > 0
+
+        gap, _ = self._price_series_stats(
+            px_path,
+            name="binance_price_orderbook.parquet",
+            start=start,
+            end=end,
+            remote_has=True,
+        )
+        quiet, _ = self._trade_series_stats(
+            tr_path,
+            name="binance_trades.parquet",
+            start=start,
+            end=end,
+            remote_has=True,
+        )
+        price_grade = grade_data_health(gap) if has_price else DATA_HEALTH_BAD
+        trade_grade = grade_trade_health(quiet) if has_trades else DATA_HEALTH_BAD
+        if not has_price and not has_trades:
+            grade = DATA_HEALTH_BAD
+        elif not has_price:
+            grade = worse_data_health(DATA_HEALTH_BAD, trade_grade)
+        elif not has_trades:
+            grade = worse_data_health(price_grade, DATA_HEALTH_BAD)
+        else:
+            grade = worse_data_health(price_grade, trade_grade)
+        return {
+            "grade": grade,
+            "price_grade": price_grade,
+            "trade_grade": trade_grade,
+            "max_gap_ms": int(gap),
+            "max_trade_quiet_ms": int(quiet),
+            "has_price": has_price,
+            "has_trades": has_trades,
+        }
+
+    def list_binance_health(self, *, date_et: str | None = None) -> dict[str, Any]:
+        """History markets with Binance-only health grades (oldest → newest)."""
+        from app.core.live_dataset import TWAP_SPLIT, find_live_market_dir
+        from app.core.market_index import (
+            build_market_index,
+            filter_history_markets,
+            list_markets_for_date,
+        )
+
+        date = (date_et or "").strip() or None
+        if date:
+            rows = list_markets_for_date(TWAP_SPLIT, date)
+        else:
+            rows = filter_history_markets(TWAP_SPLIT, build_market_index(TWAP_SPLIT))
+
+        markets: list[dict[str, Any]] = []
+        counts: dict[str, int] = {
+            "great": 0,
+            "good": 0,
+            "ok": 0,
+            "low": 0,
+            "bad": 0,
+            "unchecked": 0,
+        }
+        for r in rows:
+            mid = str(r.get("market_id") or "")
+            if not mid:
+                continue
+            d = Path(str(r["dir"])) if r.get("dir") else find_live_market_dir(mid)
+            if d is None or not d.is_dir():
+                continue
+            try:
+                start = int(r.get("start_time") or 0)
+                end = int(r.get("end_time") or 0)
+            except (TypeError, ValueError):
+                start = end = 0
+            scored = self.score_binance_health(d, start=start, end=end)
+            grade = str(scored.get("grade") or "unchecked")
+            counts[grade] = counts.get(grade, 0) + 1
+            markets.append(
+                {
+                    "market_id": mid,
+                    "slug": None,
+                    "start_time": start,
+                    "end_time": end,
+                    "date_et": r.get("date_et"),
+                    "time_et": r.get("time_et"),
+                    "grade": grade,
+                    "price_grade": scored.get("price_grade"),
+                    "trade_grade": scored.get("trade_grade"),
+                    "max_gap_ms": scored.get("max_gap_ms"),
+                    "max_trade_quiet_ms": scored.get("max_trade_quiet_ms"),
+                    "has_price": scored.get("has_price"),
+                    "has_trades": scored.get("has_trades"),
+                }
+            )
+
+        markets.sort(
+            key=lambda row: (int(row.get("start_time") or 0), str(row.get("market_id") or ""))
+        )
+        n_total = len(markets)
+        n_great = int(counts.get("great") or 0)
+        return {
+            "date": date,
+            "n_total": n_total,
+            "n_great": n_great,
+            "n_issues": max(0, n_total - n_great),
+            "counts": counts,
+            "markets": markets,
+        }
+
+    async def repair_binance_market(self, market_id: str) -> dict[str, Any]:
+        """Fetch Binance REST trades/klines into local files and re-score Binance health."""
+        from app.core.series_repair import repair_binance_for_market_dir
+
+        mid = str(market_id or "").strip()
+        if not mid:
+            return {"ok": False, "error": "missing market_id"}
+        local_path, stub = self._local_stub(mid)
+        if local_path is None or not local_path.is_dir():
+            return {"ok": False, "market_id": mid, "error": "local market not found"}
+
+        start = int(stub.get("start_time") or 0)
+        end = int(stub.get("end_time") or 0)
+        if start <= 0 or end <= start:
+            return {"ok": False, "market_id": mid, "error": "missing market window"}
+
+        try:
+            filled = await repair_binance_for_market_dir(
+                local_path, start_ms=start, end_ms=end
+            )
+        except Exception as exc:
+            return {"ok": False, "market_id": mid, "error": str(exc)}
+
+        scored = self.score_binance_health(local_path, start=start, end=end)
+        return {
+            "ok": True,
+            "market_id": mid,
+            "filled": filled,
+            "grade": scored.get("grade"),
+            "price_grade": scored.get("price_grade"),
+            "trade_grade": scored.get("trade_grade"),
+            "max_gap_ms": scored.get("max_gap_ms"),
+            "max_trade_quiet_ms": scored.get("max_trade_quiet_ms"),
+            "has_price": scored.get("has_price"),
+            "has_trades": scored.get("has_trades"),
+        }
+
     def rescore_pmdata_health(self, market_id: str) -> dict[str, Any]:
         """Local-only health restamp using PM files when present (no VPS pull)."""
         from app.core.live_dataset import (
