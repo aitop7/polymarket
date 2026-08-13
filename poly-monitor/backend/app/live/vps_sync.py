@@ -195,7 +195,13 @@ class VpsSyncClient:
                 if not (dest / name).is_file():
                     return True
             return False
+        from app.core.live_dataset import ORDERBOOKS_FILE, PM_ORDERBOOKS_FILE, resolve_orderbooks_path
+
         for name, size in remote_files.items():
+            # Local pm_orderbooks covers the live orderbooks.parquet requirement.
+            if name in {ORDERBOOKS_FILE, PM_ORDERBOOKS_FILE}:
+                if resolve_orderbooks_path(dest) is not None:
+                    continue
             p = dest / name
             if not p.is_file():
                 return True
@@ -287,16 +293,18 @@ class VpsSyncClient:
         start: int,
         end: int,
         remote_has: bool | None,
+        step_ms: int | None = None,
     ) -> tuple[int, list[tuple[int, str]]]:
-        """Return (max_gap_ms, scored notes) for a 1s price/orderbook file."""
+        """Return (max_gap_ms, scored notes) for a price/orderbook series."""
+        step = max(1, int(step_ms if step_ms is not None else _PRICE_STEP_MS))
         if not path.is_file():
             if remote_has is False:
                 return 0, []
-            span = max(end - start, _PRICE_STEP_MS + 1)
+            span = max(end - start, step + 1)
             return span, [(span, "missing file")]
         ts = sorted(t for t in set(self._parquet_timestamps(path)) if start <= t <= end)
         if not ts:
-            span = max(end - start, _PRICE_STEP_MS + 1)
+            span = max(end - start, step + 1)
             return span, [(span, "empty file")]
         max_gap = 0
         scored: list[tuple[int, str]] = []
@@ -304,7 +312,7 @@ class VpsSyncClient:
         def consider(a: int, b: int, *, kind: str) -> None:
             nonlocal max_gap
             gap = b - a
-            if gap > _PRICE_STEP_MS:
+            if gap > step:
                 max_gap = max(max_gap, gap)
                 scored.append((gap, self._fmt_gap_detail(a, b, kind=kind)))
 
@@ -397,6 +405,7 @@ class VpsSyncClient:
             "grade": grade_data_health(0),
             "price_grade": grade_data_health(0),
             "trade_grade": grade_trade_health(0),
+            "orderbooks_source": None,
         }
         if not date or not mid:
             return empty
@@ -410,6 +419,7 @@ class VpsSyncClient:
                 "notes_by_file": {note: []},
                 "comment": note,
                 "grade": DATA_HEALTH_BAD,
+                "orderbooks_source": None,
             }
         try:
             start = int(remote.get("start_time") or 0)
@@ -430,6 +440,7 @@ class VpsSyncClient:
                     "notes_by_file": {"meta.json": ["invalid start/end time"]},
                     "comment": note,
                     "grade": DATA_HEALTH_BAD,
+                    "orderbooks_source": None,
                 }
         if start <= 0 or end <= start:
             note = "meta.json: invalid start/end time"
@@ -440,6 +451,7 @@ class VpsSyncClient:
                 "notes_by_file": {"meta.json": ["invalid start/end time"]},
                 "comment": note,
                 "grade": DATA_HEALTH_BAD,
+                "orderbooks_source": None,
             }
         now_ms = int(time.time() * 1000)
         if end > now_ms:
@@ -460,13 +472,20 @@ class VpsSyncClient:
             skip_pm_trade_quiet = False
 
         preferred_books = resolve_orderbooks_path(dest)
+        orderbooks_source = preferred_books.name if preferred_books is not None else None
         for name in _PRICE_1S_FILES:
+            step_ms: int | None = None
             if name == ORDERBOOKS_FILE:
                 # Prefer pm_orderbooks.parquet when present; else live orderbooks.
+                # Never score the gappy live orderbooks file when PM L2 exists.
                 if preferred_books is not None:
                     path = preferred_books
                     name = preferred_books.name
                     remote_has = True
+                    if name == "pm_orderbooks.parquet":
+                        from app.core.pm_orderbooks import SLOT_MS as _PM_SLOT_MS
+
+                        step_ms = int(_PM_SLOT_MS)
                 else:
                     remote_has = True if local_only else (ORDERBOOKS_FILE in remote_names)
                     if not local_only and ORDERBOOKS_FILE not in remote_names:
@@ -478,7 +497,12 @@ class VpsSyncClient:
                     continue
                 path = dest / name
             gap, file_notes = self._price_series_stats(
-                path, name=name, start=start, end=end, remote_has=remote_has
+                path,
+                name=name,
+                start=start,
+                end=end,
+                remote_has=remote_has,
+                step_ms=step_ms,
             )
             # Worst single hole in this file — never sum across holes.
             max_gap = max(max_gap, gap)
@@ -513,6 +537,7 @@ class VpsSyncClient:
             "price_grade": price_grade,
             "trade_grade": trade_grade,
             "grade": worse_data_health(price_grade, trade_grade),
+            "orderbooks_source": orderbooks_source,
         }
 
     def _collect_gap_notes(self, remote: dict[str, Any]) -> list[str]:
@@ -551,6 +576,12 @@ class VpsSyncClient:
                 rsize = int(f.get("size") or 0)
             except (TypeError, ValueError):
                 rsize = 0
+            # pm_orderbooks satisfies the live orderbooks.parquet slot.
+            if name in {"orderbooks.parquet", "pm_orderbooks.parquet"}:
+                from app.core.live_dataset import resolve_orderbooks_path
+
+                if resolve_orderbooks_path(dest) is not None:
+                    continue
             p = dest / name
             if not p.is_file():
                 return True
@@ -707,9 +738,23 @@ class VpsSyncClient:
                         shutil.copyfileobj(src, out)
             if not (tmp / "meta.json").is_file():
                 raise RuntimeError(f"archive missing meta.json for {mid}")
+            # Merge into the existing dir: overwrite VPS/archive files only.
+            # Keep local-only artifacts (esp. pm_orderbooks.parquet) intact.
             if final.exists():
-                shutil.rmtree(final, ignore_errors=True)
-            tmp.rename(final)
+                from app.core.live_dataset import PM_ORDERBOOKS_FILE
+
+                for src in tmp.iterdir():
+                    if not src.is_file():
+                        continue
+                    # Never replace a local PM L2 book with an archive copy.
+                    if src.name == PM_ORDERBOOKS_FILE:
+                        existing = final / PM_ORDERBOOKS_FILE
+                        if existing.is_file() and existing.stat().st_size > 0:
+                            continue
+                    shutil.copy2(src, final / src.name)
+                shutil.rmtree(tmp, ignore_errors=True)
+            else:
+                tmp.rename(final)
             logger.info("Synced market %s → %s", mid, final)
             return final
         except Exception:
@@ -1006,6 +1051,7 @@ class VpsSyncClient:
                 "max_trade_quiet_ms": int(analysis.get("max_trade_quiet_ms") or 0),
                 "notes": list(analysis.get("notes") or []),
                 "notes_by_file": dict(analysis.get("notes_by_file") or {}),
+                "orderbooks_source": analysis.get("orderbooks_source"),
                 "warning": warning if ok else None,
                 "error": None if ok else warning,
             }
@@ -1083,6 +1129,7 @@ class VpsSyncClient:
                 "max_trade_quiet_ms": int(analysis.get("max_trade_quiet_ms") or 0),
                 "notes": list(analysis.get("notes") or []),
                 "notes_by_file": dict(analysis.get("notes_by_file") or {}),
+                "orderbooks_source": analysis.get("orderbooks_source"),
             }
 
     def _iter_local_market_dirs(self) -> list[Path]:

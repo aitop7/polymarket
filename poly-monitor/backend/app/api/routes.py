@@ -310,6 +310,16 @@ def get_missing_pm_orderbooks(
     return list_missing_pm_orderbooks(date_et=date)
 
 
+@router.get("/markets/pm-chainlink/missing")
+def get_missing_pm_chainlink(
+    date: str | None = Query(None, description="ET date YYYY-MM-DD; omit for all history"),
+) -> dict[str, Any]:
+    """List TWAP history markets that do not yet have pm_chainlink_price.parquet."""
+    from app.core.pm_chainlink import list_missing_pm_chainlink
+
+    return list_missing_pm_chainlink(date_et=date)
+
+
 async def _ensure_twap_history(market_id: str, split: str | None) -> None:
     """If selecting a TWAP history market, repair local gaps from VPS when needed."""
     from app.core.live_dataset import find_live_market_dir
@@ -401,6 +411,28 @@ def generate_pm_orderbooks(
         raise HTTPException(400, "PMDATA_API_KEY is not configured in poly-monitor/.env")
     try:
         return generate_pm_orderbooks_for_market(mid, force_download=bool(force))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/markets/{market_id}/pm-chainlink")
+def generate_pm_chainlink(
+    market_id: str,
+    force: bool = Query(False, description="Re-download PMData chainlink day files ignoring cache"),
+) -> dict[str, Any]:
+    """Download PMData Chainlink streams and write pm_chainlink_price.parquet (0.5s grid)."""
+    from app.core.pm_chainlink import generate_pm_chainlink_for_market
+    from app.core.pmdata_client import pmdata_enabled
+
+    mid = str(market_id or "").strip()
+    if not mid:
+        raise HTTPException(400, "market_id required")
+    if not pmdata_enabled():
+        raise HTTPException(400, "PMDATA_API_KEY is not configured in poly-monitor/.env")
+    try:
+        return generate_pm_chainlink_for_market(mid, force_download=bool(force))
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:

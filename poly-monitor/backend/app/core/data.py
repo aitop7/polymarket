@@ -288,7 +288,7 @@ def _chart_up_buy(row: Any) -> float | None:
 def series_for_chart(
     df: pd.DataFrame,
     *,
-    max_points: int = 300,
+    max_points: int = 600,
     market_id: str | None = None,
 ) -> list[dict[str, Any]]:
     if df.empty:

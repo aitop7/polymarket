@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, AsyncIterator
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -12,6 +13,19 @@ import httpx
 DATA_API_URL = "https://data-api.polymarket.com"
 PNL_API_URL = "https://user-pnl-api.polymarket.com"
 LB_API_URL = "https://lb-api.polymarket.com"
+
+# Parallel page fetches against Polymarket data-api (closed-positions / activity).
+_PAGE_CONCURRENCY = 8
+_CLOSED_PAGE = 50
+_ACTIVITY_PAGE = 500
+
+
+def _http_client(*, timeout_s: float = 90.0) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout_s, connect=8.0),
+        limits=httpx.Limits(max_connections=48, max_keepalive_connections=24),
+        follow_redirects=True,
+    )
 
 _ET = ZoneInfo("America/New_York")
 _ADDR_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
@@ -217,39 +231,55 @@ async def _get_json(
     url: str,
     *,
     params: dict[str, Any] | None = None,
+    retries: int = 4,
 ) -> Any:
-    resp = await client.get(url, params=params or {}, headers=_headers())
-    resp.raise_for_status()
-    return resp.json()
-
-
-async def fetch_wallet_summary(address: str) -> dict[str, Any]:
-    """Profile + BTC Up/Down 5m position/PnL headline stats for the user card."""
-    wallet = normalize_wallet(address)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=8.0)) as client:
-        trades = await _get_json(
-            client,
-            f"{DATA_API_URL}/trades",
-            params={"user": wallet, "limit": 1, "takerOnly": "false"},
-        )
+    last_exc: Exception | None = None
+    for attempt in range(max(1, int(retries))):
         try:
-            lb = await _get_json(
-                client,
-                f"{LB_API_URL}/profit",
-                params={"address": wallet, "window": "all", "limit": 1},
-            )
-        except Exception:
-            lb = []
+            resp = await client.get(url, params=params or {}, headers=_headers())
+            if resp.status_code == 429:
+                wait = min(8.0, 0.4 * (2**attempt))
+                await asyncio.sleep(wait)
+                last_exc = httpx.HTTPStatusError(
+                    f"429 Too Many Requests for {url}",
+                    request=resp.request,
+                    response=resp,
+                )
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 429:
+                wait = min(8.0, 0.4 * (2**attempt))
+                await asyncio.sleep(wait)
+                last_exc = exc
+                continue
+            raise
+        except httpx.TransportError as exc:
+            wait = min(8.0, 0.3 * (2**attempt))
+            await asyncio.sleep(wait)
+            last_exc = exc
+            continue
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"request failed: {url}")
 
-        # Scan closed BTC positions for all-time PnL + biggest win (not all-market LB).
-        total_pnl = 0.0
-        biggest_win: dict[str, Any] | None = None
-        closed_n = 0
-        closed_keys: set[str] = set()
-        offset = 0
-        page = 50
-        max_btc = 8_000
-        while closed_n < max_btc and offset <= 200_000:
+
+async def _iter_closed_position_pages(
+    client: httpx.AsyncClient,
+    wallet: str,
+    *,
+    page: int = _CLOSED_PAGE,
+    max_offset: int = 200_000,
+    concurrency: int = _PAGE_CONCURRENCY,
+) -> AsyncIterator[list[Any]]:
+    """Yield closed-positions pages (TIMESTAMP DESC) fetching `concurrency` ahead."""
+    page = max(1, min(int(page), 50))
+    concurrency = max(1, min(int(concurrency), 24))
+    offset = 0
+    while offset <= max_offset:
+
+        async def _one(o: int) -> list[Any] | None:
             try:
                 batch = await _get_json(
                     client,
@@ -257,15 +287,125 @@ async def fetch_wallet_summary(address: str) -> dict[str, Any]:
                     params={
                         "user": wallet,
                         "limit": page,
-                        "offset": offset,
+                        "offset": o,
                         "sortBy": "TIMESTAMP",
                         "sortDirection": "DESC",
                     },
                 )
             except httpx.HTTPStatusError:
+                return None
+            return batch if isinstance(batch, list) else []
+
+        offs = [offset + i * page for i in range(concurrency) if offset + i * page <= max_offset]
+        if not offs:
+            break
+        batches = await asyncio.gather(*[_one(o) for o in offs])
+        stop = False
+        for batch in batches:
+            if batch is None:
+                return
+            yield batch
+            if len(batch) < page:
+                stop = True
                 break
-            if not isinstance(batch, list) or not batch:
+        if stop:
+            return
+        offset += len(offs) * page
+
+
+# Give up on BTC-only scans after this many consecutive non-BTC pages when
+# nothing BTC has been found yet (avoids multi-minute crawls on non-BTC wallets).
+_EMPTY_BTC_PAGE_LIMIT = 60
+
+
+def _btc_empty_should_stop(*, pages_seen: int, btc_found: int) -> bool:
+    return btc_found <= 0 and pages_seen >= _EMPTY_BTC_PAGE_LIMIT
+
+
+async def _iter_activity_pages(
+    client: httpx.AsyncClient,
+    wallet: str,
+    *,
+    start_ms: int,
+    end_ms: int,
+    page: int = _ACTIVITY_PAGE,
+    max_offset: int = 50_000,
+    concurrency: int = _PAGE_CONCURRENCY,
+    start_offset: int = 0,
+) -> AsyncIterator[list[Any]]:
+    """Yield activity pages in [start,end) fetching `concurrency` ahead."""
+    page = max(1, min(int(page), 500))
+    concurrency = max(1, min(int(concurrency), 24))
+    offset = max(0, int(start_offset))
+    start_s = max(0, int(start_ms) // 1000)
+    end_s = max(start_s + 1, int(end_ms) // 1000)
+    while offset <= max_offset:
+
+        async def _one(o: int) -> list[Any] | None:
+            try:
+                batch = await _get_json(
+                    client,
+                    f"{DATA_API_URL}/activity",
+                    params={
+                        "user": wallet,
+                        "limit": page,
+                        "offset": o,
+                        "start": start_s,
+                        "end": end_s,
+                    },
+                )
+            except httpx.HTTPStatusError:
+                return None
+            return batch if isinstance(batch, list) else []
+
+        offs = [offset + i * page for i in range(concurrency) if offset + i * page <= max_offset]
+        if not offs:
+            break
+        batches = await asyncio.gather(*[_one(o) for o in offs])
+        stop = False
+        for batch in batches:
+            if batch is None:
+                return
+            yield batch
+            if len(batch) < page:
+                stop = True
                 break
+        if stop:
+            return
+        offset += len(offs) * page
+
+
+async def fetch_wallet_summary(address: str) -> dict[str, Any]:
+    """Profile + BTC Up/Down 5m position/PnL headline stats for the user card."""
+    wallet = normalize_wallet(address)
+    async with _http_client(timeout_s=90.0) as client:
+        trades_task = _get_json(
+            client,
+            f"{DATA_API_URL}/trades",
+            params={"user": wallet, "limit": 1, "takerOnly": "false"},
+        )
+
+        async def _lb() -> Any:
+            try:
+                return await _get_json(
+                    client,
+                    f"{LB_API_URL}/profit",
+                    params={"address": wallet, "window": "all", "limit": 1},
+                )
+            except Exception:
+                return []
+
+        trades, lb = await asyncio.gather(trades_task, _lb())
+
+        # Scan closed BTC positions for all-time PnL + biggest win (not all-market LB).
+        total_pnl = 0.0
+        biggest_win: dict[str, Any] | None = None
+        closed_n = 0
+        closed_keys: set[str] = set()
+        max_btc = 8_000
+        pages_seen = 0
+        async for batch in _iter_closed_position_pages(client, wallet):
+            pages_seen += 1
             for raw in batch:
                 item = _norm_closed_position(raw)
                 if item is None:
@@ -286,9 +426,10 @@ async def fetch_wallet_summary(address: str) -> dict[str, Any]:
                     }
                 if closed_n >= max_btc:
                     break
-            if len(batch) < page or closed_n >= max_btc:
+            if closed_n >= max_btc:
                 break
-            offset += len(batch)
+            if _btc_empty_should_stop(pages_seen=pages_seen, btc_found=closed_n):
+                break
 
         extras = await _btc_unrealized_extras(
             client, wallet, closed_keys, activity_lookback_ms=45 * 86_400_000
@@ -358,29 +499,14 @@ async def fetch_wallet_pnl(address: str, interval: str = "1d") -> dict[str, Any]
     }
     max_btc = scan_by_interval.get(key, 8_000)
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=8.0)) as client:
+    async with _http_client(timeout_s=90.0) as client:
         # Pull closed BTC rows (newest first), then rebuild chronological cumulative curve.
         closed: list[dict[str, Any]] = []
-        offset = 0
         exhausted = False
-        while len(closed) < max_btc and offset <= 200_000:
-            page = 50
-            try:
-                batch = await _get_json(
-                    client,
-                    f"{DATA_API_URL}/closed-positions",
-                    params={
-                        "user": wallet,
-                        "limit": page,
-                        "offset": offset,
-                        "sortBy": "TIMESTAMP",
-                        "sortDirection": "DESC",
-                    },
-                )
-            except httpx.HTTPStatusError:
-                exhausted = True
-                break
-            if not isinstance(batch, list) or not batch:
+        pages_seen = 0
+        async for batch in _iter_closed_position_pages(client, wallet):
+            pages_seen += 1
+            if not batch:
                 exhausted = True
                 break
             stop_old = False
@@ -398,10 +524,12 @@ async def fetch_wallet_pnl(address: str, interval: str = "1d") -> dict[str, Any]
                     break
             if stop_old or len(closed) >= max_btc:
                 break
-            if len(batch) < page:
+            if len(batch) < _CLOSED_PAGE:
                 exhausted = True
                 break
-            offset += len(batch)
+            if _btc_empty_should_stop(pages_seen=pages_seen, btc_found=len(closed)):
+                exhausted = True
+                break
 
         open_pnl = 0.0
         open_n = 0
@@ -605,31 +733,17 @@ async def _aggregate_btc_closed_by_day(
     max_btc = max(50, min(int(max_btc), 50_000))
     by_day: dict[str, dict[str, Any]] = {}
     closed_keys_by_day: dict[str, set[str]] = {}
-    offset = 0
     n_btc = 0
     exhausted = False
+    pages_seen = 0
 
-    while n_btc < max_btc and offset <= max_offset:
-        page = 50
-        try:
-            batch = await _get_json(
-                client,
-                f"{DATA_API_URL}/closed-positions",
-                params={
-                    "user": wallet,
-                    "limit": page,
-                    "offset": offset,
-                    "sortBy": "TIMESTAMP",
-                    "sortDirection": "DESC",
-                },
-            )
-        except httpx.HTTPStatusError:
+    async for batch in _iter_closed_position_pages(
+        client, wallet, max_offset=max_offset
+    ):
+        pages_seen += 1
+        if not batch:
             exhausted = True
             break
-        if not isinstance(batch, list) or not batch:
-            exhausted = True
-            break
-
         for raw in batch:
             item = _norm_closed_position(raw)
             if item is None:
@@ -666,10 +780,12 @@ async def _aggregate_btc_closed_by_day(
 
         if n_btc >= max_btc:
             break
-        if len(batch) < page:
+        if len(batch) < _CLOSED_PAGE:
             exhausted = True
             break
-        offset += len(batch)
+        if _btc_empty_should_stop(pages_seen=pages_seen, btc_found=n_btc):
+            exhausted = True
+            break
 
     has_more = (not exhausted) and n_btc >= max_btc
     return by_day, has_more, closed_keys_by_day
@@ -694,26 +810,10 @@ async def _paginate_btc_activity_range(
 ) -> list[dict[str, Any]]:
     """BTC 5m activity in [start_ms, end_ms)."""
     rows: list[dict[str, Any]] = []
-    page_offset = 0
     max_rows = max(100, min(int(max_rows), 30_000))
-    while len(rows) < max_rows and page_offset <= 50_000:
-        page_limit = min(500, max_rows - len(rows))
-        try:
-            batch = await _get_json(
-                client,
-                f"{DATA_API_URL}/activity",
-                params={
-                    "user": wallet,
-                    "limit": page_limit,
-                    "offset": page_offset,
-                    "start": start_ms // 1000,
-                    "end": end_ms // 1000,
-                },
-            )
-        except httpx.HTTPStatusError:
-            break
-        if not isinstance(batch, list) or not batch:
-            break
+    async for batch in _iter_activity_pages(
+        client, wallet, start_ms=start_ms, end_ms=end_ms
+    ):
         for raw in batch:
             item = _norm_activity(raw)
             if item is None:
@@ -722,10 +822,11 @@ async def _paginate_btc_activity_range(
             if ts < start_ms or ts >= end_ms:
                 continue
             rows.append(item)
-        if len(batch) < page_limit:
+            if len(rows) >= max_rows:
+                return rows[:max_rows]
+        if len(batch) < _ACTIVITY_PAGE:
             break
-        page_offset += len(batch)
-    return rows
+    return rows[:max_rows]
 
 
 async def _btc_unrealized_extras(
@@ -749,8 +850,22 @@ async def _btc_unrealized_extras(
         act_start = max(0, now - int(activity_lookback_ms))
     act_end = now + 45 * 60_000
 
-    acts = await _paginate_btc_activity_range(
-        client, wallet, act_start, act_end, max_rows=12_000
+    async def _load_open() -> list[Any]:
+        try:
+            raw = await _get_json(
+                client,
+                f"{DATA_API_URL}/positions",
+                params={"user": wallet, "limit": 100, "sizeThreshold": 0},
+            )
+        except httpx.HTTPStatusError:
+            return []
+        return raw if isinstance(raw, list) else []
+
+    acts, raw_open = await asyncio.gather(
+        _paginate_btc_activity_range(
+            client, wallet, act_start, act_end, max_rows=12_000
+        ),
+        _load_open(),
     )
     groups = _group_activity_by_market(acts)
     tape = 0.0
@@ -776,36 +891,27 @@ async def _btc_unrealized_extras(
     open_extra = 0.0
     open_n = 0
     positions_value = 0.0
-    try:
-        raw_open = await _get_json(
-            client,
-            f"{DATA_API_URL}/positions",
-            params={"user": wallet, "limit": 100, "sizeThreshold": 0},
-        )
-    except httpx.HTTPStatusError:
-        raw_open = []
-    if isinstance(raw_open, list):
-        for raw in raw_open:
-            item = _norm_open_position(raw)
-            if item is None:
-                continue
-            if _is_live_btc_market(item.get("slug"), now_ms=now):
-                continue
-            slug_ts = _slug_window_start_ms(item.get("slug"))
-            ts = slug_ts or item.get("timestamp") or now
-            if cutoff_ms is not None and int(ts) < int(cutoff_ms):
-                continue
-            try:
-                positions_value += float(item.get("current_value") or 0)
-            except (TypeError, ValueError):
-                pass
-            keys = _market_lookup_keys(item)
-            if any(k in closed_keys for k in keys):
-                continue
-            if any(k in tape_keys for k in keys):
-                continue
-            open_extra += _open_position_mark_pnl(item)
-            open_n += 1
+    for raw in raw_open:
+        item = _norm_open_position(raw)
+        if item is None:
+            continue
+        if _is_live_btc_market(item.get("slug"), now_ms=now):
+            continue
+        slug_ts = _slug_window_start_ms(item.get("slug"))
+        ts = slug_ts or item.get("timestamp") or now
+        if cutoff_ms is not None and int(ts) < int(cutoff_ms):
+            continue
+        try:
+            positions_value += float(item.get("current_value") or 0)
+        except (TypeError, ValueError):
+            pass
+        keys = _market_lookup_keys(item)
+        if any(k in closed_keys for k in keys):
+            continue
+        if any(k in tape_keys for k in keys):
+            continue
+        open_extra += _open_position_mark_pnl(item)
+        open_n += 1
 
     activity_pnl = _round_pnl_to_cents(tape)
     open_pnl = _round_pnl_to_cents(open_extra)
@@ -837,9 +943,22 @@ async def _apply_markets_style_day_totals(
     # Late redeems for the newest day's last windows land just after midnight.
     end_ms += 45 * 60_000
 
-    acts = await _paginate_btc_activity_range(
+    acts_task = _paginate_btc_activity_range(
         client, wallet, start_ms, end_ms, max_rows=20_000
     )
+
+    async def _load_open() -> list[Any]:
+        try:
+            raw = await _get_json(
+                client,
+                f"{DATA_API_URL}/positions",
+                params={"user": wallet, "limit": 100, "sizeThreshold": 0},
+            )
+        except httpx.HTTPStatusError:
+            return []
+        return raw if isinstance(raw, list) else []
+
+    acts, raw_open = await asyncio.gather(acts_task, _load_open())
     groups = _group_activity_by_market(acts)
     tape_by_day: dict[str, float] = {}
     tape_keys_by_day: dict[str, set[str]] = {}
@@ -862,39 +981,30 @@ async def _apply_markets_style_day_totals(
         tape_keys_by_day.setdefault(day, set()).update(keys)
 
     # Open marks for claimable/unindexed markets missed by the activity window.
-    try:
-        raw_open = await _get_json(
-            client,
-            f"{DATA_API_URL}/positions",
-            params={"user": wallet, "limit": 100, "sizeThreshold": 0},
-        )
-    except httpx.HTTPStatusError:
-        raw_open = []
     open_extra_by_day: dict[str, float] = {}
-    if isinstance(raw_open, list):
-        for raw in raw_open:
-            item = _norm_open_position(raw)
-            if item is None:
-                continue
-            if _is_live_btc_market(item.get("slug"), now_ms=now_ms):
-                continue
-            day = _open_market_day(item)
-            if day is None or day not in date_set:
-                continue
-            keys = _market_lookup_keys(item)
-            closed_keys = closed_keys_by_day.get(day) or set()
-            if any(k in closed_keys for k in keys):
-                continue
-            tape_keys = tape_keys_by_day.get(day) or set()
-            if any(k in tape_keys for k in keys):
-                continue
-            open_extra_by_day[day] = float(open_extra_by_day.get(day, 0.0)) + float(
-                _open_position_mark_pnl(item)
-            )
-            for row in daily:
-                if row["date"] == day:
-                    row["n_open"] = int(row.get("n_open") or 0) + 1
-                    break
+    for raw in raw_open:
+        item = _norm_open_position(raw)
+        if item is None:
+            continue
+        if _is_live_btc_market(item.get("slug"), now_ms=now_ms):
+            continue
+        day = _open_market_day(item)
+        if day is None or day not in date_set:
+            continue
+        keys = _market_lookup_keys(item)
+        closed_keys = closed_keys_by_day.get(day) or set()
+        if any(k in closed_keys for k in keys):
+            continue
+        tape_keys = tape_keys_by_day.get(day) or set()
+        if any(k in tape_keys for k in keys):
+            continue
+        open_extra_by_day[day] = float(open_extra_by_day.get(day, 0.0)) + float(
+            _open_position_mark_pnl(item)
+        )
+        for row in daily:
+            if row["date"] == day:
+                row["n_open"] = int(row.get("n_open") or 0) + 1
+                break
 
     for row in daily:
         day = str(row["date"])
@@ -974,7 +1084,7 @@ async def fetch_wallet_daily_pnl(
         except ValueError as exc:
             raise ValueError("before must be YYYY-MM-DD") from exc
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0)) as client:
+    async with _http_client(timeout_s=120.0) as client:
         by_day, has_more, closed_keys_by_day = await _aggregate_btc_closed_by_day(
             client, wallet, max_btc=scan_limit, before=before
         )
@@ -1146,30 +1256,11 @@ async def _paginate_closed_positions(
     """Fetch closed positions, optionally filtered to an ET market-window day."""
     limit = max(1, min(int(limit), 500))
     out: list[dict[str, Any]] = []
-    offset = 0
     start_ms = end_ms = None
     if date:
         start_ms, end_ms = _et_day_bounds(date)
 
-    while len(out) < limit and offset <= 100_000:
-        page = min(50, limit - len(out))
-        try:
-            batch = await _get_json(
-                client,
-                f"{DATA_API_URL}/closed-positions",
-                params={
-                    "user": wallet,
-                    "limit": page,
-                    "offset": offset,
-                    "sortBy": "TIMESTAMP",
-                    "sortDirection": "DESC",
-                },
-            )
-        except httpx.HTTPStatusError:
-            break
-        if not isinstance(batch, list) or not batch:
-            break
-
+    async for batch in _iter_closed_position_pages(client, wallet):
         stop_early = False
         for raw in batch:
             # Peek timestamp before BTC filter so non-BTC rows don't block day cutoff.
@@ -1201,9 +1292,8 @@ async def _paginate_closed_positions(
             if len(out) >= limit:
                 break
 
-        if stop_early or len(batch) < page:
+        if stop_early or len(out) >= limit or len(batch) < _CLOSED_PAGE:
             break
-        offset += len(batch)
 
     return out[:limit]
 
@@ -1344,61 +1434,59 @@ async def fetch_wallet_markets(
     limit = max(1, min(int(limit), 500))
     act_limit = max(limit, min(int(activity_limit or max(limit * 4, 500)), 1000))
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=8.0)) as client:
-        closed = await _paginate_closed_positions(
+    async with _http_client(timeout_s=90.0) as client:
+        closed_task = _paginate_closed_positions(
             client, wallet, date=date, limit=max(limit, 500) if date else limit
         )
-        open_rows: list[dict[str, Any]] = []
-        activity_markets: list[dict[str, Any]] = []
-        if date:
+
+        async def _load_activity() -> list[dict[str, Any]]:
+            if not date:
+                return []
             if isinstance(activity_payload, dict) and activity_payload.get("markets") is not None:
-                activity_markets = list(activity_payload.get("markets") or [])
-            else:
-                # Activity is the complete “traded this day” set; closed PnL alone misses
-                # in-progress / not-yet-indexed settles and was empty in shallow caches.
-                act = await fetch_wallet_activity(
-                    address, date=date, limit=act_limit, _client=client
+                return list(activity_payload.get("markets") or [])
+            act = await fetch_wallet_activity(
+                address, date=date, limit=act_limit, _client=client
+            )
+            return list(act.get("markets") or [])
+
+        async def _load_open() -> list[dict[str, Any]]:
+            if not include_open:
+                return []
+            try:
+                raw_open = await _get_json(
+                    client,
+                    f"{DATA_API_URL}/positions",
+                    params={
+                        "user": wallet,
+                        "limit": min(100, limit) if not date else 100,
+                        "sizeThreshold": 0,
+                    },
                 )
-                activity_markets = list(act.get("markets") or [])
+            except httpx.HTTPStatusError:
+                return []
+            if not isinstance(raw_open, list):
+                return []
+            out: list[dict[str, Any]] = []
+            for raw in raw_open:
+                item = _norm_open_position(raw)
+                if item is not None:
+                    out.append(item)
+            return out
+
+        closed, activity_markets, open_rows = await asyncio.gather(
+            closed_task, _load_activity(), _load_open()
+        )
+        if date:
             # Keep only markets whose slug window opens on this ET day (so a
             # post-midnight redeem does not invent a second-day duplicate).
             activity_markets = [
                 m for m in activity_markets if (_row_market_day(m) or date) == date
             ]
-            # Still pull open positions so we can mark unredeemed (lost/won but unclaimed).
-            if include_open:
-                try:
-                    raw_open = await _get_json(
-                        client,
-                        f"{DATA_API_URL}/positions",
-                        params={"user": wallet, "limit": 100, "sizeThreshold": 0},
-                    )
-                except httpx.HTTPStatusError:
-                    raw_open = []
-                if isinstance(raw_open, list):
-                    for raw in raw_open:
-                        item = _norm_open_position(raw)
-                        if item is not None:
-                            open_rows.append(item)
-        elif include_open:
-            try:
-                raw_open = await _get_json(
-                    client,
-                    f"{DATA_API_URL}/positions",
-                    params={"user": wallet, "limit": min(100, limit), "sizeThreshold": 0},
-                )
-            except httpx.HTTPStatusError:
-                raw_open = []
-            if isinstance(raw_open, list):
-                for raw in raw_open:
-                    item = _norm_open_position(raw)
-                    if item is not None:
-                        open_rows.append(item)
 
     by_cid: dict[str, dict[str, Any]] = {}
     # On a calendar day, closed settles + activity define the list. Open rows are
     # annotation-only so unredeemed losers don't inject extra markets / cash PnL.
-    merge_rows = closed if date else (closed + open_rows)
+    merge_rows = closed if date else (list(closed) + list(open_rows))
     for row in merge_rows:
         _merge_market_row(
             by_cid,
@@ -1615,39 +1703,66 @@ async def fetch_wallet_activity(
 
     async def _run(client: httpx.AsyncClient) -> dict[str, Any]:
         nonlocal page_offset
-        while len(rows) < limit:
-            page_limit = min(500, limit - len(rows))
-            page_params = {**params, "limit": page_limit, "offset": page_offset}
-            try:
-                batch = await _get_json(
-                    client, f"{DATA_API_URL}/activity", params=page_params
-                )
-            except httpx.HTTPStatusError:
-                break
-            if not isinstance(batch, list) or not batch:
-                break
-            for raw in batch:
-                item = _norm_activity(raw)
-                if item is None:
-                    continue
-                if want_slug and str(item.get("slug") or "").lower() != want_slug.lower():
-                    continue
-                if start_ms is not None and item["timestamp"] < start_ms:
-                    continue
-                if end_ms is not None and item["timestamp"] >= end_ms:
-                    continue
-                rows.append(item)
-            if len(batch) < page_limit:
-                break
-            page_offset += len(batch)
-            if page_offset >= offset + 5000:
-                break
+        closed_task: asyncio.Task[list[dict[str, Any]]] | None = None
+        if date and not want_slug:
+            closed_task = asyncio.create_task(
+                _paginate_closed_positions(client, wallet, date=date, limit=500)
+            )
+
+        # Parallel activity pages when we have a time window; else single-page loop.
+        if start_ms is not None and end_ms is not None:
+            consumed = 0
+            async for batch in _iter_activity_pages(
+                client,
+                wallet,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                start_offset=offset,
+                max_offset=offset + 5000,
+            ):
+                for raw in batch:
+                    item = _norm_activity(raw)
+                    if item is None:
+                        continue
+                    if want_slug and str(item.get("slug") or "").lower() != want_slug.lower():
+                        continue
+                    if item["timestamp"] < start_ms:
+                        continue
+                    if item["timestamp"] >= end_ms:
+                        continue
+                    rows.append(item)
+                consumed += len(batch)
+                page_offset = offset + consumed
+                if len(rows) >= limit or len(batch) < _ACTIVITY_PAGE:
+                    break
+                if consumed >= 5000:
+                    break
+        else:
+            while len(rows) < limit:
+                page_limit = min(500, limit - len(rows))
+                page_params = {**params, "limit": page_limit, "offset": page_offset}
+                try:
+                    batch = await _get_json(
+                        client, f"{DATA_API_URL}/activity", params=page_params
+                    )
+                except httpx.HTTPStatusError:
+                    break
+                if not isinstance(batch, list) or not batch:
+                    break
+                for raw in batch:
+                    item = _norm_activity(raw)
+                    if item is None:
+                        continue
+                    rows.append(item)
+                page_offset += len(batch)
+                if len(batch) < page_limit:
+                    break
+                if page_offset >= offset + 5000:
+                    break
 
         pnl_by_condition: dict[str, float] = {}
-        if date and not want_slug:
-            closed = await _paginate_closed_positions(
-                client, wallet, date=date, limit=500
-            )
+        if closed_task is not None:
+            closed = await closed_task
             for pos in closed:
                 cid = str(pos.get("condition_id") or "")
                 if not cid or pos.get("realized_pnl") is None:
@@ -1686,7 +1801,7 @@ async def fetch_wallet_activity(
         }
 
     if owns_client:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=8.0)) as client:
+        async with _http_client(timeout_s=90.0) as client:
             return await _run(client)
     assert _client is not None
     return await _run(_client)

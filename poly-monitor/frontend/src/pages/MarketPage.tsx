@@ -1412,7 +1412,16 @@ export default function MarketPage({ mode }: Props) {
       return [liveWindow.start, liveWindow.end]
     }
     if (detail?.start_time != null && detail?.end_time != null) {
-      return [detail.start_time, detail.end_time]
+      // History: widen left edge when series includes premarket samples.
+      let dataMin = detail.start_time
+      const series = historySeriesFull.length
+        ? historySeriesFull
+        : (detail.series ?? [])
+      for (const p of series) {
+        const t = Number(p.t)
+        if (Number.isFinite(t) && t < dataMin) dataMin = t
+      }
+      return [dataMin, detail.end_time]
     }
     if (chartData.length >= 2) {
       return [chartData[0].t, chartData[chartData.length - 1].t]
@@ -1421,7 +1430,7 @@ export default function MarketPage({ mode }: Props) {
       return [chartData[0].t, chartData[0].t + DEFAULT_X_SPAN_MS]
     }
     return [nowMs - DEFAULT_X_SPAN_MS, nowMs]
-  }, [liveActive, liveWindow, detail, chartData, nowMs])
+  }, [liveActive, liveWindow, detail, chartData, historySeriesFull, nowMs])
 
   // Live / history play (or scrub): trailing window. Idle full-market: whole 5m.
   const xDefaultDomain = useMemo((): TimeDomain => {

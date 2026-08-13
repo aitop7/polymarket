@@ -236,6 +236,7 @@ export default function ControlSidebar(props: Props) {
   const [rechecking, setRechecking] = useState(false)
   const [repairing, setRepairing] = useState(false)
   const [recheckError, setRecheckError] = useState<string | null>(null)
+  const [orderbooksSource, setOrderbooksSource] = useState<string | null>(null)
   const healthBusy = rechecking || repairing
 
   type PmMissingRow = {
@@ -258,9 +259,24 @@ export default function ControlSidebar(props: Props) {
   const pmActiveRowRef = useRef<HTMLDivElement | null>(null)
   const PM_GEN_CONCURRENCY = 32
 
+  const [pclMissing, setPclMissing] = useState<PmMissingRow[]>([])
+  const [pclMissingStats, setPclMissingStats] = useState({ total: 0, present: 0, missing: 0 })
+  const [pclLoading, setPclLoading] = useState(false)
+  const [pclGenerating, setPclGenerating] = useState(false)
+  const [pclGenIds, setPclGenIds] = useState<Set<string>>(() => new Set())
+  const [pclProgress, setPclProgress] = useState({ done: 0, total: 0 })
+  const [pclMessage, setPclMessage] = useState<string | null>(null)
+  const [pclMessageTone, setPclMessageTone] = useState<'info' | 'ok' | 'err'>('info')
+  const pclAbort = useRef(false)
+  const pclActiveRowRef = useRef<HTMLDivElement | null>(null)
+
   const pmCoveragePct =
     pmMissingStats.total > 0
       ? Math.round((pmMissingStats.present / pmMissingStats.total) * 100)
+      : 0
+  const pclCoveragePct =
+    pclMissingStats.total > 0
+      ? Math.round((pclMissingStats.present / pclMissingStats.total) * 100)
       : 0
   const pmGroups = useMemo(() => {
     const map = new Map<string, PmMissingRow[]>()
@@ -272,6 +288,16 @@ export default function ControlSidebar(props: Props) {
     }
     return [...map.entries()]
   }, [pmMissing])
+  const pclGroups = useMemo(() => {
+    const map = new Map<string, PmMissingRow[]>()
+    for (const m of pclMissing) {
+      const key = m.date_et || 'Unknown'
+      const list = map.get(key)
+      if (list) list.push(m)
+      else map.set(key, [m])
+    }
+    return [...map.entries()]
+  }, [pclMissing])
 
   const dialogHealth = healthTone(healthDialog?.data_health)
   const dialogGroups = useMemo(
@@ -283,6 +309,7 @@ export default function ControlSidebar(props: Props) {
     e.preventDefault()
     e.stopPropagation()
     setRecheckError(null)
+    setOrderbooksSource(null)
     setHealthDialog(m)
   }
 
@@ -290,6 +317,7 @@ export default function ControlSidebar(props: Props) {
     if (healthBusy) return
     setHealthDialog(null)
     setRecheckError(null)
+    setOrderbooksSource(null)
   }
 
   const applyHealthResult = (
@@ -299,6 +327,7 @@ export default function ControlSidebar(props: Props) {
       data_health_comment?: string | null
       notes_by_file?: Record<string, string[]>
       notes?: string[]
+      orderbooks_source?: string | null
     },
     reload = false,
   ) => {
@@ -309,6 +338,9 @@ export default function ControlSidebar(props: Props) {
           .join('\n')
       : ''
     const comment = res.data_health_comment || fromFiles || (res.notes || []).join('\n') || null
+    if (res.orderbooks_source != null) {
+      setOrderbooksSource(res.orderbooks_source || null)
+    }
     setHealthDialog((prev) =>
       prev && prev.market_id === mid
         ? {
@@ -404,6 +436,24 @@ export default function ControlSidebar(props: Props) {
     }
   }
 
+  const refreshPclMissing = async () => {
+    setPclLoading(true)
+    try {
+      const res = await api.missingPmChainlink()
+      setPclMissing(res.missing || [])
+      setPclMissingStats({
+        total: res.n_total || 0,
+        present: res.n_present || 0,
+        missing: res.n_missing || 0,
+      })
+    } catch (err) {
+      setPclMessageTone('err')
+      setPclMessage(err instanceof Error ? err.message : 'Failed to list missing PM chainlink')
+    } finally {
+      setPclLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (liveActive || collection !== 'twap') {
       setPmMissing([])
@@ -411,9 +461,15 @@ export default function ControlSidebar(props: Props) {
       setPmProgress({ done: 0, total: 0 })
       setPmMessage(null)
       setPmMessageTone('info')
+      setPclMissing([])
+      setPclMissingStats({ total: 0, present: 0, missing: 0 })
+      setPclProgress({ done: 0, total: 0 })
+      setPclMessage(null)
+      setPclMessageTone('info')
       return
     }
     void refreshPmMissing()
+    void refreshPclMissing()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveActive, collection])
 
@@ -422,8 +478,22 @@ export default function ControlSidebar(props: Props) {
     pmActiveRowRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [pmGenIds])
 
+  useEffect(() => {
+    if (!pclGenIds.size) return
+    pclActiveRowRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [pclGenIds])
+
   const markPmActive = (mid: string, on: boolean) => {
     setPmGenIds((prev) => {
+      const next = new Set(prev)
+      if (on) next.add(mid)
+      else next.delete(mid)
+      return next
+    })
+  }
+
+  const markPclActive = (mid: string, on: boolean) => {
+    setPclGenIds((prev) => {
       const next = new Set(prev)
       if (on) next.add(mid)
       else next.delete(mid)
@@ -452,6 +522,30 @@ export default function ControlSidebar(props: Props) {
       throw err
     } finally {
       markPmActive(mid, false)
+    }
+  }
+
+  const generateOnePcl = async (mid: string) => {
+    markPclActive(mid, true)
+    setPclMessage(null)
+    setPclMessageTone('info')
+    try {
+      const res = await api.generatePmChainlink(mid)
+      setPclMissing((prev) => prev.filter((m) => m.market_id !== mid))
+      setPclMissingStats((s) => ({
+        total: s.total,
+        present: s.present + 1,
+        missing: Math.max(0, s.missing - 1),
+      }))
+      const note = res.warning ? ` · ${res.warning}` : ''
+      setPclMessageTone(res.warning ? 'info' : 'ok')
+      setPclMessage(`${mid} · ${res.n_rows ?? 0} rows${note}`)
+    } catch (err) {
+      setPclMessageTone('err')
+      setPclMessage(err instanceof Error ? err.message : `Generate failed for ${mid}`)
+      throw err
+    } finally {
+      markPclActive(mid, false)
     }
   }
 
@@ -499,6 +593,51 @@ export default function ControlSidebar(props: Props) {
       : `Complete · ${done} generated${failed ? `, ${failed} failed` : ''} · ${nWorkers}× parallel`
     setPmMessage(lastErr ? `${summary}\n${lastErr}` : summary)
     void refreshPmMissing()
+  }
+
+  const generateAllPclMissing = async () => {
+    if (pclGenerating || !pclMissing.length) return
+    pclAbort.current = false
+    setPclGenerating(true)
+    setPclMessage(null)
+    setPclMessageTone('info')
+    const queue = [...pclMissing].sort(
+      (a, b) => (a.start_time || 0) - (b.start_time || 0) || a.market_id.localeCompare(b.market_id),
+    )
+    setPclProgress({ done: 0, total: queue.length })
+    let cursor = 0
+    let done = 0
+    let failed = 0
+    let lastErr: string | null = null
+
+    const worker = async () => {
+      while (!pclAbort.current) {
+        const i = cursor++
+        if (i >= queue.length) return
+        const mid = queue[i].market_id
+        try {
+          await generateOnePcl(mid)
+          done += 1
+        } catch (err) {
+          failed += 1
+          lastErr = err instanceof Error ? err.message : String(err)
+        }
+        setPclProgress({ done: done + failed, total: queue.length })
+      }
+    }
+
+    const nWorkers = Math.min(PM_GEN_CONCURRENCY, queue.length)
+    await Promise.all(Array.from({ length: nWorkers }, () => worker()))
+
+    setPclGenerating(false)
+    setPclGenIds(new Set())
+    const stopped = pclAbort.current
+    setPclMessageTone(failed ? 'err' : stopped ? 'info' : 'ok')
+    const summary = stopped
+      ? `Stopped · ${done} generated${failed ? `, ${failed} failed` : ''} · ${nWorkers}× parallel`
+      : `Complete · ${done} generated${failed ? `, ${failed} failed` : ''} · ${nWorkers}× parallel`
+    setPclMessage(lastErr ? `${summary}\n${lastErr}` : summary)
+    void refreshPclMissing()
   }
 
   const elapsedLabel = useMemo(() => {
@@ -890,7 +1029,7 @@ export default function ControlSidebar(props: Props) {
       </div>
 
       {!beforeTwap && (
-        <div className="sidebar-section pm-books-section sidebar-section-last">
+        <div className="sidebar-section pm-books-section">
           <div className="sidebar-heading data-heading">
             <span>PM books</span>
             <span
@@ -1070,6 +1209,187 @@ export default function ControlSidebar(props: Props) {
         </div>
       )}
 
+      {!beforeTwap && (
+        <div className="sidebar-section pm-books-section sidebar-section-last">
+          <div className="sidebar-heading data-heading">
+            <span>PM chainlink</span>
+            <span
+              className={`pm-books-pill${
+                pclLoading
+                  ? ''
+                  : pclMissingStats.missing === 0 && pclMissingStats.total > 0
+                    ? ' ok'
+                    : pclMissingStats.missing > 0
+                      ? ' pending'
+                      : ''
+              }`}
+            >
+              {pclLoading ? '…' : `${pclCoveragePct}%`}
+            </span>
+          </div>
+
+          <div
+            className="pm-books-meter"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={pclCoveragePct}
+            aria-label="PM chainlink coverage"
+          >
+            <div className="pm-books-meter-fill" style={{ width: `${pclCoveragePct}%` }} />
+          </div>
+
+          <div className="pm-books-stats">
+            <span>
+              <strong>{pclMissingStats.present.toLocaleString()}</strong> ready
+            </span>
+            <span className="pm-books-stats-sep" aria-hidden>
+              ·
+            </span>
+            <span>
+              <strong>{pclMissingStats.missing.toLocaleString()}</strong> queued
+            </span>
+            <span className="pm-books-stats-note">0.5s · Oldest first</span>
+          </div>
+
+          <div className="pm-books-actions">
+            {pclGenerating ? (
+              <button
+                type="button"
+                className="sidebar-btn pm-books-stop"
+                onClick={() => {
+                  pclAbort.current = true
+                }}
+              >
+                Stop
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="sidebar-btn primary pm-books-gen"
+                disabled={histDisabled || pclLoading || pclMissing.length === 0}
+                onClick={() => void generateAllPclMissing()}
+                title="Generate pm_chainlink_price.parquet for every missing past market, oldest first"
+              >
+                Generate queue
+              </button>
+            )}
+            <button
+              type="button"
+              className="sidebar-btn ghost pm-books-refresh"
+              disabled={histDisabled || pclLoading || pclGenerating}
+              onClick={() => void refreshPclMissing()}
+              title="Refresh missing list"
+              aria-label="Refresh PM chainlink list"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
+                <path
+                  fill="currentColor"
+                  d="M17.65 6.35A7.95 7.95 0 0 0 12 4V1L7 6l5 5V7c2.76 0 5 2.24 5 5a5 5 0 0 1-8.66 3.54l-1.42 1.42A7 7 0 0 0 19 12c0-1.93-.78-3.68-2.05-4.95zM6 12c0-1.07.34-2.07.92-2.89l-1.43-1.43A6.97 6.97 0 0 0 5 12a7 7 0 0 0 11.89 5.04l-1.42-1.42A5 5 0 0 1 6 12z"
+                />
+              </svg>
+            </button>
+          </div>
+
+          {pclGenerating && pclProgress.total > 0 && (
+            <div className="pm-books-run">
+              <div className="pm-books-run-head">
+                <span className="pm-books-run-label">Generating · 32×</span>
+                <span className="pm-books-run-count">
+                  {pclProgress.done}/{pclProgress.total}
+                </span>
+              </div>
+              <div className="pm-books-run-bar" aria-hidden>
+                <div
+                  className="pm-books-run-fill"
+                  style={{
+                    width: `${Math.min(100, Math.round((pclProgress.done / pclProgress.total) * 100))}%`,
+                  }}
+                />
+              </div>
+              {pclGenIds.size > 0 && (
+                <div className="pm-books-run-id">
+                  {pclGenIds.size} active · {[...pclGenIds].slice(0, 3).join(', ')}
+                  {pclGenIds.size > 3 ? '…' : ''}
+                </div>
+              )}
+            </div>
+          )}
+
+          {pclMessage && (
+            <p className={`pm-books-msg ${pclMessageTone}`}>{pclMessage}</p>
+          )}
+
+          <div
+            className={`pm-books-list${histDisabled || (!pclLoading && !pclMissing.length) ? ' disabled' : ''}`}
+            role="list"
+            aria-label="Past markets missing pm_chainlink_price"
+          >
+            {pclLoading ? (
+              <div className="time-window-empty">Scanning history…</div>
+            ) : pclMissing.length === 0 ? (
+              <div className="time-window-empty pm-books-empty-ok">
+                All past markets covered
+              </div>
+            ) : (
+              pclGroups.map(([date, rows]) => (
+                <div key={date} className="pm-books-group">
+                  <div className="pm-books-group-head">
+                    <span>{date}</span>
+                    <span>{rows.length}</span>
+                  </div>
+                  {rows.map((m) => {
+                    const active = pclGenIds.has(m.market_id)
+                    return (
+                      <div
+                        key={m.market_id}
+                        ref={
+                          active
+                            ? (el) => {
+                                if (el) pclActiveRowRef.current = el
+                              }
+                            : undefined
+                        }
+                        className={`pm-books-row${active ? ' active' : ''}`}
+                        role="listitem"
+                      >
+                        <button
+                          type="button"
+                          className="pm-books-slot"
+                          disabled={histDisabled}
+                          onClick={() => {
+                            if (m.time_et) onTime(m.time_et)
+                          }}
+                          title={m.slug || m.market_id}
+                        >
+                          <span className="pm-books-time">
+                            {formatSlotLabel(m.time_et || '', m.start_time, m.end_time)}
+                          </span>
+                          <span className="pm-books-id">{m.market_id}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="pm-books-one"
+                          disabled={histDisabled || pclGenerating}
+                          onClick={() => void generateOnePcl(m.market_id).catch(() => undefined)}
+                          title={`Generate ${m.market_id}`}
+                        >
+                          {active ? (
+                            <span className="pm-books-spinner" aria-label="Generating" />
+                          ) : (
+                            'Run'
+                          )}
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
       {healthDialog &&
         createPortal(
           <div className="health-dialog-backdrop" onClick={closeHealthDialog} role="presentation">
@@ -1098,6 +1418,11 @@ export default function ControlSidebar(props: Props) {
                 </span>
               </div>
               <p className="health-dialog-summary">{healthTitle(dialogHealth, null)}</p>
+              {orderbooksSource ? (
+                <p className="health-dialog-books-source">
+                  Order books scored from <code>{orderbooksSource}</code>
+                </p>
+              ) : null}
               <div className="health-dialog-body">
                 {dialogHealth === 'great' && dialogGroups.length === 0 ? (
                   <p className="health-dialog-empty">No missing gaps in price, book, or trade files.</p>

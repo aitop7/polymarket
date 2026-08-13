@@ -23,22 +23,53 @@ _ET = ZoneInfo("America/New_York")
 # pm_orderbooks.parquet is preferred; orderbooks.parquet is the fallback capture.
 ORDERBOOKS_FILE = "orderbooks.parquet"
 PM_ORDERBOOKS_FILE = "pm_orderbooks.parquet"
+CHAINLINK_FILE = "chainlink_price.parquet"
+PM_CHAINLINK_FILE = "pm_chainlink_price.parquet"
 
 
 def resolve_orderbooks_path(market_dir: Path | str | None) -> Path | None:
-    """Prefer pm_orderbooks.parquet; fall back to orderbooks.parquet."""
+    """Prefer non-empty pm_orderbooks.parquet; fall back to orderbooks.parquet."""
     if market_dir is None:
         return None
     d = Path(market_dir)
     if not d.is_dir():
         return None
     pm = d / PM_ORDERBOOKS_FILE
-    if pm.is_file():
-        return pm
+    try:
+        if pm.is_file() and pm.stat().st_size > 0:
+            return pm
+    except OSError:
+        pass
     ob = d / ORDERBOOKS_FILE
-    if ob.is_file():
-        return ob
+    try:
+        if ob.is_file() and ob.stat().st_size > 0:
+            return ob
+    except OSError:
+        pass
     return None
+
+
+def resolve_chainlink_path(market_dir: Path | str | None) -> Path | None:
+    """Prefer non-empty pm_chainlink_price.parquet; fall back to chainlink_price.parquet."""
+    if market_dir is None:
+        return None
+    d = Path(market_dir)
+    if not d.is_dir():
+        return None
+    pm = d / PM_CHAINLINK_FILE
+    try:
+        if pm.is_file() and pm.stat().st_size > 0:
+            return pm
+    except OSError:
+        pass
+    cl = d / CHAINLINK_FILE
+    try:
+        if cl.is_file() and cl.stat().st_size > 0:
+            return cl
+    except OSError:
+        pass
+    return None
+
 
 # Persisted on meta.json after first history integrity check (gap severity).
 DATA_HEALTH_GREAT = "great"
@@ -392,8 +423,8 @@ def load_live_market_frame(market_id: str) -> pd.DataFrame:
         winner_i = None
 
     frames: list[pd.DataFrame] = []
-    cl = d / "chainlink_price.parquet"
-    if cl.is_file():
+    cl = resolve_chainlink_path(d)
+    if cl is not None:
         try:
             df = pd.read_parquet(cl)
             keep = [c for c in ("timestamp", "Chainlink_BTC", "twap") if c in df.columns]

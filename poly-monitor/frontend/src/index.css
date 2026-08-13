@@ -1841,6 +1841,19 @@ select {
   color: var(--muted);
 }
 
+.health-dialog-books-source {
+  margin: 0 0 0.55rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.health-dialog-books-source code {
+  font-size: 0.7rem;
+  background: #f3f4f6;
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+}
+
 .health-dialog-body {
   flex: 1 1 auto;
   min-height: 0;

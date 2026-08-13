@@ -13,6 +13,8 @@ from app.core.live_dataset import PM_ORDERBOOKS_FILE, find_live_market_dir
 from app.core.pmdata_client import download_poly_l2, pmdata_enabled
 
 SLOT_MS = 500
+# Include book updates before market open when PMData has them (matches trade lead-in).
+PREMARKET_LEAD_MS = 300_000
 # Alias kept for local call sites; canonical name lives in live_dataset.
 
 BUCKET_SUFFIXES = ("0_1", "1_3", "3_7", "7_15", "15_30", "30_plus")
@@ -590,9 +592,14 @@ def generate_pm_orderbooks_for_market(
     books = {"up": _SideBook(), "down": _SideBook()}
 
     slot = max(100, int(slot_ms))
-    # Align grid to slot boundaries within window.
-    t0 = start_ms - (start_ms % slot)
-    if t0 < start_ms:
+    # Grid starts at market open, or earlier when PMData has premarket book events.
+    grid_start = start_ms
+    if events:
+        earliest = int(events[0][0])
+        if earliest < start_ms:
+            grid_start = max(start_ms - PREMARKET_LEAD_MS, earliest)
+    t0 = grid_start - (grid_start % slot)
+    if t0 < grid_start:
         t0 += slot
     grid = list(range(t0, end_ms + 1, slot))
     if not grid:
@@ -626,6 +633,10 @@ def generate_pm_orderbooks_for_market(
         up_price = books["up"].last_mid
         if up_price is None and up_bids and up_asks:
             up_price = _mid(up_bids[0]["price"] if up_bids else None, up_asks[0]["price"] if up_asks else None)
+
+        # Premarket: skip empty slots until the first real book (open window always emitted).
+        if t < start_ms and not (up_bids or up_asks or down_bids or down_asks):
+            continue
 
         rows_out.append(
             build_orderbook_row(
@@ -668,6 +679,8 @@ def generate_pm_orderbooks_for_market(
         "source": "pmdata",
         "start_time": start_ms,
         "end_time": end_ms,
+        "grid_start": int(rows_out[0]["timestamp"]) if rows_out else start_ms,
+        "premarket_ms": max(0, start_ms - int(rows_out[0]["timestamp"])) if rows_out else 0,
         "saw_up_asset": saw_up_asset,
         "saw_down_asset": saw_down_asset,
         "warning": warning,

@@ -243,6 +243,7 @@ export const api = {
       max_trade_quiet_ms?: number
       notes?: string[]
       notes_by_file?: Record<string, string[]>
+      orderbooks_source?: string | null
     }>(`/api/markets/${id}/health/recheck`, { method: 'POST' }),
   repairMarket: (id: string) =>
     json<{
@@ -257,6 +258,7 @@ export const api = {
       max_trade_quiet_ms?: number
       notes?: string[]
       notes_by_file?: Record<string, string[]>
+      orderbooks_source?: string | null
       vps_repair?: {
         ok?: boolean
         rows_added?: number
@@ -301,6 +303,38 @@ export const api = {
         dir?: string | null
       }>
     }>(`/api/markets/pm-orderbooks/missing${q}`, { cache: 'no-store' })
+  },
+  generatePmChainlink: (id: string, opts?: { force?: boolean }) => {
+    const q = opts?.force ? '?force=true' : ''
+    return json<{
+      ok: boolean
+      market_id: string
+      slug?: string
+      path?: string
+      n_rows?: number
+      slot_ms?: number
+      source?: string
+      dates?: string[]
+      warning?: string | null
+    }>(`/api/markets/${id}/pm-chainlink${q}`, { method: 'POST' })
+  },
+  missingPmChainlink: (date?: string) => {
+    const q = date ? `?date=${encodeURIComponent(date)}` : ''
+    return json<{
+      date: string | null
+      n_total: number
+      n_present: number
+      n_missing: number
+      missing: Array<{
+        market_id: string
+        slug?: string | null
+        start_time: number
+        end_time: number
+        date_et?: string | null
+        time_et?: string | null
+        dir?: string | null
+      }>
+    }>(`/api/markets/pm-chainlink/missing${q}`, { cache: 'no-store' })
   },
   book: (id: string, t?: number) =>
     json<Record<string, unknown>>(`/api/markets/${id}/book${t != null ? `?t=${t}` : ''}`),
