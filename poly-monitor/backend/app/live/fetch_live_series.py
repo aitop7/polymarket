@@ -49,17 +49,17 @@ def load_fetch_live_series(market_id: str | None) -> list[dict[str, Any]]:
     """
     Join chainlink / binance / orderbooks parquets into chart points:
     { t, twap, chainlink, btc, up, down }.
-    Prefers pm_orderbooks.parquet over orderbooks.parquet when present.
+    Prefers pm_orderbooks / pm_chainlink when present.
     """
-    from app.core.live_dataset import resolve_orderbooks_path
+    from app.core.live_dataset import resolve_chainlink_path, resolve_orderbooks_path
 
     d = fetch_live_market_dir(market_id)
     if d is None:
         return []
 
     frames: list[pd.DataFrame] = []
-    cl_path = d / "chainlink_price.parquet"
-    if cl_path.is_file():
+    cl_path = resolve_chainlink_path(d)
+    if cl_path is not None:
         try:
             cl = pd.read_parquet(cl_path, columns=["timestamp", "Chainlink_BTC", "twap"])
             cl = cl.rename(columns={"Chainlink_BTC": "chainlink"})

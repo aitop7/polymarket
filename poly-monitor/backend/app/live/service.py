@@ -200,7 +200,12 @@ class LiveMarketService:
             except Exception:
                 continue
 
-            candidates = [market_dir / "chainlink_price.parquet"]
+            from app.core.live_dataset import resolve_chainlink_path
+
+            candidates: list[Path] = []
+            resolved = resolve_chainlink_path(market_dir)
+            if resolved is not None:
+                candidates.append(resolved)
             try:
                 for day in sorted(root.iterdir(), reverse=True)[:2]:
                     if not day.is_dir():
@@ -216,7 +221,9 @@ class LiveMarketService:
                         except Exception:
                             continue
                         if int(ometa.get("end_time") or 0) == start:
-                            candidates.append(other / "chainlink_price.parquet")
+                            other_cl = resolve_chainlink_path(other)
+                            if other_cl is not None:
+                                candidates.append(other_cl)
                             break
             except Exception:
                 pass

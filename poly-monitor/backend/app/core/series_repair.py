@@ -261,33 +261,43 @@ async def repair_series_for_market_dir(market_dir: Path) -> dict[str, int]:
             _write_df(px_path, px)
             filled["binance_price_orderbook.parquet"] = n
 
-            cl_path = market_dir / "chainlink_price.parquet"
-            cl, n = _fill_seconds(
-                _read_df(cl_path),
-                start_ms=start_ms,
-                end_ms=end_ms,
-                value_col="Chainlink_BTC",
-                values=klines,
-            )
-            if not cl.empty and "Chainlink_BTC" in cl.columns:
-                cl = cl.sort_values("timestamp")
-                if "twap" not in cl.columns:
-                    cl["twap"] = pd.NA
-                spots = cl[["timestamp", "Chainlink_BTC"]].dropna()
-                for i, row in cl.iterrows():
-                    if pd.notna(row.get("twap")):
-                        continue
-                    ts = int(row["timestamp"])
-                    win = spots[(spots["timestamp"] > ts - 30_000) & (spots["timestamp"] <= ts)]
-                    if not win.empty:
-                        cl.at[i, "twap"] = float(win["Chainlink_BTC"].mean())
-            _write_df(cl_path, cl)
-            filled["chainlink_price.parquet"] = n
+            # Prefer pm_chainlink_price when present — do not fill/overwrite it with Binance.
+            from app.core.live_dataset import PM_CHAINLINK_FILE, resolve_chainlink_path
 
-    ob_path = market_dir / "orderbooks.parquet"
-    ob, n = _ffill_orderbooks(_read_df(ob_path), start_ms=start_ms, end_ms=end_ms)
-    _write_df(ob_path, ob)
-    filled["orderbooks.parquet"] = n
+            preferred_cl = resolve_chainlink_path(market_dir)
+            if preferred_cl is None or preferred_cl.name != PM_CHAINLINK_FILE:
+                cl_path = market_dir / "chainlink_price.parquet"
+                cl, n = _fill_seconds(
+                    _read_df(cl_path),
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    value_col="Chainlink_BTC",
+                    values=klines,
+                )
+                if not cl.empty and "Chainlink_BTC" in cl.columns:
+                    cl = cl.sort_values("timestamp")
+                    if "twap" not in cl.columns:
+                        cl["twap"] = pd.NA
+                    spots = cl[["timestamp", "Chainlink_BTC"]].dropna()
+                    for i, row in cl.iterrows():
+                        if pd.notna(row.get("twap")):
+                            continue
+                        ts = int(row["timestamp"])
+                        win = spots[(spots["timestamp"] > ts - 30_000) & (spots["timestamp"] <= ts)]
+                        if not win.empty:
+                            cl.at[i, "twap"] = float(win["Chainlink_BTC"].mean())
+                _write_df(cl_path, cl)
+                filled["chainlink_price.parquet"] = n
+
+    # Live orderbooks only — never rewrite pm_orderbooks.parquet.
+    from app.core.live_dataset import PM_ORDERBOOKS_FILE, resolve_orderbooks_path
+
+    preferred_ob = resolve_orderbooks_path(market_dir)
+    if preferred_ob is None or preferred_ob.name != PM_ORDERBOOKS_FILE:
+        ob_path = market_dir / "orderbooks.parquet"
+        ob, n = _ffill_orderbooks(_read_df(ob_path), start_ms=start_ms, end_ms=end_ms)
+        _write_df(ob_path, ob)
+        filled["orderbooks.parquet"] = n
 
     if meta is not None:
         meta["repair_filled"] = {**(meta.get("repair_filled") or {}), **filled}

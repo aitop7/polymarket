@@ -157,8 +157,8 @@ STRATEGY_DOCS: dict[str, dict[str, Any]] = {
                 "name": "Live VWAP markets",
                 "path": "E:\\DataSets\\poly\\live\\YYYY-MM-DD\\<market_id>\\",
                 "why": (
-                    "fetch_live dirs (pm_orderbooks preferred, else orderbooks; "
-                    "chainlink/binance/trades). "
+                    "fetch_live dirs (pm_orderbooks / pm_chainlink preferred when present; "
+                    "else orderbooks / chainlink; plus binance/trades). "
                     "Features engineered on load; markets re-split 80/20 chronologically."
                 ),
             },

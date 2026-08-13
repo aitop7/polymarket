@@ -336,6 +336,40 @@ export const api = {
       }>
     }>(`/api/markets/pm-chainlink/missing${q}`, { cache: 'no-store' })
   },
+  missingPmHealthRescore: (date?: string) => {
+    const q = date ? `?date=${encodeURIComponent(date)}` : ''
+    return json<{
+      date: string | null
+      n_total: number
+      n_present: number
+      n_missing: number
+      missing: Array<{
+        market_id: string
+        slug?: string | null
+        start_time: number
+        end_time: number
+        date_et?: string | null
+        time_et?: string | null
+        reasons?: string[]
+        data_health?: string
+      }>
+    }>(`/api/markets/pmdata/health-rescore/missing${q}`, { cache: 'no-store' })
+  },
+  rescorePmdataHealth: (id: string) =>
+    json<{
+      ok: boolean
+      market_id: string
+      rescored?: boolean
+      was_needed?: boolean
+      data_health: DataHealth
+      data_health_comment?: string | null
+      orderbooks_source?: string | null
+      chainlink_source?: string | null
+      max_gap_ms?: number
+      max_trade_quiet_ms?: number
+      notes?: string[]
+      notes_by_file?: Record<string, string[]>
+    }>(`/api/markets/${id}/health/rescore-pmdata`, { method: 'POST' }),
   book: (id: string, t?: number) =>
     json<Record<string, unknown>>(`/api/markets/${id}/book${t != null ? `?t=${t}` : ''}`),
   backtest: (body: Record<string, unknown>) =>

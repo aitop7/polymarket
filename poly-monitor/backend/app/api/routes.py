@@ -366,6 +366,30 @@ async def get_market(market_id: str, split: str | None = None) -> dict[str, Any]
     }
 
 
+@router.get("/markets/pmdata/health-rescore/missing")
+def get_pmdata_health_rescore_missing(
+    date: str | None = Query(None, description="Optional ET calendar day YYYY-MM-DD"),
+) -> dict[str, Any]:
+    """List history markets with PM files whose health stamp is not yet from PMData."""
+    from app.core.live_dataset import list_pmdata_health_rescore_queue
+
+    return list_pmdata_health_rescore_queue(date_et=date)
+
+
+@router.post("/markets/{market_id}/health/rescore-pmdata")
+def rescore_market_health_pmdata(market_id: str) -> dict[str, Any]:
+    """Local-only restamp of data_health using pm_orderbooks / pm_chainlink when present."""
+    from app.live.vps_sync import get_vps_sync
+
+    mid = str(market_id or "").strip()
+    if not mid:
+        raise HTTPException(400, "market_id required")
+    result = get_vps_sync().rescore_pmdata_health(mid)
+    if not result.get("ok"):
+        raise HTTPException(404, str(result.get("error") or "rescore failed"))
+    return result
+
+
 @router.post("/markets/{market_id}/health/recheck")
 async def recheck_market_health(market_id: str) -> dict[str, Any]:
     """Force VPS re-pull + rewrite meta.data_health / gap comments."""

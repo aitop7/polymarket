@@ -285,8 +285,10 @@ def write_data_health(
     *,
     comment: str | None = None,
     checked_at_ms: int | None = None,
+    orderbooks_source: str | None = None,
+    chainlink_source: str | None = None,
 ) -> str:
-    """Persist data_health (+ optional gap comment) on meta.json."""
+    """Persist data_health (+ optional gap comment / PM source stamps) on meta.json."""
     status = normalize_data_health(health)
     if status == DATA_HEALTH_UNCHECKED:
         status = DATA_HEALTH_BAD
@@ -303,10 +305,102 @@ def write_data_health(
         meta["data_health_comment"] = note
     else:
         meta.setdefault("data_health_comment", "")
+    if orderbooks_source is not None:
+        meta["data_health_orderbooks_source"] = str(orderbooks_source or "")
+    if chainlink_source is not None:
+        meta["data_health_chainlink_source"] = str(chainlink_source or "")
     tmp = meta_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     tmp.replace(meta_path)
     return status
+
+
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def needs_pmdata_health_rescore(market_dir: Path, meta: dict[str, Any] | None = None) -> bool:
+    """
+    True when PM books/chainlink exist but meta health was not stamped from those files.
+    """
+    d = Path(market_dir)
+    info = meta if isinstance(meta, dict) else (_read_meta(d / "meta.json") or {})
+    has_ob = _nonempty_file(d / PM_ORDERBOOKS_FILE)
+    has_cl = _nonempty_file(d / PM_CHAINLINK_FILE)
+    if not has_ob and not has_cl:
+        return False
+    stored_ob = str(info.get("data_health_orderbooks_source") or "").strip()
+    stored_cl = str(info.get("data_health_chainlink_source") or "").strip()
+    if has_ob and stored_ob != PM_ORDERBOOKS_FILE:
+        return True
+    if has_cl and stored_cl != PM_CHAINLINK_FILE:
+        return True
+    return False
+
+
+def list_pmdata_health_rescore_queue(*, date_et: str | None = None) -> dict[str, Any]:
+    """History markets with PM files whose health stamp is not yet from PMData."""
+    from app.core.market_index import (
+        build_market_index,
+        filter_history_markets,
+        list_markets_for_date,
+    )
+
+    date = (date_et or "").strip() or None
+    if date:
+        rows = list_markets_for_date(TWAP_SPLIT, date)
+    else:
+        rows = filter_history_markets(TWAP_SPLIT, build_market_index(TWAP_SPLIT))
+
+    queued: list[dict[str, Any]] = []
+    present = 0
+    for r in rows:
+        mid = str(r.get("market_id") or "")
+        if not mid:
+            continue
+        d = Path(str(r["dir"])) if r.get("dir") else find_live_market_dir(mid)
+        if d is None or not d.is_dir():
+            continue
+        has_pm = _nonempty_file(d / PM_ORDERBOOKS_FILE) or _nonempty_file(d / PM_CHAINLINK_FILE)
+        if not has_pm:
+            continue
+        meta = _read_meta(d / "meta.json") or {}
+        if not needs_pmdata_health_rescore(d, meta):
+            present += 1
+            continue
+        reasons: list[str] = []
+        if _nonempty_file(d / PM_ORDERBOOKS_FILE) and str(
+            meta.get("data_health_orderbooks_source") or ""
+        ).strip() != PM_ORDERBOOKS_FILE:
+            reasons.append("books")
+        if _nonempty_file(d / PM_CHAINLINK_FILE) and str(
+            meta.get("data_health_chainlink_source") or ""
+        ).strip() != PM_CHAINLINK_FILE:
+            reasons.append("chainlink")
+        queued.append(
+            {
+                "market_id": mid,
+                "slug": meta.get("slug"),
+                "start_time": int(r.get("start_time") or meta.get("start_time") or 0),
+                "end_time": int(r.get("end_time") or meta.get("end_time") or 0),
+                "date_et": r.get("date_et"),
+                "time_et": r.get("time_et"),
+                "reasons": reasons,
+                "data_health": read_data_health(meta),
+            }
+        )
+
+    queued.sort(key=lambda row: (int(row.get("start_time") or 0), str(row.get("market_id") or "")))
+    return {
+        "date": date,
+        "n_total": present + len(queued),
+        "n_present": present,
+        "n_missing": len(queued),
+        "missing": queued,
+    }
 
 
 def iter_live_market_metas() -> list[dict[str, Any]]:
@@ -509,9 +603,12 @@ def live_market_summary(market_id: str) -> dict[str, Any] | None:
         resolved_at = None
     rows = None
     orderbooks_source = None
+    chainlink_source = None
     try:
         ob = resolve_orderbooks_path(d)
         orderbooks_source = ob.name if ob is not None else None
+        cl = resolve_chainlink_path(d)
+        chainlink_source = cl.name if cl is not None else None
         df = load_live_market_frame(market_id)
         rows = int(len(df))
         if not end and not df.empty:
@@ -531,6 +628,7 @@ def live_market_summary(market_id: str) -> dict[str, Any] | None:
         "data_health": read_data_health(meta),
         "data_health_comment": read_data_health_comment(meta),
         "orderbooks_source": orderbooks_source,
+        "chainlink_source": chainlink_source,
         "has_features": False,
         "has_training": True,
     }

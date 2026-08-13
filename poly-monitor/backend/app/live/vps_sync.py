@@ -184,23 +184,42 @@ class VpsSyncClient:
         }
         if not remote_files:
             # Require price/orderbook tables when we have no remote listing.
-            # pm_orderbooks.parquet satisfies the orderbooks requirement.
-            from app.core.live_dataset import ORDERBOOKS_FILE, resolve_orderbooks_path
+            # pm_* files satisfy the live orderbooks / chainlink slots.
+            from app.core.live_dataset import (
+                CHAINLINK_FILE,
+                ORDERBOOKS_FILE,
+                resolve_chainlink_path,
+                resolve_orderbooks_path,
+            )
 
             for name in ("meta.json", *_PRICE_1S_FILES):
                 if name == ORDERBOOKS_FILE:
                     if resolve_orderbooks_path(dest) is None:
                         return True
                     continue
+                if name == CHAINLINK_FILE:
+                    if resolve_chainlink_path(dest) is None:
+                        return True
+                    continue
                 if not (dest / name).is_file():
                     return True
             return False
-        from app.core.live_dataset import ORDERBOOKS_FILE, PM_ORDERBOOKS_FILE, resolve_orderbooks_path
+        from app.core.live_dataset import (
+            CHAINLINK_FILE,
+            ORDERBOOKS_FILE,
+            PM_CHAINLINK_FILE,
+            PM_ORDERBOOKS_FILE,
+            resolve_chainlink_path,
+            resolve_orderbooks_path,
+        )
 
         for name, size in remote_files.items():
-            # Local pm_orderbooks covers the live orderbooks.parquet requirement.
+            # Local pm_* files cover the live orderbooks / chainlink slots.
             if name in {ORDERBOOKS_FILE, PM_ORDERBOOKS_FILE}:
                 if resolve_orderbooks_path(dest) is not None:
+                    continue
+            if name in {CHAINLINK_FILE, PM_CHAINLINK_FILE}:
+                if resolve_chainlink_path(dest) is not None:
                     continue
             p = dest / name
             if not p.is_file():
@@ -386,10 +405,12 @@ class VpsSyncClient:
         (binance_trades / trades) — never a sum of gaps.
         """
         from app.core.live_dataset import (
+            CHAINLINK_FILE,
             DATA_HEALTH_BAD,
             ORDERBOOKS_FILE,
             grade_data_health,
             grade_trade_health,
+            resolve_chainlink_path,
             resolve_orderbooks_path,
             worse_data_health,
         )
@@ -406,6 +427,7 @@ class VpsSyncClient:
             "price_grade": grade_data_health(0),
             "trade_grade": grade_trade_health(0),
             "orderbooks_source": None,
+            "chainlink_source": None,
         }
         if not date or not mid:
             return empty
@@ -420,6 +442,7 @@ class VpsSyncClient:
                 "comment": note,
                 "grade": DATA_HEALTH_BAD,
                 "orderbooks_source": None,
+                "chainlink_source": None,
             }
         try:
             start = int(remote.get("start_time") or 0)
@@ -441,6 +464,7 @@ class VpsSyncClient:
                     "comment": note,
                     "grade": DATA_HEALTH_BAD,
                     "orderbooks_source": None,
+                    "chainlink_source": None,
                 }
         if start <= 0 or end <= start:
             note = "meta.json: invalid start/end time"
@@ -452,6 +476,7 @@ class VpsSyncClient:
                 "comment": note,
                 "grade": DATA_HEALTH_BAD,
                 "orderbooks_source": None,
+                "chainlink_source": None,
             }
         now_ms = int(time.time() * 1000)
         if end > now_ms:
@@ -473,6 +498,8 @@ class VpsSyncClient:
 
         preferred_books = resolve_orderbooks_path(dest)
         orderbooks_source = preferred_books.name if preferred_books is not None else None
+        preferred_chainlink = resolve_chainlink_path(dest)
+        chainlink_source = preferred_chainlink.name if preferred_chainlink is not None else None
         for name in _PRICE_1S_FILES:
             step_ms: int | None = None
             if name == ORDERBOOKS_FILE:
@@ -491,6 +518,21 @@ class VpsSyncClient:
                     if not local_only and ORDERBOOKS_FILE not in remote_names:
                         continue
                     path = dest / ORDERBOOKS_FILE
+            elif name == CHAINLINK_FILE:
+                # Prefer pm_chainlink_price.parquet when present; else live chainlink.
+                if preferred_chainlink is not None:
+                    path = preferred_chainlink
+                    name = preferred_chainlink.name
+                    remote_has = True
+                    if name == "pm_chainlink_price.parquet":
+                        from app.core.pm_chainlink import SLOT_MS as _PM_CL_SLOT_MS
+
+                        step_ms = int(_PM_CL_SLOT_MS)
+                else:
+                    remote_has = True if local_only else (CHAINLINK_FILE in remote_names)
+                    if not local_only and CHAINLINK_FILE not in remote_names:
+                        continue
+                    path = dest / CHAINLINK_FILE
             else:
                 remote_has = True if local_only else (name in remote_names)
                 if not local_only and name not in remote_names:
@@ -538,6 +580,7 @@ class VpsSyncClient:
             "trade_grade": trade_grade,
             "grade": worse_data_health(price_grade, trade_grade),
             "orderbooks_source": orderbooks_source,
+            "chainlink_source": chainlink_source,
         }
 
     def _collect_gap_notes(self, remote: dict[str, Any]) -> list[str]:
@@ -576,11 +619,16 @@ class VpsSyncClient:
                 rsize = int(f.get("size") or 0)
             except (TypeError, ValueError):
                 rsize = 0
-            # pm_orderbooks satisfies the live orderbooks.parquet slot.
+            # pm_* files satisfy the live orderbooks / chainlink slots.
             if name in {"orderbooks.parquet", "pm_orderbooks.parquet"}:
                 from app.core.live_dataset import resolve_orderbooks_path
 
                 if resolve_orderbooks_path(dest) is not None:
+                    continue
+            if name in {"chainlink_price.parquet", "pm_chainlink_price.parquet"}:
+                from app.core.live_dataset import resolve_chainlink_path
+
+                if resolve_chainlink_path(dest) is not None:
                     continue
             p = dest / name
             if not p.is_file():
@@ -739,16 +787,17 @@ class VpsSyncClient:
             if not (tmp / "meta.json").is_file():
                 raise RuntimeError(f"archive missing meta.json for {mid}")
             # Merge into the existing dir: overwrite VPS/archive files only.
-            # Keep local-only artifacts (esp. pm_orderbooks.parquet) intact.
+            # Keep local-only PM artifacts intact (orderbooks + chainlink).
             if final.exists():
-                from app.core.live_dataset import PM_ORDERBOOKS_FILE
+                from app.core.live_dataset import PM_CHAINLINK_FILE, PM_ORDERBOOKS_FILE
 
+                protected = {PM_ORDERBOOKS_FILE, PM_CHAINLINK_FILE}
                 for src in tmp.iterdir():
                     if not src.is_file():
                         continue
-                    # Never replace a local PM L2 book with an archive copy.
-                    if src.name == PM_ORDERBOOKS_FILE:
-                        existing = final / PM_ORDERBOOKS_FILE
+                    # Never replace a local PM file with an archive copy.
+                    if src.name in protected:
+                        existing = final / src.name
                         if existing.is_file() and existing.stat().st_size > 0:
                             continue
                     shutil.copy2(src, final / src.name)
@@ -1052,6 +1101,7 @@ class VpsSyncClient:
                 "notes": list(analysis.get("notes") or []),
                 "notes_by_file": dict(analysis.get("notes_by_file") or {}),
                 "orderbooks_source": analysis.get("orderbooks_source"),
+                "chainlink_source": analysis.get("chainlink_source"),
                 "warning": warning if ok else None,
                 "error": None if ok else warning,
             }
@@ -1130,6 +1180,7 @@ class VpsSyncClient:
                 "notes": list(analysis.get("notes") or []),
                 "notes_by_file": dict(analysis.get("notes_by_file") or {}),
                 "orderbooks_source": analysis.get("orderbooks_source"),
+                "chainlink_source": analysis.get("chainlink_source"),
             }
 
     def _iter_local_market_dirs(self) -> list[Path]:
@@ -1310,19 +1361,19 @@ class VpsSyncClient:
             dest / "trades.parquet", start=start, end=end, remote_has=remote_has
         )
 
-    def _evaluate_local_health(self, stub: dict[str, Any]) -> tuple[str, str]:
-        """Return (great|good|ok|low|bad, comment grouped by file)."""
+    def _evaluate_local_health(self, stub: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+        """Return (great|good|ok|low|bad, comment, analysis)."""
         from app.core.live_dataset import DATA_HEALTH_GREAT
 
         analysis = self._analyze_gaps(stub)
         grade = str(analysis.get("grade") or DATA_HEALTH_GREAT)
         if grade == DATA_HEALTH_GREAT:
-            return grade, ""
+            return grade, "", analysis
         comment = str(analysis.get("comment") or "").strip()
         if not comment:
             notes = list(analysis.get("notes") or [])
             comment = "\n".join(str(n) for n in notes if n)
-        return grade, comment
+        return grade, comment, analysis
 
     def _persist_health(self, market_dir: Path | None, stub: dict[str, Any]) -> str | None:
         if market_dir is None or not market_dir.is_dir():
@@ -1330,8 +1381,14 @@ class VpsSyncClient:
         from app.core.live_dataset import TWAP_SPLIT, write_data_health
         from app.core.market_index import invalidate_market_index
 
-        status, comment = self._evaluate_local_health(stub)
-        written = write_data_health(market_dir, status, comment=comment)
+        status, comment, analysis = self._evaluate_local_health(stub)
+        written = write_data_health(
+            market_dir,
+            status,
+            comment=comment,
+            orderbooks_source=analysis.get("orderbooks_source"),
+            chainlink_source=analysis.get("chainlink_source"),
+        )
         try:
             invalidate_market_index(TWAP_SPLIT)
         except Exception:
@@ -1343,6 +1400,41 @@ class VpsSyncClient:
             f" ({comment.splitlines()[0]})" if comment else "",
         )
         return written
+
+    def rescore_pmdata_health(self, market_id: str) -> dict[str, Any]:
+        """Local-only health restamp using PM files when present (no VPS pull)."""
+        from app.core.live_dataset import (
+            needs_pmdata_health_rescore,
+            read_data_health,
+            read_data_health_comment,
+            _read_meta,
+        )
+
+        mid = str(market_id or "").strip()
+        if not mid:
+            return {"ok": False, "error": "missing market_id"}
+        local_path, stub = self._local_stub(mid)
+        if local_path is None:
+            return {"ok": False, "market_id": mid, "error": "local market not found"}
+        meta_before = _read_meta(local_path / "meta.json") or {}
+        needed = needs_pmdata_health_rescore(local_path, meta_before)
+        grade = self._persist_health(local_path, stub) or "unchecked"
+        meta = _read_meta(local_path / "meta.json") or {}
+        analysis = self._analyze_gaps(stub)
+        return {
+            "ok": True,
+            "market_id": mid,
+            "rescored": True,
+            "was_needed": needed,
+            "data_health": grade or read_data_health(meta),
+            "data_health_comment": read_data_health_comment(meta),
+            "orderbooks_source": analysis.get("orderbooks_source"),
+            "chainlink_source": analysis.get("chainlink_source"),
+            "max_gap_ms": int(analysis.get("max_gap_ms") or 0),
+            "max_trade_quiet_ms": int(analysis.get("max_trade_quiet_ms") or 0),
+            "notes": list(analysis.get("notes") or []),
+            "notes_by_file": dict(analysis.get("notes_by_file") or {}),
+        }
 
     async def ensure_history_market(self, market_id: str) -> Path | None:
         """
@@ -1376,8 +1468,11 @@ class VpsSyncClient:
                         meta
                     )
                     legacy = raw in {"healthy", "unhealthy"}
-                    fresh, _ = self._evaluate_local_health(stub)
-                    if needs_comment or legacy or fresh != health:
+                    fresh, _, _ = self._evaluate_local_health(stub)
+                    from app.core.live_dataset import needs_pmdata_health_rescore
+
+                    needs_pm = needs_pmdata_health_rescore(local_path, meta)
+                    if needs_comment or legacy or fresh != health or needs_pm:
                         self._persist_health(local_path, stub)
                     return local_path
 

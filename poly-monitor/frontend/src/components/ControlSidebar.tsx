@@ -171,7 +171,7 @@ type Props = {
   /** Current playhead (ms); null = idle / full market */
   playheadMs?: number | null
   onSeek?: (timestampMs: number) => void
-  /** After health recheck / VPS repair — update window list badges */
+  /** After health recheck — update window list badges */
   onHealthUpdated?: (
     marketId: string,
     health: DataHealth,
@@ -234,10 +234,10 @@ export default function ControlSidebar(props: Props) {
   const dragging = useRef(false)
   const [healthDialog, setHealthDialog] = useState<MarketSummary | null>(null)
   const [rechecking, setRechecking] = useState(false)
-  const [repairing, setRepairing] = useState(false)
   const [recheckError, setRecheckError] = useState<string | null>(null)
   const [orderbooksSource, setOrderbooksSource] = useState<string | null>(null)
-  const healthBusy = rechecking || repairing
+  const [chainlinkSource, setChainlinkSource] = useState<string | null>(null)
+  const healthBusy = rechecking
 
   const dialogHealth = healthTone(healthDialog?.data_health)
   const dialogGroups = useMemo(
@@ -250,6 +250,7 @@ export default function ControlSidebar(props: Props) {
     e.stopPropagation()
     setRecheckError(null)
     setOrderbooksSource(null)
+    setChainlinkSource(null)
     setHealthDialog(m)
   }
 
@@ -258,6 +259,7 @@ export default function ControlSidebar(props: Props) {
     setHealthDialog(null)
     setRecheckError(null)
     setOrderbooksSource(null)
+    setChainlinkSource(null)
   }
 
   const applyHealthResult = (
@@ -268,6 +270,7 @@ export default function ControlSidebar(props: Props) {
       notes_by_file?: Record<string, string[]>
       notes?: string[]
       orderbooks_source?: string | null
+      chainlink_source?: string | null
     },
     reload = false,
   ) => {
@@ -280,6 +283,9 @@ export default function ControlSidebar(props: Props) {
     const comment = res.data_health_comment || fromFiles || (res.notes || []).join('\n') || null
     if (res.orderbooks_source != null) {
       setOrderbooksSource(res.orderbooks_source || null)
+    }
+    if (res.chainlink_source != null) {
+      setChainlinkSource(res.chainlink_source || null)
     }
     setHealthDialog((prev) =>
       prev && prev.market_id === mid
@@ -304,29 +310,6 @@ export default function ControlSidebar(props: Props) {
       setRecheckError(err instanceof Error ? err.message : 'Recheck failed')
     } finally {
       setRechecking(false)
-    }
-  }
-
-  const runRepair = async () => {
-    if (!healthDialog || healthBusy) return
-    const mid = healthDialog.market_id
-    setRepairing(true)
-    setRecheckError(null)
-    try {
-      const res = await api.repairMarket(mid)
-      applyHealthResult(mid, res, true)
-      const filled = res.filled || {}
-      const bits = Object.entries(filled)
-        .filter(([, n]) => Number(n) > 0)
-        .map(([name, n]) => `${name.replace('.parquet', '')} +${n}`)
-      const summary = bits.length
-        ? `Filled ${bits.join(', ')}`
-        : 'No new rows (tape already complete, or sources had nothing to add)'
-      setRecheckError(res.warning || res.error || summary)
-    } catch (err) {
-      setRecheckError(err instanceof Error ? err.message : 'Repair failed')
-    } finally {
-      setRepairing(false)
     }
   }
 
@@ -776,6 +759,11 @@ export default function ControlSidebar(props: Props) {
                   Order books scored from <code>{orderbooksSource}</code>
                 </p>
               ) : null}
+              {chainlinkSource ? (
+                <p className="health-dialog-books-source">
+                  Chainlink scored from <code>{chainlinkSource}</code>
+                </p>
+              ) : null}
               <div className="health-dialog-body">
                 {dialogHealth === 'great' && dialogGroups.length === 0 ? (
                   <p className="health-dialog-empty">No missing gaps in price, book, or trade files.</p>
@@ -810,20 +798,11 @@ export default function ControlSidebar(props: Props) {
                 </button>
                 <button
                   type="button"
-                  className="health-dialog-btn secondary"
+                  className="health-dialog-btn primary"
                   onClick={() => void runHealthRecheck()}
                   disabled={healthBusy || histDisabled}
                 >
                   {rechecking ? 'Rechecking…' : 'Recheck'}
-                </button>
-                <button
-                  type="button"
-                  className="health-dialog-btn primary"
-                  onClick={() => void runRepair()}
-                  disabled={healthBusy || histDisabled}
-                  title="Fill missed Polymarket trades, Binance trades/prices, and 1s holes, then re-pull"
-                >
-                  {repairing ? 'Repairing…' : 'Repair'}
                 </button>
               </div>
             </div>
