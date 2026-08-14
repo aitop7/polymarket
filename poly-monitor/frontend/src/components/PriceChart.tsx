@@ -184,6 +184,48 @@ function formatTipValue(mode: 'btc' | 'outcomes', raw: unknown): string {
   return formatCents(num / 100)
 }
 
+function formatTipDeltaUsd(delta: number): string {
+  const abs = Math.abs(delta).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+  if (delta > 0) return `+${abs}`
+  if (delta < 0) return `−${abs}`
+  return abs
+}
+
+/** First finite value for a BTC series at/after the visible domain open. */
+function openPriceForSeries(
+  data: ChartDatum[],
+  dataKey: 'twap' | 'chainlink' | 'btc',
+  domain: TimeDomain | null | undefined,
+): number | null {
+  const t0 = domain?.[0]
+  for (const d of data) {
+    if (t0 != null && Number.isFinite(t0) && d.t < t0) continue
+    const v = d[dataKey]
+    if (v != null && Number.isFinite(Number(v))) return Number(v)
+  }
+  // Domain may start before the series exists — fall back to first sample anywhere.
+  for (const d of data) {
+    const v = d[dataKey]
+    if (v != null && Number.isFinite(Number(v))) return Number(v)
+  }
+  return null
+}
+
+function formatTipValueWithDelta(
+  mode: 'btc' | 'outcomes',
+  raw: unknown,
+  open: number | null,
+): string {
+  const price = formatTipValue(mode, raw)
+  if (mode !== 'btc' || open == null) return price
+  const num = raw == null || raw === '' ? null : Number(raw)
+  if (num == null || !Number.isFinite(num)) return price
+  return `${price} (${formatTipDeltaUsd(num - open)})`
+}
+
 function formatTipDateTime(ms: number): string {
   try {
     return `${new Intl.DateTimeFormat('en-US', {
@@ -210,9 +252,100 @@ type ChartDatum = Point & {
 
 const DEFAULT_EMA_PERIOD = 20
 
-/** Valid outcome price in probability units (reject hollow 0 / stubs). */
-function validOutcomePx(v: number | null | undefined): v is number {
-  return v != null && Number.isFinite(v) && v > 0.005 && v < 0.995
+/** Mid-range outcome (probability). Stubs at ≤2¢ / ≥98¢ are open placeholders. */
+function isMidOutcome(v: number): boolean {
+  return Number.isFinite(v) && v > 0.02 && v < 0.98
+}
+
+function isStubOutcome(v: number): boolean {
+  return Number.isFinite(v) && (v <= 0.02 || v >= 0.98)
+}
+
+/**
+ * Map Up/Down for Recharts without open 1¢/99¢ combs.
+ * - Drop leading stubs until a mid-range quote exists
+ * - Drop stub / huge jumps (leave a gap; do not forward-fill across them)
+ * - Forward-fill only when this tick has no Up/Down quote (BTC-only rows)
+ */
+function mapOutcomesChartData(data: Point[], emaPeriod: number): ChartPoint[] {
+  const MAX_JUMP_PCT = 45
+  let seenMid = false
+  let lastUpPct: number | undefined
+  let lastDownPct: number | undefined
+  const mapped: ChartPoint[] = []
+
+  for (const d of data) {
+    const rawUp = d.up != null && Number.isFinite(d.up) ? Number(d.up) : null
+    const rawDown = d.down != null && Number.isFinite(d.down) ? Number(d.down) : null
+
+    if (!seenMid) {
+      if (
+        (rawUp != null && isMidOutcome(rawUp)) ||
+        (rawDown != null && isMidOutcome(rawDown))
+      ) {
+        seenMid = true
+      }
+    }
+
+    const acceptSide = (
+      raw: number | null,
+      lastPct: number | undefined,
+    ): number | undefined => {
+      if (raw == null) return undefined
+      if (!seenMid) return undefined
+      if (isStubOutcome(raw)) {
+        // Settling extremes only if we approached them gradually.
+        if (lastPct == null || Math.abs(raw * 100 - lastPct) > MAX_JUMP_PCT) {
+          return undefined
+        }
+      }
+      const pct = raw * 100
+      if (lastPct != null && Math.abs(pct - lastPct) > MAX_JUMP_PCT) {
+        return undefined
+      }
+      return pct
+    }
+
+    let upPct: number | undefined
+    let downPct: number | undefined
+
+    if (rawUp == null && rawDown == null) {
+      // Hollow / BTC-only timestamp — carry last good odds.
+      upPct = lastUpPct
+      downPct = lastDownPct
+    } else {
+      // Missing one side on this tick → carry; rejected stub/jump → leave gap.
+      upPct = rawUp == null ? lastUpPct : acceptSide(rawUp, lastUpPct)
+      downPct = rawDown == null ? lastDownPct : acceptSide(rawDown, lastDownPct)
+      if (rawUp != null && upPct != null) lastUpPct = upPct
+      if (rawDown != null && downPct != null) lastDownPct = downPct
+    }
+
+    mapped.push({ ...d, upPct, downPct })
+  }
+
+  let i = 0
+  while (i < mapped.length && mapped[i].upPct == null && mapped[i].downPct == null) {
+    i += 1
+  }
+  let j = mapped.length
+  while (j > i && mapped[j - 1].upPct == null && mapped[j - 1].downPct == null) {
+    j -= 1
+  }
+  const sliced = i || j < mapped.length ? mapped.slice(i, j) : mapped
+  const upEma = emaSeries(
+    sliced.map((d) => d.upPct),
+    emaPeriod,
+  )
+  const downEma = emaSeries(
+    sliced.map((d) => d.downPct),
+    emaPeriod,
+  )
+  return sliced.map((d, idx) => ({
+    ...d,
+    upEma: upEma[idx],
+    downEma: downEma[idx],
+  }))
 }
 
 /** Point EMA over finite samples only; undefined until the first finite value. */
@@ -253,6 +386,7 @@ function tipFromDataAtTime(
   t: number,
   seriesVisible: BtcSeriesVisibility,
   showEma = false,
+  xDomain?: TimeDomain | null,
 ): HoverTip | null {
   const point = findNearestPoint(data, t)
   if (!point) return null
@@ -262,11 +396,12 @@ function tipFromDataAtTime(
       if (!seriesVisible[s.key]) continue
       const v = point[s.dataKey]
       if (v == null || !Number.isFinite(Number(v))) continue
+      const open = openPriceForSeries(data, s.dataKey, xDomain)
       rows.push({
         label: s.label,
         color: s.color,
         dataKey: s.dataKey,
-        valueText: formatTipValue('btc', v),
+        valueText: formatTipValueWithDelta('btc', v, open),
       })
     }
   } else {
@@ -481,47 +616,7 @@ export default function PriceChart({
         downPct: undefined,
       }))
     }
-    // Forward-fill so BTC/TWAP-only or volume-only timestamps don't spike to 0¢.
-    let lastUp: number | undefined
-    let lastDown: number | undefined
-    const mapped: ChartPoint[] = data.map((d) => {
-      const upRaw = validOutcomePx(d.up) ? d.up * 100 : undefined
-      const downRaw = validOutcomePx(d.down) ? d.down * 100 : undefined
-      if (upRaw != null) lastUp = upRaw
-      if (downRaw != null) lastDown = downRaw
-      return {
-        ...d,
-        // undefined (not null): Recharts treats null as 0 on Line charts
-        upPct: upRaw ?? lastUp,
-        downPct: downRaw ?? lastDown,
-      }
-    })
-    let i = 0
-    while (
-      i < mapped.length &&
-      mapped[i].upPct == null &&
-      mapped[i].downPct == null
-    ) {
-      i += 1
-    }
-    let j = mapped.length
-    while (j > i && mapped[j - 1].upPct == null && mapped[j - 1].downPct == null) {
-      j -= 1
-    }
-    const sliced = i || j < mapped.length ? mapped.slice(i, j) : mapped
-    const upEma = emaSeries(
-      sliced.map((d) => d.upPct),
-      emaPeriod,
-    )
-    const downEma = emaSeries(
-      sliced.map((d) => d.downPct),
-      emaPeriod,
-    )
-    return sliced.map((d, idx) => ({
-      ...d,
-      upEma: upEma[idx],
-      downEma: downEma[idx],
-    }))
+    return mapOutcomesChartData(data, emaPeriod)
   }, [data, mode, emaPeriod])
 
   // Prefer TWAP; only fall back to Binance when Current Price has no samples at all.
@@ -538,7 +633,7 @@ export default function PriceChart({
     () =>
       hoverTime == null
         ? null
-        : tipFromDataAtTime(mode, chartData, hoverTime, plotVisible, showEma),
+        : tipFromDataAtTime(mode, chartData, hoverTime, plotVisible, showEma, xDomain),
     [
       hoverTime,
       mode,
@@ -547,6 +642,7 @@ export default function PriceChart({
       plotVisible.chainlink,
       plotVisible.binance,
       showEma,
+      xDomain,
     ],
   )
 

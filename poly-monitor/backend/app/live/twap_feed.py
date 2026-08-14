@@ -34,7 +34,7 @@ SUBSCRIBE = {
 
 # Accept TWAP samples within this window of a boundary (open/close).
 _BOUNDARY_GRACE_MS = 5_000
-_DEFAULT_LOOKBACK_S = 30
+_DEFAULT_LOOKBACK_S = 60
 
 
 class TwapFeed:

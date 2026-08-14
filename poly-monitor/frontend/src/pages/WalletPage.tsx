@@ -1203,8 +1203,10 @@ export default function WalletPage() {
       sideFlow.sellUp.shares > 0 ||
       sideFlow.sellDown.shares > 0)
 
+  // Prefer activity slug (matches the Activity panel). PnL-row slug can be
+  // missing/stale and previously drove the chart to a different 5m window.
   const selectedSlug =
-    selectedMarketMeta?.slug || selectedMarketActivity?.slug || null
+    selectedMarketActivity?.slug || selectedMarketMeta?.slug || null
 
   const selectedMarketWindow = useMemo(
     () => slugMarketWindow(selectedSlug),
@@ -1247,6 +1249,7 @@ export default function WalletPage() {
     }
     let cancelled = false
     const slug = selectedSlug
+    const expectStart = slugToWindowStartMs(slug)
     setChartLoading(true)
     setChartError(null)
     setSharedHoverTime(null)
@@ -1256,14 +1259,25 @@ export default function WalletPage() {
 
     ;(async () => {
       try {
-        const startMs = slugToWindowStartMs(slug)
         let marketId: string | null = null
-        if (startMs != null) {
+        if (expectStart != null) {
           try {
-            const hit = await api.marketAt('twap', { t: startMs + 15_000 })
-            marketId = hit.market_id
+            const hit = await api.marketAt('twap', { t: expectStart + 15_000 })
+            // Reject nearest-miss / wrong-day hits: must be this slug's 5m window.
+            const hitStart = Number(hit.start_time)
+            const hitEnd = Number(hit.end_time)
+            const inWindow =
+              Number.isFinite(hitStart) &&
+              Number.isFinite(hitEnd) &&
+              hitStart <= expectStart + 15_000 &&
+              expectStart + 15_000 < hitEnd
+            const sameOpen =
+              Number.isFinite(hitStart) && Math.abs(hitStart - expectStart) <= 60_000
+            if (inWindow || sameOpen) {
+              marketId = hit.market_id
+            }
           } catch {
-            /* fall through */
+            /* fall through — no local series for this window */
           }
         }
         if (!marketId) {
@@ -1276,6 +1290,17 @@ export default function WalletPage() {
         }
         const detail = await api.market(marketId, 'twap')
         if (cancelled) return
+        // Final guard: detail window must still match the selected slug.
+        if (
+          expectStart != null &&
+          detail.start_time != null &&
+          Math.abs(Number(detail.start_time) - expectStart) > 60_000
+        ) {
+          setMarketDetail(null)
+          setSharedXDomain(null)
+          setChartError('No local price history for this market window')
+          return
+        }
         setMarketDetail(detail)
         const series = detail.series || []
         let domain: TimeDomain | null = null

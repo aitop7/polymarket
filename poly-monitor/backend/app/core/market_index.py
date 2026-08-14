@@ -239,13 +239,36 @@ def list_markets_for_date(split: str, date_et: str) -> list[dict[str, Any]]:
 
 
 def find_market_at(split: str, timestamp_ms: int) -> dict[str, Any] | None:
+    """Return the market whose window contains ``timestamp_ms``.
+
+    Does **not** fall back to an arbitrary nearest market — that caused the
+    wallet chart to show a different 5m slot than the selected Activity row.
+    """
     idx = build_market_index(split)
     if not idx:
         return None
+    t = int(timestamp_ms)
     for r in idx:
-        if r["start_time"] <= timestamp_ms < r["end_time"]:
+        try:
+            start = int(r["start_time"])
+            end = int(r["end_time"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if start <= t < end:
             return r
-    return min(idx, key=lambda r: abs(r["start_time"] - timestamp_ms))
+    # Tiny skew only (slug open vs parquet start), still same 5m slot.
+    best: dict[str, Any] | None = None
+    best_abs: int | None = None
+    for r in idx:
+        try:
+            start = int(r["start_time"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        d = abs(start - t)
+        if d <= 60_000 and (best_abs is None or d < best_abs):
+            best = r
+            best_abs = d
+    return best
 
 
 def find_market_by_date_time(split: str, date_et: str, time_et: str) -> dict[str, Any] | None:
@@ -259,10 +282,14 @@ def find_market_by_date_time(split: str, date_et: str, time_et: str) -> dict[str
         hh, mm = map(int, time_et.split(":"))
         target_min = hh * 60 + mm
     except Exception:
-        return day[0]
+        return None
 
     def mins(r: dict[str, Any]) -> int:
         h, m = map(int, r["time_et"].split(":"))
         return h * 60 + m
 
-    return min(day, key=lambda r: abs(mins(r) - target_min))
+    # Clock rounding only — never jump to a distant slot on the same day.
+    best = min(day, key=lambda r: abs(mins(r) - target_min))
+    if abs(mins(best) - target_min) <= 2:
+        return best
+    return None

@@ -174,7 +174,13 @@ def generate_pm_chainlink_for_market(
 
     dates = _utc_dates_for_window(start_ms, end_ms, pad_ms=PREMARKET_LEAD_MS)
     spot_raw = _load_feed_days(dates, data_type="streams", force=force_download)
-    twap_raw = _load_feed_days(dates, data_type="streams_twap30s", force=force_download)
+    # BTC 5m markets settle on 60s TWAP; fall back to 30s for older PMData days.
+    try:
+        twap_raw = _load_feed_days(dates, data_type="streams_twap60s", force=force_download)
+        twap_source = "streams_twap60s"
+    except FileNotFoundError:
+        twap_raw = _load_feed_days(dates, data_type="streams_twap30s", force=force_download)
+        twap_source = "streams_twap30s"
     spot = _prep_price_series(spot_raw)
     twap = _prep_price_series(twap_raw)
     if spot.empty:
@@ -228,7 +234,7 @@ def generate_pm_chainlink_for_market(
 
     warning = None
     if out_df["twap"].isna().all():
-        warning = "PMData streams_twap30s had no usable values — twap column is null"
+        warning = f"PMData {twap_source} had no usable values — twap column is null"
     elif out_df["Chainlink_BTC"].isna().any():
         warning = "Some 0.5s slots had no prior Chainlink spot tick"
 

@@ -409,7 +409,7 @@ def fill_chainlink_1s(
                 row["Chainlink_BTC"] = float(spot)
                 added += 1
         last_px = float(spot)
-    # Recompute 30s TWAP only where missing.
+    # Recompute 60s TWAP only where missing.
     times = sorted(by_ts)
     spots: list[tuple[int, float]] = []
     for ts in times:
@@ -420,7 +420,7 @@ def fill_chainlink_1s(
     for ts, _px in spots:
         if by_ts[ts].get("twap") is not None:
             continue
-        window = [p for t, p in spots if ts - 30_000 < t <= ts]
+        window = [p for t, p in spots if ts - 60_000 < t <= ts]
         if window:
             by_ts[ts]["twap"] = float(sum(window) / len(window))
     return [by_ts[k] for k in sorted(by_ts)], added

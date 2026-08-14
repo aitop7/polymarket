@@ -114,12 +114,12 @@ data/
       chainlink_price.parquet          # 1s Chainlink_BTC + twap (RTDS)
       orderbooks.parquet               # Polymarket Up/Down books
       trades.parquet                   # RTDS activity/trades (includes wallet)
-      meta.json                        # includes btc_open_price / btc_close_price (30s TWAP)
+      meta.json                        # includes btc_open_price / btc_close_price (60s TWAP)
 ```
 
-`meta.json`: `btc_open_price` = Chainlink 30s TWAP at window start (Price to Beat); `btc_close_price` = Chainlink 30s TWAP at window end (set when the market rolls off).
+`meta.json`: `btc_open_price` = Chainlink 60s TWAP at window start (Price to Beat); `btc_close_price` = Chainlink 60s TWAP at window end (set when the market rolls off).
 
-`chainlink_price.parquet`: Chainlink spot (`Chainlink_BTC`) and 30s TWAP from Polymarket RTDS.
+`chainlink_price.parquet`: Chainlink spot (`Chainlink_BTC`) and 60s TWAP from Polymarket RTDS.
 
 `binance_price_orderbook.parquet`: Binance mid (`Binance_BTC`) plus ask/bid BTC quantity in USD-distance bands from mid (widths 0.1, 0.2, …, 51.2 → `ask_0_1` … `ask_511_1023`, plus out-of-range `ask_1023_` / `bid_1023_`).
 

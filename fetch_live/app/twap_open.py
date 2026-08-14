@@ -1,4 +1,9 @@
-"""RTDS Chainlink spot + 30s TWAP; resolves meta open/close TWAP prices."""
+"""RTDS Chainlink spot + 60s TWAP; resolves meta open/close TWAP prices.
+
+BTC 5m markets now settle on Chainlink 60s TWAP (Gamma cryptoMarketConfig
+twapLookbackSeconds=60 / btc-5m-twap-60). The parquet `twap` column stores that
+60s feed.
+"""
 
 from __future__ import annotations
 
@@ -19,9 +24,13 @@ BINANCE_FALLBACKS = (
     "https://api1.binance.com",
 )
 
+# Active settlement lookback for BTC 5m markets.
+TWAP_LOOKBACK_S = 60
+TWAP_LOOKBACK_MS = TWAP_LOOKBACK_S * 1000
+
 
 class TwapOpenResolver:
-    """RTDS Chainlink + 30s TWAP buffer; Binance historical TWAP fallback for open."""
+    """RTDS Chainlink + 60s TWAP buffer; Binance historical TWAP fallback for open."""
 
     def __init__(self) -> None:
         self._twap_hist: deque[tuple[int, float]] = deque(maxlen=20_000)
@@ -74,7 +83,7 @@ class TwapOpenResolver:
         return best
 
     async def resolve_twap_at(self, at_ms: int, *, wait_s: float = 3.0) -> float | None:
-        """30s Chainlink TWAP ending at at_ms (open=T0, close=T1)."""
+        """60s Chainlink TWAP ending at at_ms (open=T0, close=T1)."""
         self.ensure_started()
         hit = self.twap_at_close(at_ms)
         if hit is None:
@@ -87,19 +96,20 @@ class TwapOpenResolver:
                     hit = self.twap_at_close(at_ms)
         if hit is not None:
             return float(hit[0])
-        return await self.compute_twap_30s_ending_at(at_ms)
+        return await self.compute_twap_ending_at(at_ms)
 
     async def resolve_open_price(self, window_start_ms: int) -> float | None:
-        """btc_open_price = 30s TWAP ending at window start (Price to Beat)."""
+        """btc_open_price = 60s TWAP ending at window start (Price to Beat)."""
         return await self.resolve_twap_at(window_start_ms)
 
     async def resolve_close_price(self, window_end_ms: int) -> float | None:
-        """btc_close_price = 30s TWAP ending at window end."""
+        """btc_close_price = 60s TWAP ending at window end."""
         return await self.resolve_twap_at(window_end_ms, wait_s=5.0)
 
-    async def compute_twap_30s_ending_at(self, end_ms: int) -> float | None:
+    async def compute_twap_ending_at(self, end_ms: int) -> float | None:
+        """Binance aggTrades TWAP over the active lookback (provisional fallback)."""
         end = int(end_ms)
-        start = end - 30_000
+        start = end - TWAP_LOOKBACK_MS
         for base in (settings.binance_rest_url, *BINANCE_FALLBACKS):
             try:
                 points = await self._agg_points(base, start, end)
@@ -118,6 +128,10 @@ class TwapOpenResolver:
             except Exception:
                 continue
         return None
+
+    # Back-compat alias for callers/tests that still use the old name.
+    async def compute_twap_30s_ending_at(self, end_ms: int) -> float | None:
+        return await self.compute_twap_ending_at(end_ms)
 
     async def _agg_points(
         self, base: str, start_ms: int, end_ms: int
@@ -169,7 +183,7 @@ class TwapOpenResolver:
             "action": "subscribe",
             "subscriptions": [
                 {
-                    "topic": "crypto_prices_twap_thirty",
+                    "topic": "crypto_prices_twap_sixty",
                     "type": "update",
                     "filters": '{"symbol":"btc/usd"}',
                 },
@@ -187,7 +201,7 @@ class TwapOpenResolver:
             max_size=2**20,
         ) as ws:
             await ws.send(json.dumps(sub))
-            logger.info("RTDS subscribed Chainlink + 30s TWAP (btc/usd)")
+            logger.info("RTDS subscribed Chainlink + 60s TWAP (btc/usd)")
             ping_at = time.monotonic()
             session_start = time.monotonic()
             # If quotes stop updating, drop the socket so _run() reconnects.
@@ -259,13 +273,24 @@ class TwapOpenResolver:
         except (TypeError, ValueError):
             ts_ms = int(time.time() * 1000)
 
-        if topic in {"crypto_prices_twap_thirty", "prices.crypto.chainlink.twap"}:
+        if topic in {
+            "crypto_prices_twap_sixty",
+            "crypto_prices_twap_thirty",
+            "prices.crypto.chainlink.twap",
+        }:
             window = (
                 payload.get("window_s")
                 or payload.get("windowSeconds")
                 or payload.get("window_seconds")
             )
-            if window is not None and int(window) != 30:
+            # Prefer explicit 60s; accept unlabelled sixty-topic updates; reject 30s.
+            if window is not None:
+                try:
+                    if int(window) != TWAP_LOOKBACK_S:
+                        return
+                except (TypeError, ValueError):
+                    return
+            elif topic == "crypto_prices_twap_thirty":
                 return
             self._twap_price = price
             self._twap_ts = ts_ms

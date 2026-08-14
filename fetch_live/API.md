@@ -268,8 +268,8 @@ Paths under `data/YYYY-MM-DD/{market_id}/`. See [README.md](README.md) for colle
 | `up_token_id` / `down_token_id` | string | CLOB token ids |
 | `start_time` / `end_time` | int64 ms | 5m window |
 | `resolved_at` | int64 ms \| null | When known |
-| `btc_open_price` | float \| null | Chainlink 30s TWAP at open (Price to Beat) |
-| `btc_close_price` | float \| null | Chainlink 30s TWAP at end |
+| `btc_open_price` | float \| null | Chainlink 60s TWAP at open (Price to Beat) |
+| `btc_close_price` | float \| null | Chainlink 60s TWAP at end |
 | `winner` | bool \| null | `true` = Up, `false` = Down |
 | `active` / `closed` | bool | Session flags |
 | `trades_mode` | string \| null | `taker` or `full` when the collector stamped this market |

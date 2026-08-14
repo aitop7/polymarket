@@ -5,7 +5,7 @@ type Props = {
   marketId?: string
   windowLabel: string
   priceToBeat: number | null | undefined
-  /** Chainlink 30s TWAP (resolution feed) */
+  /** Chainlink 60s TWAP (resolution feed) */
   twapPrice: number | null | undefined
   /** Live RTDS error when Current Price has no TWAP sample */
   twapError?: string | null

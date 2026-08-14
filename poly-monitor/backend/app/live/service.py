@@ -345,7 +345,7 @@ class LiveMarketService:
             cfg = market.get("cryptoMarketConfig")
             if lookback is None and isinstance(cfg, dict):
                 lookback = cfg.get("twapLookbackSeconds")
-        self.twap.set_lookback_seconds(lookback if lookback is not None else 30)
+        self.twap.set_lookback_seconds(lookback if lookback is not None else 60)
 
     def _persist_open_twap(self, window_start_ms: int) -> None:
         """
