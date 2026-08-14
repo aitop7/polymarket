@@ -289,46 +289,118 @@ class LiveMarketService:
                 overwrite=(source == "fetch_live_meta"),
             )
 
+    def _apply_gamma_ptb_from_market(self, market: dict[str, Any] | None) -> bool:
+        """Lock Polymarket UI strike from eventMetadata.priceToBeat when present."""
+        if not market:
+            return False
+        raw = market.get("priceToBeat")
+        if raw is None:
+            return False
+        try:
+            price = float(raw)
+        except (TypeError, ValueError):
+            return False
+        if not (price > 0):
+            return False
+        start = int(self._window_start_ms or 0) or None
+        self._price_to_beat = price
+        self._price_to_beat_source = "gamma_price_to_beat"
+        if start is not None:
+            ptb_store.set_price_to_beat(
+                start,
+                price,
+                source="gamma_price_to_beat",
+                observed_ts=start,
+            )
+            self._sync_meta_open_price(price)
+        return True
+
+    def _sync_meta_open_price(self, price: float) -> None:
+        """Best-effort: keep fetch_live meta.json btc_open_price on Gamma PTB."""
+        mid = str(self._market_id or "").strip()
+        if not mid or self._window_start_ms is None:
+            return
+        try:
+            from app.core.live_dataset import find_live_market_dir
+
+            d = find_live_market_dir(mid)
+            if d is None:
+                return
+            meta_path = d / "meta.json"
+            if not meta_path.is_file():
+                return
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(meta, dict):
+                return
+            meta["btc_open_price"] = float(price)
+            meta["btc_open_source"] = "gamma_price_to_beat"
+            meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        except Exception:
+            return
+
+    def _configure_twap_lookback(self, market: dict[str, Any] | None) -> None:
+        lookback = None
+        if market:
+            lookback = market.get("twap_lookback_seconds")
+            cfg = market.get("cryptoMarketConfig")
+            if lookback is None and isinstance(cfg, dict):
+                lookback = cfg.get("twapLookbackSeconds")
+        self.twap.set_lookback_seconds(lookback if lookback is not None else 30)
+
     def _persist_open_twap(self, window_start_ms: int) -> None:
         """
         Persist RTDS sample only if it is already close to T0.
         Early/pre-open samples must not hard-lock Price To Beat.
+        Never overwrites Gamma PTB.
         """
         start = int(window_start_ms)
+        stored = ptb_store.get_price_to_beat(start)
+        if stored is not None and ptb_store.is_gamma_source(stored.get("source")):
+            return
         hit = self.twap.twap_at_close(start)
         if hit is None:
             return
         price, obs_ts = hit
         if not ptb_store.is_good_sample(start, obs_ts):
             return
+        source = (
+            "open_twap_60s" if self.twap.lookback_seconds >= 45 else "open_twap_30s"
+        )
         ptb_store.set_price_to_beat(
-            start, price, source="open_twap_30s", observed_ts=obs_ts
+            start, price, source=source, observed_ts=obs_ts
         )
 
     async def _fetch_open_price(
         self, window_start_ms: int, *, wait_s: float = 3.0, allow_computed: bool = True
     ) -> tuple[float, str, int] | None:
         """
-        Price To Beat / btc_open = Polymarket Chainlink 30s TWAP at start_time.
+        Fallback Price To Beat when Gamma eventMetadata.priceToBeat is missing.
 
-        Primary: RTDS wss://ws-live-data.polymarket.com
-                 topic crypto_prices_twap_thirty, filter btc/usd
-                 sample closest to market start_time (prefer at/before T0)
-        Fallback: Binance REST aggTrades BTCUSDT TWAP over [start−30s, start]
-                  (provisional only — never final vs Polymarket; skipped on tick path)
+        Primary: RTDS TWAP (30s or 60s per market config) nearest start_time.
+        Fallback: Binance REST aggTrades TWAP (provisional only).
         """
         start_ms = int(window_start_ms)
         hit = await self.twap.resolve_twap_at(start_ms, wait_s=wait_s)
         if hit is not None:
             price, obs_ts = hit
-            return float(price), "open_twap_30s", int(obs_ts)
+            source = (
+                "open_twap_60s"
+                if self.twap.lookback_seconds >= 45
+                else "open_twap_30s"
+            )
+            return float(price), source, int(obs_ts)
 
         # Last resort only — Binance ≠ Polymarket Chainlink (and can be slow).
         if not allow_computed:
             return None
         computed = await self.clients.compute_twap_30s_ending_at(start_ms)
         if computed is not None:
-            return float(computed), "open_twap_30s_computed", start_ms
+            source = (
+                "open_twap_60s_computed"
+                if self.twap.lookback_seconds >= 45
+                else "open_twap_30s_computed"
+            )
+            return float(computed), source, start_ms
         return None
 
     async def _maybe_capture_open_twap_for_next(self, *, wait_s: float = 0.0) -> None:
@@ -344,8 +416,13 @@ class LiveMarketService:
         stored = ptb_store.get_price_to_beat(start)
         if (
             stored is not None
-            and ptb_store.is_rtds_source(stored.get("source"))
-            and ptb_store.is_good_sample(start, stored.get("observed_ts"))
+            and (
+                ptb_store.is_gamma_source(stored.get("source"))
+                or (
+                    ptb_store.is_rtds_source(stored.get("source"))
+                    and ptb_store.is_good_sample(start, stored.get("observed_ts"))
+                )
+            )
         ):
             return
         fetched = await self._fetch_open_price(
@@ -365,10 +442,8 @@ class LiveMarketService:
         self, window_start_ms: int, *, wait_s: float = 0.0, allow_computed: bool = False
     ) -> None:
         """
-        Price To Beat = Chainlink 30s TWAP nearest window start (same as Polymarket).
-
-        Prefer live RTDS samples. Binance-computed / fetch_live meta are provisional
-        and must never permanently block an RTDS lock.
+        Price To Beat = Polymarket eventMetadata.priceToBeat when available;
+        else RTDS Chainlink TWAP nearest window start.
 
         wait_s/allow_computed must stay 0 on the live tick path so Current Price
         (TWAP) keeps updating at the configured fetch interval.
@@ -376,8 +451,17 @@ class LiveMarketService:
         start_ms = int(window_start_ms)
         now_ms = int(time.time() * 1000)
 
+        # Prefer Gamma UI strike whenever the active market carries it.
+        if self._apply_gamma_ptb_from_market(self._market):
+            return
+
         stored = ptb_store.get_price_to_beat(start_ms)
         stored_source = str((stored or {}).get("source") or "")
+        if stored is not None and ptb_store.is_gamma_source(stored_source):
+            self._price_to_beat = float(stored["price"])
+            self._price_to_beat_source = "gamma_price_to_beat"
+            return
+
         provisional = stored is None or ptb_store.is_provisional_source(stored_source)
         good_rtds = (
             stored is not None
@@ -479,12 +563,18 @@ class LiveMarketService:
                     self._apply_ptb(px, source, obs if obs is not None else start_ms)
 
             for i in range(20):
+                if self._apply_gamma_ptb_from_market(self._market):
+                    return
                 wait_s = 2.0 if i < 8 else 0.5
                 allow_computed = i >= 6
                 await self._resolve_price_to_beat(
                     start_ms, wait_s=wait_s, allow_computed=allow_computed
                 )
                 stored = ptb_store.get_price_to_beat(start_ms)
+                if stored is not None and ptb_store.is_gamma_source(stored.get("source")):
+                    self._price_to_beat = float(stored["price"])
+                    self._price_to_beat_source = "gamma_price_to_beat"
+                    return
                 if (
                     stored is not None
                     and ptb_store.is_rtds_source(stored.get("source"))
@@ -565,6 +655,7 @@ class LiveMarketService:
         self._token_down = token_down
         self._window_start_ms = start_ms
         self._window_end_ms = end_s * 1000
+        self._configure_twap_lookback(market)
         if rolled:
             # Local history is refreshed by the 1-minute VPS sync loop (not mid-live pulls).
             self._series.clear()
@@ -575,24 +666,34 @@ class LiveMarketService:
             self._fetch_live_open_px = None
             self._fetch_live_open_for = None
             self._fetch_live_open_obs = None
-            # Prefer a good RTDS lock; fetch_live / Binance-computed are provisional only.
-            stored = ptb_store.get_price_to_beat(start_ms)
-            if (
-                stored is not None
-                and ptb_store.is_rtds_source(stored.get("source"))
-                and ptb_store.is_good_sample(start_ms, stored.get("observed_ts"))
-            ):
-                self._price_to_beat = float(stored["price"])
-                self._price_to_beat_source = str(
-                    stored.get("source") or "open_twap_30s"
-                )
-            elif stored is not None:
-                # Disk/parquet lookup is deferred to background refine — scanning
-                # fetch_live on the tick path freezes Current Price updates.
-                self._price_to_beat = float(stored["price"])
-                self._price_to_beat_source = str(
-                    stored.get("source") or "open_twap_30s"
-                )
+            # Prefer Polymarket UI strike, then a good RTDS lock.
+            if not self._apply_gamma_ptb_from_market(market):
+                stored = ptb_store.get_price_to_beat(start_ms)
+                if (
+                    stored is not None
+                    and ptb_store.is_gamma_source(stored.get("source"))
+                ):
+                    self._price_to_beat = float(stored["price"])
+                    self._price_to_beat_source = "gamma_price_to_beat"
+                elif (
+                    stored is not None
+                    and ptb_store.is_rtds_source(stored.get("source"))
+                    and ptb_store.is_good_sample(start_ms, stored.get("observed_ts"))
+                ):
+                    self._price_to_beat = float(stored["price"])
+                    self._price_to_beat_source = str(
+                        stored.get("source") or "open_twap_30s"
+                    )
+                elif stored is not None:
+                    # Disk/parquet lookup is deferred to background refine — scanning
+                    # fetch_live on the tick path freezes Current Price updates.
+                    self._price_to_beat = float(stored["price"])
+                    self._price_to_beat_source = str(
+                        stored.get("source") or "open_twap_30s"
+                    )
+        else:
+            # Same market — still refresh Gamma strike / lookback if Gamma caught up.
+            self._apply_gamma_ptb_from_market(market)
         # Keep RTDS activity filter on the active market (clear tape on roll).
         self.activity.set_market(
             slug=slug,

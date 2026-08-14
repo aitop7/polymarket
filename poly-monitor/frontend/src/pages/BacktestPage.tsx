@@ -68,7 +68,10 @@ export default function BacktestPage() {
   const [slippage, setSlippage] = useState(0)
   const [horizonSec, setHorizonSec] = useState(5)
   const [deltaSec, setDeltaSec] = useState(1)
+  const [emaPeriod, setEmaPeriod] = useState(8)
+  const [maxDoubles, setMaxDoubles] = useState(1)
   const [minFailDrop, setMinFailDrop] = useState(0.02)
+  const [showOutcomeEma, setShowOutcomeEma] = useState(true)
   const isSafePair = strategy === 'safe_pair'
   const isMomentumPair = strategy === 'momentum_pair'
 
@@ -108,6 +111,8 @@ export default function BacktestPage() {
       setCooldownSec(0)
       setHorizonSec(5)
       setDeltaSec(1)
+      setEmaPeriod(8)
+      setMaxDoubles(1)
       setMinFailDrop(0.02)
       setFeeModel('polymarket')
     }
@@ -163,6 +168,8 @@ export default function BacktestPage() {
           ? {
               horizon_seconds: horizonSec,
               delta_seconds: deltaSec,
+              ema_period: emaPeriod,
+              max_doubles: maxDoubles,
               min_fail_drop: minFailDrop,
               min_pair_edge: 0,
               cooldown_seconds: cooldownSec,
@@ -532,6 +539,26 @@ export default function BacktestPage() {
                   disabled={loading}
                   onChange={(e) => setDeltaSec(Math.max(1, Number(e.target.value) || 1))}
                 />
+                <label className="sidebar-label">EMA period (ticks)</label>
+                <input
+                  type="number"
+                  step={1}
+                  min={1}
+                  max={120}
+                  value={emaPeriod}
+                  disabled={loading}
+                  onChange={(e) => setEmaPeriod(Math.max(1, Number(e.target.value) || 8))}
+                />
+                <label className="sidebar-label">Max doubles</label>
+                <input
+                  type="number"
+                  step={1}
+                  min={0}
+                  max={5}
+                  value={maxDoubles}
+                  disabled={loading}
+                  onChange={(e) => setMaxDoubles(Math.max(0, Math.min(5, Number(e.target.value) || 0)))}
+                />
                 <label className="sidebar-label">Min fail drop</label>
                 <input
                   type="number"
@@ -850,6 +877,9 @@ export default function BacktestPage() {
                   xFullDomain={xFullDomain}
                   xDefaultDomain={xDefaultDomain}
                   traderMarks={traderMarks}
+                  showEma={showOutcomeEma}
+                  onShowEmaChange={setShowOutcomeEma}
+                  emaPeriod={emaPeriod}
                 />
                 <VolumeChart data={chartData} mode="outcomes" title="UP / DOWN VOLUME" xDomain={activeXDomain} />
               </>

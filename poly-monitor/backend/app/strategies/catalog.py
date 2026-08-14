@@ -146,10 +146,11 @@ STRATEGY_DOCS: dict[str, dict[str, Any]] = {
         "title": "Momentum pair",
         "idea": (
             "Train a LightGBM regressor for UP mid T seconds ahead (P). "
-            "Early in the window buy N on the side with predicted momentum vs 50¢; "
-            "confirm on actual U/D velocity; if the first UP leg fails (U falling, P' < 0, "
-            "large enough predicted drop), switch with DOWN 2N; otherwise wait for P' "
-            "sign flip to hedge N; finish with equal UP/DOWN shares at combined cost < $1."
+            "Smooth P/U/D with EMA(ema_period), then take Δ-second momentum on those EMAs. "
+            "Early in the window buy N on the side with predicted EMA momentum vs 50¢; "
+            "confirm on actual U/D EMA velocity; on fail, martingale-buy the opposite side "
+            "to 2× the larger inventory (up to max_doubles times); equalize/fail buys wait "
+            "for that side's EMA local minimum before filling; finish with equal UP/DOWN shares."
         ),
         "when_to_use": "Directional open momentum with an explicit fail-switch into a pair.",
         "data_required": [
@@ -165,7 +166,10 @@ STRATEGY_DOCS: dict[str, dict[str, Any]] = {
             {
                 "name": "UP mid series",
                 "path": "up_mid from book (fallback up_price)",
-                "why": "Regression target y = up_mid(t+T); velocities U', D' from actuals.",
+                "why": (
+                    "Regression target y = up_mid(t+T). Runtime U'/D'/P' from EMA(mid) "
+                    "with train/runtime ema_period."
+                ),
             },
             {
                 "name": "Trained price model",
@@ -176,6 +180,8 @@ STRATEGY_DOCS: dict[str, dict[str, Any]] = {
         "trainable": True,
         "train_defaults": {
             "horizon_seconds": 5.0,
+            "delta_seconds": 1.0,
+            "ema_period": 8.0,
             "num_boost_round": 400,
             "early_stopping_rounds": 40,
             "max_markets": None,
@@ -187,6 +193,8 @@ STRATEGY_DOCS: dict[str, dict[str, Any]] = {
             "size_usd": 10.0,
             "horizon_seconds": 5.0,
             "delta_seconds": 1.0,
+            "ema_period": 8.0,
+            "max_doubles": 1,
             "min_fail_drop": 0.02,
             "min_pair_edge": 0.0,
             "min_elapsed_seconds": 0.0,

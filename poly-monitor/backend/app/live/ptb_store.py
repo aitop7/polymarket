@@ -10,11 +10,15 @@ from typing import Any
 _STORE_PATH = Path(__file__).resolve().parents[2] / ".cache" / "price_to_beat.json"
 _MAX_AGE_MS = 36 * 3600 * 1000  # keep ~1.5 days
 
-# Price To Beat = Chainlink 30s TWAP at window start, set when the market opens.
+# Price To Beat sources (higher rank wins).
+# gamma_price_to_beat = Polymarket eventMetadata.priceToBeat (UI strike).
 VALID_SOURCES = frozenset(
     {
+        "gamma_price_to_beat",
         "open_twap_30s",
+        "open_twap_60s",
         "open_twap_30s_computed",
+        "open_twap_60s_computed",
         "fetch_live_meta",
         # legacy aliases (same T0 boundary)
         "prev_close_twap_30s",
@@ -27,12 +31,15 @@ VALID_SOURCES = frozenset(
 # Sample farther than this from start_time is provisional (early lock).
 GOOD_SAMPLE_MAX_DELTA_MS = 1_500
 
-# Authoritative open lock = Polymarket RTDS Chainlink 30s TWAP.
-# Binance-computed / meta are provisional and must never block RTDS.
+# Authoritative open lock = Polymarket Gamma priceToBeat, then RTDS TWAP.
+# Binance-computed / meta are provisional and must never block Gamma/RTDS.
 PTB_SOURCE_RANK: dict[str, int] = {
+    "gamma_price_to_beat": 100,
+    "open_twap_60s": 45,
     "open_twap_30s": 40,
     "prev_close_twap_30s": 40,
     "twap_30s": 35,
+    "open_twap_60s_computed": 12,
     "open_twap_30s_computed": 10,
     "prev_close_twap_30s_computed": 10,
     "twap_30s_computed": 10,
@@ -45,12 +52,17 @@ def source_rank(source: str | None) -> int:
 
 
 def is_provisional_source(source: str | None) -> bool:
-    """True when lock is not Polymarket RTDS Chainlink TWAP."""
+    """True when lock is not Polymarket Gamma PTB or RTDS Chainlink TWAP."""
     return source_rank(source) < PTB_SOURCE_RANK["open_twap_30s"]
 
 
 def is_rtds_source(source: str | None) -> bool:
+    """True for Gamma PTB or RTDS TWAP locks (final enough to stop refining)."""
     return source_rank(source) >= PTB_SOURCE_RANK["open_twap_30s"]
+
+
+def is_gamma_source(source: str | None) -> bool:
+    return str(source or "") == "gamma_price_to_beat"
 
 
 def _load() -> dict[str, Any]:

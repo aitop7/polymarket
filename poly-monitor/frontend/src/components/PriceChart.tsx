@@ -38,6 +38,13 @@ type Point = {
   down?: number | null
 }
 
+type ChartPoint = Point & {
+  upPct?: number
+  downPct?: number
+  upEma?: number
+  downEma?: number
+}
+
 type Props = {
   data: Point[]
   priceToBeat?: number | null
@@ -466,7 +473,7 @@ export default function PriceChart({
     : (highlightTime ?? localHoverTime)
   const setHoverTime = onHoverTimeChange ?? setLocalHoverTime
 
-  const chartData = useMemo(() => {
+  const chartData = useMemo((): ChartPoint[] => {
     if (mode !== 'outcomes') {
       return data.map((d) => ({
         ...d,
@@ -477,7 +484,7 @@ export default function PriceChart({
     // Forward-fill so BTC/TWAP-only or volume-only timestamps don't spike to 0¢.
     let lastUp: number | undefined
     let lastDown: number | undefined
-    const mapped = data.map((d) => {
+    const mapped: ChartPoint[] = data.map((d) => {
       const upRaw = validOutcomePx(d.up) ? d.up * 100 : undefined
       const downRaw = validOutcomePx(d.down) ? d.down * 100 : undefined
       if (upRaw != null) lastUp = upRaw

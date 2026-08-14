@@ -82,7 +82,7 @@ export default function BtcPricePanel({
       <div className="btc-panel-stats">
         <div className="btc-stat">
           <div className="btc-stat-label">Price To Beat</div>
-          <div className="btc-stat-hint">TWAP at window start</div>
+          <div className="btc-stat-hint">Polymarket strike</div>
           <div className="btc-stat-value beat">${formatUsd(priceToBeat, 2)}</div>
         </div>
 

@@ -212,6 +212,7 @@ def post_lgbm_train(body: LgbmTrainRequest = LgbmTrainRequest()) -> dict[str, An
 class MomentumPairTrainRequest(BaseModel):
     horizon_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
     delta_seconds: float = Field(default=1.0, ge=0.2, le=30.0)
+    ema_period: float = Field(default=8.0, ge=1.0, le=120.0)
     train_ratio: float = Field(default=0.8, ge=0.5, le=0.95)
     num_boost_round: int = Field(default=400, ge=10, le=5000)
     early_stopping_rounds: int = Field(default=40, ge=1, le=500)
@@ -373,6 +374,41 @@ async def get_market(market_id: str, split: str | None = None) -> dict[str, Any]
     meta = market_summary(market_id, split=split)
     if not meta:
         raise HTTPException(404, f"Market {market_id} not found")
+    # Prefer Polymarket UI strike when Gamma publishes eventMetadata.priceToBeat.
+    try:
+        from app.live.clients import LiveClients
+
+        slug = None
+        start = meta.get("start_time")
+        if start is not None:
+            slug = f"btc-updown-5m-{int(int(start) // 1000)}"
+        clients = LiveClients()
+        try:
+            market = await clients.get_market_by_slug(slug) if slug else None
+        finally:
+            await clients.close()
+        if market and market.get("priceToBeat") is not None:
+            meta = dict(meta)
+            meta["btc_open_price"] = float(market["priceToBeat"])
+            meta["btc_open_source"] = "gamma_price_to_beat"
+            # Persist for subsequent history loads.
+            try:
+                from app.core.live_dataset import find_live_market_dir
+                import json as _json
+
+                d = find_live_market_dir(str(market_id))
+                if d is not None:
+                    mp = d / "meta.json"
+                    if mp.is_file():
+                        row = _json.loads(mp.read_text(encoding="utf-8"))
+                        if isinstance(row, dict):
+                            row["btc_open_price"] = float(market["priceToBeat"])
+                            row["btc_open_source"] = "gamma_price_to_beat"
+                            mp.write_text(_json.dumps(row, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+    except Exception:
+        pass
     df = load_market_frame(market_id, split=meta["split"])
     from app.core.pricing import quotes_from_row
 

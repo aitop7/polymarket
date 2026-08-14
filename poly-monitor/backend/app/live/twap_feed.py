@@ -1,4 +1,4 @@
-"""Polymarket RTDS: Chainlink spot + 30s TWAP for BTC/USD."""
+"""Polymarket RTDS: Chainlink spot + 30s/60s TWAP for BTC/USD."""
 
 from __future__ import annotations
 
@@ -20,6 +20,11 @@ SUBSCRIBE = {
             "filters": '{"symbol":"btc/usd"}',
         },
         {
+            "topic": "crypto_prices_twap_sixty",
+            "type": "update",
+            "filters": '{"symbol":"btc/usd"}',
+        },
+        {
             "topic": "crypto_prices_chainlink",
             "type": "*",
             "filters": '{"symbol":"btc/usd"}',
@@ -29,28 +34,66 @@ SUBSCRIBE = {
 
 # Accept TWAP samples within this window of a boundary (open/close).
 _BOUNDARY_GRACE_MS = 5_000
+_DEFAULT_LOOKBACK_S = 30
 
 
 class TwapFeed:
-    """Background RTDS subscriber for TWAP + Chainlink spot buffer."""
+    """Background RTDS subscriber for TWAP (30s + 60s) + Chainlink spot buffer."""
 
     def __init__(self) -> None:
-        self._twap_price: float | None = None
-        self._twap_ts_ms: int | None = None
+        self._lookback_s = _DEFAULT_LOOKBACK_S
+        self._twap_30: float | None = None
+        self._twap_30_ts: int | None = None
+        self._twap_60: float | None = None
+        self._twap_60_ts: int | None = None
         self._error: str | None = None
         self._task: asyncio.Task[None] | None = None
         self._running = False
         # Ring buffers: (timestamp_ms, price)
         self._chainlink: deque[tuple[int, float]] = deque(maxlen=20_000)
-        self._twap_hist: deque[tuple[int, float]] = deque(maxlen=20_000)
+        self._twap_30_hist: deque[tuple[int, float]] = deque(maxlen=20_000)
+        self._twap_60_hist: deque[tuple[int, float]] = deque(maxlen=20_000)
+
+    def set_lookback_seconds(self, seconds: int | None) -> None:
+        """Prefer 30s or 60s TWAP for Current Price / open-lock fallbacks."""
+        try:
+            s = int(seconds) if seconds is not None else _DEFAULT_LOOKBACK_S
+        except (TypeError, ValueError):
+            s = _DEFAULT_LOOKBACK_S
+        self._lookback_s = 60 if s >= 45 else 30
+
+    @property
+    def lookback_seconds(self) -> int:
+        return int(self._lookback_s)
+
+    def _active_price(self) -> float | None:
+        if self._lookback_s >= 45:
+            return self._twap_60 if self._twap_60 is not None else self._twap_30
+        return self._twap_30 if self._twap_30 is not None else self._twap_60
+
+    def _active_ts(self) -> int | None:
+        if self._lookback_s >= 45:
+            if self._twap_60 is not None:
+                return self._twap_60_ts
+            return self._twap_30_ts
+        if self._twap_30 is not None:
+            return self._twap_30_ts
+        return self._twap_60_ts
+
+    def _active_hist(self) -> deque[tuple[int, float]]:
+        if self._lookback_s >= 45 and self._twap_60_hist:
+            return self._twap_60_hist
+        if self._lookback_s < 45 and self._twap_30_hist:
+            return self._twap_30_hist
+        return self._twap_60_hist if self._twap_60_hist else self._twap_30_hist
 
     @property
     def price(self) -> float | None:
-        return self._twap_price
+        return self._active_price()
 
     @property
     def timestamp_ms(self) -> int | None:
-        return self._twap_ts_ms
+        return self._active_ts()
 
     @property
     def error(self) -> str | None:
@@ -58,18 +101,21 @@ class TwapFeed:
 
     def latest(self) -> dict[str, Any]:
         return {
-            "btc_twap_30s": self._twap_price,
-            "btc_twap_ts": self._twap_ts_ms,
+            # Keep legacy key; value follows the active lookback (30 or 60).
+            "btc_twap_30s": self._active_price(),
+            "btc_twap_ts": self._active_ts(),
+            "btc_twap_lookback_s": self._lookback_s,
             "btc_twap_error": self._error,
             "btc_chainlink": self._chainlink[-1][1] if self._chainlink else None,
             "btc_chainlink_ts": self._chainlink[-1][0] if self._chainlink else None,
         }
 
     def history_since(self, start_ms: int) -> dict[str, list[tuple[int, float]]]:
-        """TWAP + Chainlink samples with timestamp >= start_ms."""
+        """Active TWAP + Chainlink samples with timestamp >= start_ms."""
         start = int(start_ms)
+        hist = self._active_hist()
         return {
-            "twap": [(int(ts), float(px)) for ts, px in self._twap_hist if ts >= start],
+            "twap": [(int(ts), float(px)) for ts, px in hist if ts >= start],
             "chainlink": [(int(ts), float(px)) for ts, px in self._chainlink if ts >= start],
         }
 
@@ -84,13 +130,13 @@ class TwapFeed:
     def twap_at_close(
         self, window_end_ms: int, *, grace_ms: int = _BOUNDARY_GRACE_MS
     ) -> tuple[float, int] | None:
-        """30s TWAP nearest to a boundary timestamp (open or close)."""
+        """Active TWAP nearest to a boundary timestamp (open or close)."""
         return self.twap_nearest(window_end_ms, grace_ms=grace_ms)
 
     def twap_at_open(
         self, window_start_ms: int, *, grace_ms: int = _BOUNDARY_GRACE_MS
     ) -> tuple[float, int] | None:
-        """30s TWAP nearest to market open (same nearest-boundary rule as close)."""
+        """Active TWAP nearest to market open."""
         return self.twap_nearest(window_start_ms, grace_ms=grace_ms)
 
     def twap_nearest(
@@ -106,7 +152,7 @@ class TwapFeed:
         hi = target + grace_ms
         best: tuple[float, int] | None = None
         best_key: tuple[int, int] | None = None  # (abs_delta, prefer_after)
-        for ts, px in self._twap_hist:
+        for ts, px in self._active_hist():
             if ts < lo or ts > hi:
                 continue
             delta = abs(int(ts) - target)
@@ -121,76 +167,75 @@ class TwapFeed:
         if self._task is not None and not self._task.done():
             return
         self._running = True
-        self._task = asyncio.create_task(self._run(), name="rtds-btc-prices")
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._task = loop.create_task(self._run(), name="twap-feed")
 
-    async def wait_for_price(self, timeout_s: float = 3.0) -> float | None:
+    async def wait_ready(self, timeout_s: float = 5.0) -> float | None:
         self.ensure_started()
-        if self._twap_price is not None:
-            return self._twap_price
-        deadline = time.monotonic() + max(0.0, timeout_s)
+        if self._active_price() is not None:
+            return self._active_price()
+        deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            if self._twap_price is not None:
-                return self._twap_price
+            if self._active_price() is not None:
+                return self._active_price()
             await asyncio.sleep(0.1)
-        return self._twap_price
+        return self._active_price()
 
-    async def wait_for_open_tick(
-        self, window_start_ms: int, timeout_s: float = 5.0
+    async def wait_for_chainlink_at_or_after(
+        self, window_start_ms: int, *, wait_s: float = 3.0
     ) -> tuple[float, int] | None:
-        """Wait until we observe a Chainlink tick at/after window open."""
         self.ensure_started()
         hit = self.chainlink_at_or_after(window_start_ms)
         if hit is not None:
             return hit
-        deadline = time.monotonic() + max(0.0, timeout_s)
+        deadline = time.monotonic() + wait_s
         while time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
             hit = self.chainlink_at_or_after(window_start_ms)
             if hit is not None:
                 return hit
-            await asyncio.sleep(0.1)
         return self.chainlink_at_or_after(window_start_ms)
 
     async def wait_for_close_twap(
-        self, window_end_ms: int, timeout_s: float = 5.0, *, grace_ms: int = _BOUNDARY_GRACE_MS
+        self, window_end_ms: int, *, wait_s: float = 3.0, grace_ms: int = _BOUNDARY_GRACE_MS
     ) -> tuple[float, int] | None:
-        """Wait until a 30s TWAP sample near window close is buffered."""
         self.ensure_started()
         hit = self.twap_at_close(window_end_ms, grace_ms=grace_ms)
         if hit is not None:
             return hit
-        deadline = time.monotonic() + max(0.0, timeout_s)
+        deadline = time.monotonic() + wait_s
         while time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
             hit = self.twap_at_close(window_end_ms, grace_ms=grace_ms)
             if hit is not None:
                 return hit
-            await asyncio.sleep(0.1)
         return self.twap_at_close(window_end_ms, grace_ms=grace_ms)
 
     async def wait_for_open_twap(
-        self, window_start_ms: int, timeout_s: float = 5.0, *, grace_ms: int = _BOUNDARY_GRACE_MS
+        self, window_start_ms: int, *, wait_s: float = 3.0, grace_ms: int = _BOUNDARY_GRACE_MS
     ) -> tuple[float, int] | None:
-        """Wait until a 30s TWAP sample near current market open is buffered."""
         self.ensure_started()
         hit = self.twap_at_open(window_start_ms, grace_ms=grace_ms)
         if hit is not None:
             return hit
-        deadline = time.monotonic() + max(0.0, timeout_s)
+        deadline = time.monotonic() + wait_s
         while time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
             hit = self.twap_at_open(window_start_ms, grace_ms=grace_ms)
             if hit is not None:
                 return hit
-            await asyncio.sleep(0.1)
         return self.twap_at_open(window_start_ms, grace_ms=grace_ms)
 
     async def resolve_twap_at(
         self, at_ms: int, *, wait_s: float = 3.0, grace_ms: int = _BOUNDARY_GRACE_MS
     ) -> tuple[float, int] | None:
         """
-        Polymarket RTDS Chainlink 30s TWAP sample closest to at_ms.
+        Polymarket RTDS Chainlink TWAP sample closest to at_ms (active lookback).
 
-        Primary source for Price To Beat (open) and close TWAP:
-          wss://ws-live-data.polymarket.com
-          topic crypto_prices_twap_thirty, filter btc/usd
+        Topics: crypto_prices_twap_thirty / crypto_prices_twap_sixty.
         """
         self.ensure_started()
         hit = self.twap_at_close(at_ms, grace_ms=grace_ms)
@@ -283,7 +328,6 @@ class TwapFeed:
 
         value = payload.get("value")
         # Prefer Chainlink full-accuracy E18 when present (docs: `value` is display-only).
-        # Guard: if E18 decode disagrees wildly with `value`, trust `value`.
         raw_full = payload.get("full_accuracy_value")
         value_f: float | None = None
         try:
@@ -308,13 +352,39 @@ class TwapFeed:
         except (TypeError, ValueError):
             ts_ms = int(time.time() * 1000)
 
-        if topic in {"crypto_prices_twap_thirty", "prices.crypto.chainlink.twap"}:
-            window = payload.get("window_s") or payload.get("windowSeconds") or payload.get("window_seconds")
-            if window is not None and int(window) != 30:
-                return
-            self._twap_price = price
-            self._twap_ts_ms = ts_ms
-            self._twap_hist.append((ts_ms, price))
+        window = payload.get("window_s") or payload.get("windowSeconds") or payload.get(
+            "window_seconds"
+        )
+        window_i: int | None = None
+        try:
+            if window is not None:
+                window_i = int(window)
+        except (TypeError, ValueError):
+            window_i = None
+
+        if topic == "crypto_prices_twap_thirty" or (
+            topic == "prices.crypto.chainlink.twap" and window_i == 30
+        ):
+            self._twap_30 = price
+            self._twap_30_ts = ts_ms
+            self._twap_30_hist.append((ts_ms, price))
+            self._error = None
+            return
+
+        if topic == "crypto_prices_twap_sixty" or (
+            topic == "prices.crypto.chainlink.twap" and window_i == 60
+        ):
+            self._twap_60 = price
+            self._twap_60_ts = ts_ms
+            self._twap_60_hist.append((ts_ms, price))
+            self._error = None
+            return
+
+        # Legacy generic TWAP topic without window → treat as 30s.
+        if topic == "prices.crypto.chainlink.twap" and window_i is None:
+            self._twap_30 = price
+            self._twap_30_ts = ts_ms
+            self._twap_30_hist.append((ts_ms, price))
             self._error = None
             return
 

@@ -71,6 +71,8 @@ def start_train(params: dict[str, Any] | None = None) -> dict[str, Any]:
                         _job["message"] = payload["message"]
 
             horizon = float(params.get("horizon_seconds", params.get("T", 5.0)))
+            delta = float(params.get("delta_seconds", 1.0))
+            ema_period = float(params.get("ema_period", 8.0))
             result = train_up_price_model(
                 horizon_seconds=horizon,
                 train_ratio=float(params.get("train_ratio", 0.8)),
@@ -94,13 +96,17 @@ def start_train(params: dict[str, Any] | None = None) -> dict[str, Any]:
                     runtime_params={
                         "size_usd": 10.0,
                         "horizon_seconds": horizon,
-                        "delta_seconds": float(params.get("delta_seconds", 1.0)),
+                        "delta_seconds": delta,
+                        "ema_period": ema_period,
+                        "max_doubles": int(params.get("max_doubles", 1)),
                         "min_fail_drop": 0.02,
                         "min_pair_edge": 0.0,
                         "model_path": str(src),
                     },
                     train_params={
                         "horizon_seconds": horizon,
+                        "delta_seconds": delta,
+                        "ema_period": ema_period,
                         "train_ratio": float(params.get("train_ratio", 0.8)),
                         "num_boost_round": int(params.get("num_boost_round", 400)),
                         "early_stopping_rounds": int(

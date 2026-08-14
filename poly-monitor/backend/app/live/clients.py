@@ -70,18 +70,53 @@ class LiveClients:
                 last_exc = exc
         raise RuntimeError(f"Binance BTC price failed: {last_exc}")
 
-    async def get_market_by_slug(self, slug: str) -> dict[str, Any] | None:
+    async def get_event_by_slug(self, slug: str) -> dict[str, Any] | None:
         try:
             resp = await self._gamma.get("/events", params={"slug": slug})
             resp.raise_for_status()
             events = resp.json()
-            if isinstance(events, list) and events:
-                markets = events[0].get("markets") or []
-                for market in markets:
-                    if str(market.get("slug") or "") == slug or len(markets) == 1:
-                        return market
-                if markets:
-                    return markets[0]
+            if isinstance(events, list) and events and isinstance(events[0], dict):
+                return events[0]
+        except Exception:
+            return None
+        return None
+
+    async def get_market_by_slug(self, slug: str) -> dict[str, Any] | None:
+        try:
+            event = await self.get_event_by_slug(slug)
+            if not event:
+                return None
+            markets = event.get("markets") or []
+            market: dict[str, Any] | None = None
+            for row in markets:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("slug") or "") == slug or len(markets) == 1:
+                    market = dict(row)
+                    break
+            if market is None and markets and isinstance(markets[0], dict):
+                market = dict(markets[0])
+            if market is None:
+                return None
+            # Attach Gamma event strike + TWAP config used by the Polymarket UI.
+            meta = event.get("eventMetadata")
+            if isinstance(meta, dict) and meta.get("priceToBeat") is not None:
+                try:
+                    market["priceToBeat"] = float(meta["priceToBeat"])
+                except (TypeError, ValueError):
+                    pass
+            cfg = market.get("cryptoMarketConfig")
+            lookback = None
+            if isinstance(cfg, dict):
+                lookback = cfg.get("twapLookbackSeconds")
+            if lookback is None:
+                lookback = market.get("twapLookbackSeconds")
+            try:
+                if lookback is not None:
+                    market["twap_lookback_seconds"] = int(lookback)
+            except (TypeError, ValueError):
+                pass
+            return market
         except Exception:
             return None
         return None

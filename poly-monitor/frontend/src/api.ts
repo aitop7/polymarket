@@ -193,6 +193,7 @@ export const api = {
   momentumPairTrain: (body?: {
     horizon_seconds?: number
     delta_seconds?: number
+    ema_period?: number
     train_ratio?: number
     num_boost_round?: number
     early_stopping_rounds?: number

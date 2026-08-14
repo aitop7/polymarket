@@ -153,6 +153,7 @@ export default function StrategyPage() {
   const [maxMarkets, setMaxMarkets] = useState('')
   const [horizonSeconds, setHorizonSeconds] = useState(5)
   const [deltaSeconds, setDeltaSeconds] = useState(1)
+  const [emaPeriod, setEmaPeriod] = useState(8)
   const [trainRatio, setTrainRatio] = useState(0.8)
 
   const active = useMemo(
@@ -183,6 +184,10 @@ export default function StrategyPage() {
       const t = tp as Record<string, unknown>
       if (typeof t.num_boost_round === 'number') setNumBoostRound(t.num_boost_round)
       if (typeof t.early_stopping_rounds === 'number') setEarlyStopping(t.early_stopping_rounds)
+      if (typeof t.horizon_seconds === 'number') setHorizonSeconds(t.horizon_seconds)
+      if (typeof t.delta_seconds === 'number') setDeltaSeconds(t.delta_seconds)
+      if (typeof t.ema_period === 'number') setEmaPeriod(t.ema_period)
+      if (typeof t.train_ratio === 'number') setTrainRatio(t.train_ratio)
       if (t.max_markets != null && t.max_markets !== '') setMaxMarkets(String(t.max_markets))
     }
   }
@@ -219,6 +224,12 @@ export default function StrategyPage() {
           }
           if (typeof trainDefs.horizon_seconds === 'number') {
             setHorizonSeconds(trainDefs.horizon_seconds)
+          }
+          if (typeof trainDefs.delta_seconds === 'number') {
+            setDeltaSeconds(trainDefs.delta_seconds)
+          }
+          if (typeof trainDefs.ema_period === 'number') {
+            setEmaPeriod(trainDefs.ema_period)
           }
           if (typeof trainDefs.train_ratio === 'number') setTrainRatio(trainDefs.train_ratio)
         }
@@ -306,6 +317,7 @@ export default function StrategyPage() {
         train_params = {
           horizon_seconds: horizonSeconds,
           delta_seconds: deltaSeconds,
+          ema_period: emaPeriod,
           train_ratio: trainRatio,
           num_boost_round: numBoostRound,
           early_stopping_rounds: earlyStopping,
@@ -342,6 +354,7 @@ export default function StrategyPage() {
       else setMaxMarkets('')
       if (typeof tp.horizon_seconds === 'number') setHorizonSeconds(tp.horizon_seconds)
       if (typeof tp.delta_seconds === 'number') setDeltaSeconds(tp.delta_seconds)
+      if (typeof tp.ema_period === 'number') setEmaPeriod(tp.ema_period)
       if (typeof tp.train_ratio === 'number') setTrainRatio(tp.train_ratio)
       await refreshVersions(active.name)
       if (active.name === 'lgbm_edge') await refreshModel()
@@ -361,10 +374,16 @@ export default function StrategyPage() {
       if (active.name === 'momentum_pair') {
         try {
           await api.saveStrategyVersion('momentum_pair', {
-            runtime_params,
+            runtime_params: {
+              ...runtime_params,
+              horizon_seconds: horizonSeconds,
+              delta_seconds: deltaSeconds,
+              ema_period: emaPeriod,
+            },
             train_params: {
               horizon_seconds: horizonSeconds,
               delta_seconds: deltaSeconds,
+              ema_period: emaPeriod,
               train_ratio: trainRatio,
               num_boost_round: numBoostRound,
               early_stopping_rounds: earlyStopping,
@@ -380,6 +399,7 @@ export default function StrategyPage() {
         const body: {
           horizon_seconds: number
           delta_seconds: number
+          ema_period: number
           train_ratio: number
           num_boost_round: number
           early_stopping_rounds: number
@@ -387,6 +407,7 @@ export default function StrategyPage() {
         } = {
           horizon_seconds: horizonSeconds,
           delta_seconds: deltaSeconds,
+          ema_period: emaPeriod,
           train_ratio: trainRatio,
           num_boost_round: numBoostRound,
           early_stopping_rounds: earlyStopping,
@@ -787,6 +808,16 @@ export default function StrategyPage() {
                           max={30}
                           value={deltaSeconds}
                           onChange={(e) => setDeltaSeconds(Number(e.target.value) || 1)}
+                        />
+                      </label>
+                      <label>
+                        ema_period (ticks)
+                        <input
+                          type="number"
+                          min={1}
+                          max={120}
+                          value={emaPeriod}
+                          onChange={(e) => setEmaPeriod(Number(e.target.value) || 8)}
                         />
                       </label>
                       <label>

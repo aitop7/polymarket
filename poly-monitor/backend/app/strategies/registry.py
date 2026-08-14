@@ -66,6 +66,8 @@ def list_strategies() -> list[dict[str, Any]]:
                 "size_usd": 10.0,
                 "horizon_seconds": 5.0,
                 "delta_seconds": 1.0,
+                "ema_period": 8.0,
+                "max_doubles": 1,
                 "min_fail_drop": 0.02,
                 "min_pair_edge": 0.0,
                 "min_elapsed_seconds": 0.0,
@@ -137,6 +139,7 @@ def create_strategy(name: str, params: dict[str, Any] | None = None) -> Any:
             else None
         )
         # Prefer active version artifact when present.
+        active_rp: dict[str, Any] = {}
         try:
             from app.core.strategy_versions import get_active, strategy_dir
 
@@ -148,12 +151,26 @@ def create_strategy(name: str, params: dict[str, Any] | None = None) -> Any:
                 if cand.is_file():
                     default_model = cand
             rp = ver.get("runtime_params") or {}
-            if isinstance(rp, dict) and rp.get("model_path"):
-                mp = Path(str(rp["model_path"]))
-                if mp.is_file():
-                    default_model = mp
+            if isinstance(rp, dict):
+                active_rp = dict(rp)
+                if rp.get("model_path"):
+                    mp = Path(str(rp["model_path"]))
+                    if mp.is_file():
+                        default_model = mp
         except Exception:
             pass
+        # Fill missing runtime knobs from the active version (model_path already handled).
+        for k in (
+            "horizon_seconds",
+            "delta_seconds",
+            "ema_period",
+            "max_doubles",
+            "min_fail_drop",
+            "min_pair_edge",
+            "size_usd",
+        ):
+            if params.get(k) is None and active_rp.get(k) is not None:
+                params[k] = active_rp[k]
         model_path = params.get("model_path") or default_model
         return MomentumPairStrategy(
             model_path=model_path,
@@ -161,6 +178,8 @@ def create_strategy(name: str, params: dict[str, Any] | None = None) -> Any:
             shares_n=float(params["shares_n"]) if params.get("shares_n") is not None else None,
             horizon_seconds=float(params.get("horizon_seconds", params.get("T", 5.0))),
             delta_seconds=float(params.get("delta_seconds", 1.0)),
+            ema_period=float(params.get("ema_period", 8.0)),
+            max_doubles=int(params.get("max_doubles", 1)),
             min_fail_drop=float(params.get("min_fail_drop", 0.02)),
             min_pair_edge=float(params.get("min_pair_edge", 0.0)),
             min_elapsed_seconds=float(params.get("min_elapsed_seconds", 0.0)),
