@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from datetime import datetime
@@ -331,15 +332,45 @@ def get_binance_health(
     return get_vps_sync().list_binance_health(date_et=date)
 
 
-@router.post("/markets/{market_id}/binance-repair")
-async def repair_binance_market(market_id: str) -> dict[str, Any]:
-    """Fill Binance price/trades from Binance REST and re-score Binance health."""
+@router.get("/markets/trades-health")
+def get_trades_health(
+    date: str | None = Query(None, description="Optional ET calendar day YYYY-MM-DD"),
+) -> dict[str, Any]:
+    """List history markets graded on Polymarket trades.parquet only."""
+    from app.live.vps_sync import get_vps_sync
+
+    return get_vps_sync().list_pm_trades_health(date_et=date)
+
+
+@router.post("/markets/{market_id}/trades-repair")
+async def repair_pm_trades_local(market_id: str) -> dict[str, Any]:
+    """Local-only trades.parquet backfill from Polymarket Data API (no VPS)."""
     from app.live.vps_sync import get_vps_sync
 
     mid = str(market_id or "").strip()
     if not mid:
         raise HTTPException(400, "market_id required")
-    result = await get_vps_sync().repair_binance_market(mid)
+    result = await get_vps_sync().repair_pm_trades_local(mid)
+    if not result.get("ok"):
+        raise HTTPException(404, str(result.get("error") or "trades repair failed"))
+    return result
+
+
+@router.post("/markets/{market_id}/binance-repair")
+async def repair_binance_market(
+    market_id: str,
+    part: str | None = Query(
+        None,
+        description="price | trades | all (default both)",
+    ),
+) -> dict[str, Any]:
+    """Fill Binance price and/or trades from Binance REST (local, no VPS)."""
+    from app.live.vps_sync import get_vps_sync
+
+    mid = str(market_id or "").strip()
+    if not mid:
+        raise HTTPException(400, "market_id required")
+    result = await get_vps_sync().repair_binance_market(mid, part=part)
     if not result.get("ok"):
         raise HTTPException(404, str(result.get("error") or "binance repair failed"))
     return result
@@ -436,6 +467,22 @@ async def get_market(market_id: str, split: str | None = None) -> dict[str, Any]
     }
 
 
+@router.post("/markets/health/rescore-all")
+def rescore_all_market_health(
+    until: str | None = Query(
+        None,
+        description="Optional ET date YYYY-MM-DD — only markets on/before this day",
+    ),
+) -> dict[str, Any]:
+    """Local-only restamp of meta.data_health for all (or until-date) history markets."""
+    from app.live.vps_sync import get_vps_sync
+
+    day = (until or "").strip() or None
+    if day is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise HTTPException(400, "until must be YYYY-MM-DD")
+    return get_vps_sync().rescore_all_local_health(until_date=day)
+
+
 @router.post("/markets/{market_id}/health/rescore-pmdata")
 def rescore_market_health_pmdata(market_id: str) -> dict[str, Any]:
     """Local-only restamp of data_health using pm_orderbooks / pm_chainlink when present."""
@@ -487,6 +534,7 @@ def generate_pm_orderbooks(
     """Download PMData L2 for the market slug and write pm_orderbooks.parquet (0.5s grid)."""
     from app.core.pm_orderbooks import generate_pm_orderbooks_for_market
     from app.core.pmdata_client import pmdata_enabled
+    from app.live.vps_sync import get_vps_sync
 
     mid = str(market_id or "").strip()
     if not mid:
@@ -494,11 +542,16 @@ def generate_pm_orderbooks(
     if not pmdata_enabled():
         raise HTTPException(400, "PMDATA_API_KEY is not configured in poly-monitor/.env")
     try:
-        return generate_pm_orderbooks_for_market(mid, force_download=bool(force))
+        result = generate_pm_orderbooks_for_market(mid, force_download=bool(force))
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
+    sync = get_vps_sync()
+    local_path, stub = sync._local_stub(mid)
+    if local_path is not None:
+        result["data_health"] = sync._persist_health(local_path, stub) or "unchecked"
+    return result
 
 
 @router.post("/markets/{market_id}/pm-chainlink")
@@ -509,6 +562,7 @@ def generate_pm_chainlink(
     """Download PMData Chainlink streams and write pm_chainlink_price.parquet (0.5s grid)."""
     from app.core.pm_chainlink import generate_pm_chainlink_for_market
     from app.core.pmdata_client import pmdata_enabled
+    from app.live.vps_sync import get_vps_sync
 
     mid = str(market_id or "").strip()
     if not mid:
@@ -516,11 +570,16 @@ def generate_pm_chainlink(
     if not pmdata_enabled():
         raise HTTPException(400, "PMDATA_API_KEY is not configured in poly-monitor/.env")
     try:
-        return generate_pm_chainlink_for_market(mid, force_download=bool(force))
+        result = generate_pm_chainlink_for_market(mid, force_download=bool(force))
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
+    sync = get_vps_sync()
+    local_path, stub = sync._local_stub(mid)
+    if local_path is not None:
+        result["data_health"] = sync._persist_health(local_path, stub) or "unchecked"
+    return result
 
 
 @router.get("/markets/{market_id}/book")

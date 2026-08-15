@@ -285,6 +285,7 @@ export const api = {
       slot_ms?: number
       source?: string
       warning?: string | null
+      data_health?: DataHealth
     }>(`/api/markets/${id}/pm-orderbooks${q}`, { method: 'POST' })
   },
   missingPmOrderbooks: (date?: string) => {
@@ -317,6 +318,7 @@ export const api = {
       source?: string
       dates?: string[]
       warning?: string | null
+      data_health?: DataHealth
     }>(`/api/markets/${id}/pm-chainlink${q}`, { method: 'POST' })
   },
   missingPmChainlink: (date?: string) => {
@@ -381,10 +383,53 @@ export const api = {
       }>
     }>(`/api/markets/binance-health${q}`, { cache: 'no-store' })
   },
-  repairBinance: (id: string) =>
+  tradesHealth: (date?: string) => {
+    const q = date ? `?date=${encodeURIComponent(date)}` : ''
+    return json<{
+      date: string | null
+      n_total: number
+      n_great: number
+      n_issues: number
+      counts: Record<string, number>
+      markets: Array<{
+        market_id: string
+        slug?: string | null
+        start_time: number
+        end_time: number
+        date_et?: string | null
+        time_et?: string | null
+        grade: string
+        trade_grade?: string
+        max_trade_quiet_ms?: number
+        has_trades?: boolean
+        trades_repaired_complete?: boolean
+      }>
+    }>(`/api/markets/trades-health${q}`, { cache: 'no-store' })
+  },
+  repairTradesLocal: (id: string) =>
     json<{
       ok: boolean
       market_id: string
+      local_only?: boolean
+      trade_rows_added?: number
+      filled?: Record<string, number>
+      grade?: string
+      trade_grade?: string
+      max_trade_quiet_ms?: number
+      has_trades?: boolean
+      trades_repaired_complete?: boolean
+      data_health?: DataHealth
+      data_health_comment?: string | null
+      error?: string
+    }>(`/api/markets/${encodeURIComponent(id)}/trades-repair`, { method: 'POST' }),
+  repairBinance: (id: string, opts?: { part?: 'price' | 'trades' | 'all' }) => {
+    const q = new URLSearchParams()
+    if (opts?.part && opts.part !== 'all') q.set('part', opts.part)
+    const qs = q.toString()
+    return json<{
+      ok: boolean
+      market_id: string
+      part?: string
       filled?: Record<string, number>
       grade?: string
       price_grade?: string
@@ -393,8 +438,14 @@ export const api = {
       max_trade_quiet_ms?: number
       has_price?: boolean
       has_trades?: boolean
+      data_health?: DataHealth
+      data_health_comment?: string | null
       error?: string
-    }>(`/api/markets/${encodeURIComponent(id)}/binance-repair`, { method: 'POST' }),
+    }>(
+      `/api/markets/${encodeURIComponent(id)}/binance-repair${qs ? `?${qs}` : ''}`,
+      { method: 'POST' },
+    )
+  },
   rescorePmdataHealth: (id: string) =>
     json<{
       ok: boolean
@@ -410,6 +461,18 @@ export const api = {
       notes?: string[]
       notes_by_file?: Record<string, string[]>
     }>(`/api/markets/${id}/health/rescore-pmdata`, { method: 'POST' }),
+  rescoreAllHealth: (opts?: { until?: string }) => {
+    const q = opts?.until ? `?until=${encodeURIComponent(opts.until)}` : ''
+    return json<{
+      ok: boolean
+      until?: string | null
+      targets: number
+      updated: number
+      counts: Record<string, number>
+      errors?: string[]
+      n_errors?: number
+    }>(`/api/markets/health/rescore-all${q}`, { method: 'POST' })
+  },
   book: (id: string, t?: number) =>
     json<Record<string, unknown>>(`/api/markets/${id}/book${t != null ? `?t=${t}` : ''}`),
   backtest: (body: Record<string, unknown>) =>

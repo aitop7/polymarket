@@ -218,8 +218,18 @@ async def repair_binance_for_market_dir(
     *,
     start_ms: int | None = None,
     end_ms: int | None = None,
+    parts: set[str] | None = None,
 ) -> dict[str, int]:
-    """Backfill Binance trades + 1s BTC price from Binance REST only."""
+    """Backfill Binance trades and/or 1s BTC price from Binance REST.
+
+    ``parts`` may include ``\"price\"`` and/or ``\"trades\"`` (default: both).
+    """
+    want = {str(p).strip().lower() for p in (parts or {"price", "trades"})}
+    do_price = "price" in want
+    do_trades = "trades" in want
+    if not do_price and not do_trades:
+        return {}
+
     meta = _meta(market_dir) or {}
     try:
         start = int(start_ms if start_ms is not None else meta.get("start_time") or 0)
@@ -231,32 +241,36 @@ async def repair_binance_for_market_dir(
 
     filled: dict[str, int] = {}
     async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=8.0)) as http:
-        klines = await _klines_1s(http, start_ms=start, end_ms=end)
-        try:
-            incoming = await _agg_trades(http, start_ms=start, end_ms=end)
-            path = market_dir / "binance_trades.parquet"
-            old = _read_df(path)
-            new = pd.DataFrame(incoming)
-            if not new.empty:
-                if old.empty:
-                    merged = new
-                else:
-                    merged = pd.concat([old, new], ignore_index=True)
-                if "timestamp" in merged.columns:
-                    merged = merged.drop_duplicates(
-                        subset=[
-                            c
-                            for c in ("timestamp", "price", "quantity", "buyer_is_maker")
-                            if c in merged.columns
-                        ],
-                        keep="last",
-                    )
-                filled["binance_trades.parquet"] = max(0, len(merged) - len(old))
-                _write_df(path, merged)
-        except Exception as exc:
-            logger.warning("Binance trade repair failed for %s: %s", market_dir.name, exc)
+        klines: dict[int, float] = {}
+        if do_price:
+            klines = await _klines_1s(http, start_ms=start, end_ms=end)
 
-        if klines:
+        if do_trades:
+            try:
+                incoming = await _agg_trades(http, start_ms=start, end_ms=end)
+                path = market_dir / "binance_trades.parquet"
+                old = _read_df(path)
+                new = pd.DataFrame(incoming)
+                if not new.empty:
+                    if old.empty:
+                        merged = new
+                    else:
+                        merged = pd.concat([old, new], ignore_index=True)
+                    if "timestamp" in merged.columns:
+                        merged = merged.drop_duplicates(
+                            subset=[
+                                c
+                                for c in ("timestamp", "price", "quantity", "buyer_is_maker")
+                                if c in merged.columns
+                            ],
+                            keep="last",
+                        )
+                    filled["binance_trades.parquet"] = max(0, len(merged) - len(old))
+                    _write_df(path, merged)
+            except Exception as exc:
+                logger.warning("Binance trade repair failed for %s: %s", market_dir.name, exc)
+
+        if do_price and klines:
             px_path = market_dir / "binance_price_orderbook.parquet"
             px, n = _fill_seconds(
                 _read_df(px_path),

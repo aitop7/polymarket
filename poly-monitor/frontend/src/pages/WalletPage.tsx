@@ -1304,13 +1304,9 @@ export default function WalletPage() {
         setMarketDetail(detail)
         const series = detail.series || []
         let domain: TimeDomain | null = null
+        // Default view: official 5m window only (premarket reachable via pan/zoom-out).
         if (detail.start_time != null && detail.end_time != null) {
-          let left = detail.start_time
-          for (const p of series) {
-            const t = Number(p.t)
-            if (Number.isFinite(t) && t < left) left = t
-          }
-          domain = [left, detail.end_time]
+          domain = [detail.start_time, detail.end_time]
         } else if (series.length) {
           domain = [series[0].t, series[series.length - 1].t]
         }
@@ -1345,6 +1341,7 @@ export default function WalletPage() {
   )
 
   const xFullDomain = useMemo((): TimeDomain => {
+    // Max zoom-out: market window plus any premarket samples.
     if (marketDetail?.start_time != null && marketDetail?.end_time != null) {
       let left = marketDetail.start_time
       for (const p of priceChartData) {
@@ -1364,8 +1361,24 @@ export default function WalletPage() {
     return [now - 300_000, now]
   }, [marketDetail, priceChartData, traderMarks])
 
-  // Always prefer an explicit domain; fall back to full window for the loaded market.
-  const chartXDomain = sharedXDomain ?? xFullDomain
+  // Default view: full 5m market only. Premarket is reachable via zoom-out / pan.
+  const xDefaultDomain = useMemo((): TimeDomain => {
+    if (marketDetail?.start_time != null && marketDetail?.end_time != null) {
+      const m0 = marketDetail.start_time
+      const m1 = marketDetail.end_time
+      if (m1 > m0) return [m0, m1]
+      return [m0, m0 + 5 * 60_000]
+    }
+    const slugWin = selectedMarketWindow
+    if (slugWin) return [slugWin.startMs, slugWin.endMs]
+    const [f0, f1] = xFullDomain
+    const end = Number.isFinite(f1) && f1 > f0 ? f1 : f0 + 5 * 60_000
+    const start = Math.max(f0, end - 5 * 60_000)
+    return [start, end]
+  }, [marketDetail, selectedMarketWindow, xFullDomain])
+
+  // Always prefer an explicit domain; fall back to the 5m market window.
+  const chartXDomain = sharedXDomain ?? xDefaultDomain
 
   const chartMarketKey = marketDetail?.market_id || selectedSlug || 'none'
 
@@ -1908,81 +1921,8 @@ export default function WalletPage() {
           </section>
         )}
 
-        {wallet && (expandedMarket || selectedSlug) && (
-          <section className="wallet-chart-panel">
-            <div className="wallet-chart-head">
-              <div>
-                <h2>Price · trade timing</h2>
-                <p className="muted wallet-chart-sub">
-                  {shortMarketLabel(
-                    selectedMarketMeta?.title || selectedMarketActivity?.title,
-                    selectedSlug,
-                  )}
-                  {traderMarks.length > 0
-                    ? ` · ${traderMarks.length} fill${traderMarks.length === 1 ? '' : 's'} marked on Up/Down`
-                    : ''}
-                </p>
-              </div>
-              {marketDetail?.market_id && (
-                <span className="wallet-chart-mid muted" title={marketDetail.market_id}>
-                  {marketDetail.market_id}
-                </span>
-              )}
-            </div>
-            {chartLoading && (
-              <p className="muted" style={{ padding: '0.75rem 0.9rem' }}>
-                Loading price series…
-              </p>
-            )}
-            {!chartLoading && chartError && !marketDetail && (
-              <p className="muted" style={{ padding: '0.75rem 0.9rem' }}>
-                {chartError}
-                {traderMarks.length > 0
-                  ? ' — fill markers still listed in Activity below.'
-                  : ''}
-              </p>
-            )}
-            {!chartLoading && marketDetail && priceChartData.length > 0 && (
-              <div className="wallet-chart-stack">
-                <PriceChart
-                  key={`${chartMarketKey}-btc`}
-                  data={priceChartData}
-                  priceToBeat={marketDetail.btc_open_price}
-                  mode="btc"
-                  title="BTC price"
-                  seriesVisible={btcSeriesVisible}
-                  onSeriesVisibleChange={setBtcSeriesVisible}
-                  xDomain={chartXDomain}
-                  onXDomainChange={setSharedXDomain}
-                  onXDomainReset={() => setSharedXDomain(xFullDomain)}
-                  xFullDomain={xFullDomain}
-                  xDefaultDomain={xFullDomain}
-                  hoverTime={sharedHoverTime}
-                  onHoverTimeChange={setSharedHoverTime}
-                  highlightTime={activityHighlightTs}
-                />
-                <PriceChart
-                  key={`${chartMarketKey}-outcomes`}
-                  data={priceChartData}
-                  mode="outcomes"
-                  title="Up / Down price"
-                  xDomain={chartXDomain}
-                  onXDomainChange={setSharedXDomain}
-                  onXDomainReset={() => setSharedXDomain(xFullDomain)}
-                  xFullDomain={xFullDomain}
-                  xDefaultDomain={xFullDomain}
-                  hoverTime={sharedHoverTime}
-                  onHoverTimeChange={setSharedHoverTime}
-                  traderMarks={traderMarks}
-                  highlightTime={activityHighlightTs}
-                />
-              </div>
-            )}
-          </section>
-        )}
-
         {wallet && (
-          <section className="wallet-split-row wallet-split-row-3">
+          <section className="wallet-split-row">
             <div className="wallet-panel">
               <div className="wallet-panel-head">
                 <h2>PnL by day</h2>
@@ -2112,7 +2052,11 @@ export default function WalletPage() {
                 </button>
               </div>
             </div>
+          </section>
+        )}
 
+        {wallet && (
+          <section className="wallet-split-row wallet-activity-charts-row">
             <div className="wallet-panel wallet-activity-panel">
               <div className="wallet-panel-head">
                 <h2>Activity</h2>
@@ -2418,6 +2362,90 @@ export default function WalletPage() {
                 </button>
               </div>
             </div>
+
+            <section className="wallet-chart-panel">
+              <div className="wallet-chart-head">
+                <div>
+                  <h2>Price · trade timing</h2>
+                  <p className="muted wallet-chart-sub">
+                    {expandedMarket || selectedSlug
+                      ? shortMarketLabel(
+                          selectedMarketMeta?.title || selectedMarketActivity?.title,
+                          selectedSlug,
+                        )
+                      : 'Select a market to load price charts'}
+                    {traderMarks.length > 0
+                      ? ` · ${traderMarks.length} fill${traderMarks.length === 1 ? '' : 's'} marked on Up/Down`
+                      : ''}
+                  </p>
+                </div>
+                {marketDetail?.market_id && (
+                  <span className="wallet-chart-mid muted" title={marketDetail.market_id}>
+                    {marketDetail.market_id}
+                  </span>
+                )}
+              </div>
+              {!(expandedMarket || selectedSlug) && (
+                <p className="muted" style={{ padding: '0.75rem 0.9rem' }}>
+                  Choose a market in PnL by market to see BTC and Up/Down charts.
+                </p>
+              )}
+              {(expandedMarket || selectedSlug) && chartLoading && (
+                <p className="muted" style={{ padding: '0.75rem 0.9rem' }}>
+                  Loading price series…
+                </p>
+              )}
+              {(expandedMarket || selectedSlug) &&
+                !chartLoading &&
+                chartError &&
+                !marketDetail && (
+                  <p className="muted" style={{ padding: '0.75rem 0.9rem' }}>
+                    {chartError}
+                    {traderMarks.length > 0
+                      ? ' — fill markers still listed in Activity.'
+                      : ''}
+                  </p>
+                )}
+              {(expandedMarket || selectedSlug) &&
+                !chartLoading &&
+                marketDetail &&
+                priceChartData.length > 0 && (
+                  <div className="wallet-chart-stack">
+                    <PriceChart
+                      key={`${chartMarketKey}-btc`}
+                      data={priceChartData}
+                      priceToBeat={marketDetail.btc_open_price}
+                      mode="btc"
+                      title="BTC price"
+                      seriesVisible={btcSeriesVisible}
+                      onSeriesVisibleChange={setBtcSeriesVisible}
+                      xDomain={chartXDomain}
+                      onXDomainChange={setSharedXDomain}
+                      onXDomainReset={() => setSharedXDomain(xDefaultDomain)}
+                      xFullDomain={xFullDomain}
+                      xDefaultDomain={xDefaultDomain}
+                      hoverTime={sharedHoverTime}
+                      onHoverTimeChange={setSharedHoverTime}
+                      highlightTime={activityHighlightTs}
+                    />
+                    <PriceChart
+                      key={`${chartMarketKey}-outcomes`}
+                      data={priceChartData}
+                      mode="outcomes"
+                      title="Up / Down price"
+                      xDomain={chartXDomain}
+                      onXDomainChange={setSharedXDomain}
+                      onXDomainReset={() => setSharedXDomain(xDefaultDomain)}
+                      xFullDomain={xFullDomain}
+                      xDefaultDomain={xDefaultDomain}
+                      hoverTime={sharedHoverTime}
+                      onHoverTimeChange={setSharedHoverTime}
+                      traderMarks={traderMarks}
+                      highlightTime={activityHighlightTs}
+                    />
+                  </div>
+                )}
+            </section>
           </section>
         )}
       </div>

@@ -373,7 +373,7 @@ class VpsSyncClient:
             quiet = b - a
             if quiet > _PRICE_STEP_MS:
                 max_quiet = max(max_quiet, quiet)
-            # Note anything that leaves trade Great (<2s).
+            # Note quiets that leave trade Great (quiet >= TRADE_NOTE_MS).
             if quiet >= _TRADE_NOTE_MS:
                 scored.append((quiet, self._fmt_gap_detail(a, b, kind="quiet")))
 
@@ -1281,6 +1281,68 @@ class VpsSyncClient:
             "errors": errors,
         }
 
+    def rescore_all_local_health(
+        self,
+        *,
+        until_date: str | None = None,
+        workers: int = 8,
+    ) -> dict[str, Any]:
+        """Local-only restamp of meta.data_health for history market dirs (no VPS)."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from app.core.live_dataset import TWAP_SPLIT
+        from app.core.market_index import invalidate_market_index
+
+        until = (until_date or "").strip() or None
+        dirs = self._iter_local_market_dirs()
+        if until:
+            dirs = [d for d in dirs if d.parent.name <= until]
+
+        counts: dict[str, int] = {
+            "great": 0,
+            "good": 0,
+            "ok": 0,
+            "low": 0,
+            "bad": 0,
+            "unchecked": 0,
+        }
+        errors: list[str] = []
+        n_workers = max(1, min(int(workers or 8), 16))
+
+        def one(d: Path) -> tuple[str, str | None, str | None]:
+            mid = d.name
+            local, stub = self._local_stub(mid)
+            if local is None:
+                return mid, None, "missing"
+            grade = self._persist_health(local, stub) or "unchecked"
+            return mid, grade, None
+
+        updated = 0
+        with ThreadPoolExecutor(max_workers=n_workers) as ex:
+            futs = [ex.submit(one, d) for d in dirs]
+            for fut in as_completed(futs):
+                mid, grade, err = fut.result()
+                if err or not grade:
+                    errors.append(f"{mid}: {err or 'failed'}")
+                    continue
+                counts[grade] = counts.get(grade, 0) + 1
+                updated += 1
+
+        try:
+            invalidate_market_index(TWAP_SPLIT)
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "until": until,
+            "targets": len(dirs),
+            "updated": updated,
+            "counts": counts,
+            "errors": errors[:50],
+            "n_errors": len(errors),
+        }
+
     async def ensure_active_market(
         self, market_id: str, *, force: bool = False
     ) -> Path | None:
@@ -1538,8 +1600,167 @@ class VpsSyncClient:
             "markets": markets,
         }
 
-    async def repair_binance_market(self, market_id: str) -> dict[str, Any]:
-        """Fetch Binance REST trades/klines into local files and re-score Binance health."""
+    def _score_pm_trades_file(
+        self,
+        market_dir: Path,
+        *,
+        start: int,
+        end: int,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Grade trades.parquet the same way history data_health does:
+        after Data API rewrite (meta.trades_repaired_complete), quiet gaps
+        are ignored — thin Polymarket prints are expected and must not tank
+        the badge / Trades panel.
+        """
+        from app.core.live_dataset import (
+            DATA_HEALTH_BAD,
+            DATA_HEALTH_GREAT,
+            DATA_HEALTH_UNCHECKED,
+            grade_trade_health,
+            _read_meta,
+        )
+
+        info = meta if isinstance(meta, dict) else (_read_meta(market_dir / "meta.json") or {})
+        now_ms = int(time.time() * 1000)
+        if start <= 0 or end <= start:
+            return {
+                "grade": DATA_HEALTH_UNCHECKED,
+                "trade_grade": DATA_HEALTH_UNCHECKED,
+                "max_trade_quiet_ms": 0,
+                "has_trades": False,
+                "trades_repaired_complete": False,
+            }
+        win_end = min(end, now_ms) if end > now_ms else end
+        if win_end <= start:
+            return {
+                "grade": DATA_HEALTH_UNCHECKED,
+                "trade_grade": DATA_HEALTH_UNCHECKED,
+                "max_trade_quiet_ms": 0,
+                "has_trades": False,
+                "trades_repaired_complete": False,
+            }
+
+        tr_path = market_dir / "trades.parquet"
+        has_trades = tr_path.is_file() and tr_path.stat().st_size > 0
+        repaired = bool(info.get("trades_repaired_complete"))
+        if not has_trades:
+            quiet, _ = self._trade_series_stats(
+                tr_path,
+                name="trades.parquet",
+                start=start,
+                end=win_end,
+                remote_has=True,
+            )
+            grade = DATA_HEALTH_BAD
+        elif repaired:
+            # Match _analyze_gaps: skip PM trade quiet after complete repair.
+            quiet = 0
+            grade = DATA_HEALTH_GREAT
+        else:
+            quiet, _ = self._trade_series_stats(
+                tr_path,
+                name="trades.parquet",
+                start=start,
+                end=win_end,
+                remote_has=True,
+            )
+            grade = grade_trade_health(quiet)
+        return {
+            "grade": grade,
+            "trade_grade": grade,
+            "max_trade_quiet_ms": int(quiet),
+            "has_trades": has_trades,
+            "trades_repaired_complete": repaired,
+        }
+
+    def list_pm_trades_health(self, *, date_et: str | None = None) -> dict[str, Any]:
+        """History markets graded on Polymarket trades.parquet only (oldest → newest)."""
+        from app.core.live_dataset import (
+            TWAP_SPLIT,
+            find_live_market_dir,
+            _read_meta,
+        )
+        from app.core.market_index import (
+            build_market_index,
+            filter_history_markets,
+            list_markets_for_date,
+        )
+
+        date = (date_et or "").strip() or None
+        if date:
+            rows = list_markets_for_date(TWAP_SPLIT, date)
+        else:
+            rows = filter_history_markets(TWAP_SPLIT, build_market_index(TWAP_SPLIT))
+
+        markets: list[dict[str, Any]] = []
+        counts: dict[str, int] = {
+            "great": 0,
+            "good": 0,
+            "ok": 0,
+            "low": 0,
+            "bad": 0,
+            "unchecked": 0,
+        }
+        for r in rows:
+            mid = str(r.get("market_id") or "")
+            if not mid:
+                continue
+            d = Path(str(r["dir"])) if r.get("dir") else find_live_market_dir(mid)
+            if d is None or not d.is_dir():
+                continue
+            try:
+                start = int(r.get("start_time") or 0)
+                end = int(r.get("end_time") or 0)
+            except (TypeError, ValueError):
+                start = end = 0
+            meta = _read_meta(d / "meta.json") or {}
+            scored = self._score_pm_trades_file(d, start=start, end=end, meta=meta)
+            grade = str(scored.get("grade") or "unchecked")
+            counts[grade] = counts.get(grade, 0) + 1
+            markets.append(
+                {
+                    "market_id": mid,
+                    "slug": None,
+                    "start_time": start,
+                    "end_time": end,
+                    "date_et": r.get("date_et"),
+                    "time_et": r.get("time_et"),
+                    "grade": grade,
+                    "trade_grade": scored.get("trade_grade") or grade,
+                    "max_trade_quiet_ms": int(scored.get("max_trade_quiet_ms") or 0),
+                    "has_trades": bool(scored.get("has_trades")),
+                    "trades_repaired_complete": bool(
+                        scored.get("trades_repaired_complete")
+                    ),
+                }
+            )
+
+        markets.sort(
+            key=lambda row: (int(row.get("start_time") or 0), str(row.get("market_id") or ""))
+        )
+        n_total = len(markets)
+        n_great = int(counts.get("great") or 0)
+        return {
+            "date": date,
+            "n_total": n_total,
+            "n_great": n_great,
+            "n_issues": max(0, n_total - n_great),
+            "counts": counts,
+            "markets": markets,
+        }
+
+    async def repair_binance_market(
+        self,
+        market_id: str,
+        *,
+        part: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch Binance REST into local files and re-score Binance health.
+
+        ``part``: ``price`` | ``trades`` | ``all``/None (both).
+        """
         from app.core.series_repair import repair_binance_for_market_dir
 
         mid = str(market_id or "").strip()
@@ -1554,17 +1775,31 @@ class VpsSyncClient:
         if start <= 0 or end <= start:
             return {"ok": False, "market_id": mid, "error": "missing market window"}
 
+        raw_part = str(part or "all").strip().lower()
+        if raw_part in {"price", "px", "orderbook"}:
+            parts = {"price"}
+        elif raw_part in {"trades", "trade", "tr"}:
+            parts = {"trades"}
+        else:
+            parts = {"price", "trades"}
+
         try:
             filled = await repair_binance_for_market_dir(
-                local_path, start_ms=start, end_ms=end
+                local_path, start_ms=start, end_ms=end, parts=parts
             )
         except Exception as exc:
             return {"ok": False, "market_id": mid, "error": str(exc)}
 
         scored = self.score_binance_health(local_path, start=start, end=end)
+        from app.core.live_dataset import read_data_health, read_data_health_comment, _read_meta
+
+        # Restamp history badge (meta.data_health) after file fix.
+        data_health = self._persist_health(local_path, stub) or "unchecked"
+        meta = _read_meta(local_path / "meta.json") or {}
         return {
             "ok": True,
             "market_id": mid,
+            "part": "price" if parts == {"price"} else "trades" if parts == {"trades"} else "all",
             "filled": filled,
             "grade": scored.get("grade"),
             "price_grade": scored.get("price_grade"),
@@ -1573,6 +1808,56 @@ class VpsSyncClient:
             "max_trade_quiet_ms": scored.get("max_trade_quiet_ms"),
             "has_price": scored.get("has_price"),
             "has_trades": scored.get("has_trades"),
+            "data_health": data_health or read_data_health(meta),
+            "data_health_comment": read_data_health_comment(meta),
+        }
+
+    async def repair_pm_trades_local(self, market_id: str) -> dict[str, Any]:
+        """Local-only Polymarket trades.parquet backfill via Data API (no VPS)."""
+        from app.core.live_dataset import (
+            read_data_health,
+            read_data_health_comment,
+            _read_meta,
+        )
+        from app.core.trade_repair import backfill_trades_for_market_dir
+
+        mid = str(market_id or "").strip()
+        if not mid:
+            return {"ok": False, "error": "missing market_id"}
+        local_path, stub = self._local_stub(mid)
+        if local_path is None or not local_path.is_dir():
+            return {"ok": False, "market_id": mid, "error": "local market not found"}
+
+        start = int(stub.get("start_time") or 0)
+        end = int(stub.get("end_time") or 0)
+        if start <= 0 or end <= start:
+            return {"ok": False, "market_id": mid, "error": "missing market window"}
+
+        try:
+            added = int(await backfill_trades_for_market_dir(local_path) or 0)
+        except Exception as exc:
+            return {"ok": False, "market_id": mid, "error": str(exc)}
+
+        meta = _read_meta(local_path / "meta.json") or {}
+        scored = self._score_pm_trades_file(
+            local_path, start=start, end=end, meta=meta
+        )
+        # Restamp history badge after trades rewrite (honors trades_repaired_complete).
+        data_health = self._persist_health(local_path, stub) or "unchecked"
+        meta = _read_meta(local_path / "meta.json") or {}
+        return {
+            "ok": True,
+            "market_id": mid,
+            "local_only": True,
+            "trade_rows_added": added,
+            "filled": {"trades.parquet": added},
+            "grade": scored.get("grade"),
+            "trade_grade": scored.get("trade_grade"),
+            "max_trade_quiet_ms": int(scored.get("max_trade_quiet_ms") or 0),
+            "has_trades": bool(scored.get("has_trades")),
+            "trades_repaired_complete": bool(scored.get("trades_repaired_complete")),
+            "data_health": data_health or read_data_health(meta),
+            "data_health_comment": read_data_health_comment(meta),
         }
 
     def rescore_pmdata_health(self, market_id: str) -> dict[str, Any]:
