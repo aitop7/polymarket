@@ -17,6 +17,9 @@ import BtcPricePanel from '../components/BtcPricePanel'
 import ControlSidebar from '../components/ControlSidebar'
 import FeedSidebar from '../components/FeedSidebar'
 import OrderBookPanel, { type BookPayload } from '../components/OrderBookPanel'
+import BinanceOrderBookPanel, {
+  type BinanceBookPayload,
+} from '../components/BinanceOrderBookPanel'
 import PriceChart, {
   type BtcSeriesVisibility,
   type TimeDomain,
@@ -156,6 +159,7 @@ type Tick = {
   btc_chainlink?: number | null
   btc_chainlink_ts?: number | null
   book?: BookPayload
+  binance_book?: BinanceBookPayload | null
   live?: boolean
   error?: string
   message?: string
@@ -369,6 +373,7 @@ export default function MarketPage({ mode }: Props) {
   const [traderDetail, setTraderDetail] = useState<TraderDetailResponse | null>(null)
   const [tab, setTab] = useState<'activity' | 'positions' | 'rules'>('activity')
   const [book, setBook] = useState<BookPayload | null>(null)
+  const [binanceBook, setBinanceBook] = useState<BinanceBookPayload | null>(null)
   const [side, setSide] = useState<'UP' | 'DOWN'>('UP')
   const [tradeAction, setTradeAction] = useState<'BUY' | 'SELL'>('BUY')
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -946,6 +951,7 @@ export default function MarketPage({ mode }: Props) {
       setSelectedWallet(null)
       setTraderDetail(null)
       setBook(null)
+      setBinanceBook(null)
       setHolders(null)
       setHoldersRevision(0)
       setLiveMarketId('')
@@ -1039,6 +1045,7 @@ export default function MarketPage({ mode }: Props) {
         setSeriesLive([])
         setLiveActivityTrades([])
         setBook(null)
+        setBinanceBook(null)
         setHolders(null)
         holdersTouchedRef.current.clear()
         // Closed market just rolled — rebuild TWAP catalog after VPS sync lands.
@@ -1105,6 +1112,7 @@ export default function MarketPage({ mode }: Props) {
           setLiveWindow({ start: Number(msg.start_time), end: Number(msg.end_time) })
         }
         if (msg.book) setBook(msg.book as BookPayload)
+        if (msg.binance_book) setBinanceBook(msg.binance_book as BinanceBookPayload)
         // Always record live chart points (TWAP can update even when outcomes are stubbed).
         {
           setSeriesLive((prev) => {
@@ -1241,6 +1249,7 @@ export default function MarketPage({ mode }: Props) {
       setLiveMarketId('')
       liveMarketIdRef.current = ''
       setLiveWindow(null)
+      setBinanceBook(null)
       setHolders(null)
       setLiveActivityTrades([])
       setTraders(null)
@@ -1681,6 +1690,7 @@ export default function MarketPage({ mode }: Props) {
             live={liveActive}
             nowMs={liveActive ? nowMs : undefined}
           />
+          <BinanceOrderBookPanel book={binanceBook} live={liveActive} />
           <PriceChart
             data={chartData}
             mode="outcomes"

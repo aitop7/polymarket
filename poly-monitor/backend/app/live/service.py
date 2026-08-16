@@ -135,6 +135,7 @@ class LiveMarketService:
         self._series: deque[dict[str, Any]] = deque(maxlen=_SERIES_MAX)
         self._series_market_id: str | None = None
         self._last_btc_price: float | None = None
+        self._last_binance_book: dict[str, Any] | None = None
         self._holders_cache: dict[str, Any] | None = None
         self._holders_cache_at = 0.0
         self._ptb_refine_task: asyncio.Task[None] | None = None
@@ -830,15 +831,25 @@ class LiveMarketService:
             except Exception:
                 return {"bids": [], "asks": []}
 
+        async def _binance_book() -> dict[str, Any] | None:
+            try:
+                depth = await self.clients.get_btc_depth(limit=1000)
+                self._last_binance_book = depth
+                return depth
+            except Exception:
+                return self._last_binance_book
+
         up_book: dict[str, Any] = {"bids": [], "asks": []}
         down_book: dict[str, Any] = {"bids": [], "asks": []}
+        binance_book: dict[str, Any] | None = None
         if market is None or not self._token_up:
-            btc = await _btc()
+            btc, binance_book = await asyncio.gather(_btc(), _binance_book())
         else:
-            btc, up_book, down_book = await asyncio.gather(
+            btc, up_book, down_book, binance_book = await asyncio.gather(
                 _btc(),
                 _book(self._token_up),
                 _book(self._token_down),
+                _binance_book(),
             )
         if btc is None:
             return self._with_twap(
@@ -846,6 +857,7 @@ class LiveMarketService:
                     "type": "error",
                     "message": "BTC price unavailable",
                     "timestamp": now_ms,
+                    "binance_book": binance_book,
                 }
             )
         await self._lock_price_to_beat(btc=btc)
@@ -885,6 +897,7 @@ class LiveMarketService:
                         "up": None,
                         "down": None,
                     },
+                    "binance_book": binance_book,
                     "error": "No active market",
                 }
             )
@@ -942,6 +955,7 @@ class LiveMarketService:
                 "remaining_seconds": remaining,
                 "elapsed_seconds": elapsed,
                 "book": book,
+                "binance_book": binance_book,
             }
         )
         self._record_series_point(snap)

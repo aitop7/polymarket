@@ -4299,6 +4299,24 @@ select {
   box-shadow: 0 1px 2px rgba(15, 17, 23, 0.04);
 }
 
+.panel > .bn-ob-panel {
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+/* USD ranges like $63,383.53-$63,434.73 need more room than PM ¢ bands */
+.bn-ob-panel .ob-cols,
+.bn-ob-panel .ob-row {
+  grid-template-columns: minmax(72px, 1fr) minmax(210px, 1.4fr) 84px 92px;
+}
+
+@media (max-width: 640px) {
+  .bn-ob-panel .ob-cols,
+  .bn-ob-panel .ob-row {
+    grid-template-columns: minmax(48px, 0.7fr) minmax(150px, 1.6fr) 72px 76px;
+  }
+}
+
 .ob-header {
   display: flex;
   align-items: center;

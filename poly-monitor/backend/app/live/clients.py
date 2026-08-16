@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import httpx
@@ -88,6 +89,63 @@ class LiveClients:
             except Exception as exc:
                 last_exc = exc
         raise RuntimeError(f"Binance BTC price failed: {last_exc}")
+
+    async def get_btc_depth(self, *, limit: int = 1000) -> dict[str, Any]:
+        """BTCUSDT depth bucketed into USD-distance bands (binance_price_orderbook schema)."""
+        from app.live.binance_bands import banded_book_from_levels
+
+        # Binance depth limit whitelist.
+        allowed = (5, 10, 20, 50, 100, 500, 1000)
+        lim = int(limit)
+        lim = min(allowed, key=lambda x: abs(x - lim))
+        last_exc: Exception | None = None
+        for base in (BINANCE_URL, *BINANCE_FALLBACKS):
+            root = base.rstrip("/")
+            try:
+                resp = await self._binance.get(
+                    f"{root}/api/v3/depth",
+                    params={"symbol": "BTCUSDT", "limit": lim},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                bids: list[tuple[float, float]] = []
+                asks: list[tuple[float, float]] = []
+                for row in data.get("bids") or []:
+                    if not isinstance(row, (list, tuple)) or len(row) < 2:
+                        continue
+                    try:
+                        px = float(row[0])
+                        qty = float(row[1])
+                    except (TypeError, ValueError):
+                        continue
+                    if px > 0 and qty > 0:
+                        bids.append((px, qty))
+                for row in data.get("asks") or []:
+                    if not isinstance(row, (list, tuple)) or len(row) < 2:
+                        continue
+                    try:
+                        px = float(row[0])
+                        qty = float(row[1])
+                    except (TypeError, ValueError):
+                        continue
+                    if px > 0 and qty > 0:
+                        asks.append((px, qty))
+                best_bid = bids[0][0] if bids else None
+                best_ask = asks[0][0] if asks else None
+                if best_bid is None or best_ask is None:
+                    raise RuntimeError("empty Binance depth")
+                mid = (best_bid + best_ask) / 2.0
+                return banded_book_from_levels(
+                    bids=bids,
+                    asks=asks,
+                    mid=mid,
+                    best_bid=best_bid,
+                    best_ask=best_ask,
+                    timestamp_ms=int(time.time() * 1000),
+                )
+            except Exception as exc:
+                last_exc = exc
+        raise RuntimeError(f"Binance BTC depth failed: {last_exc}")
 
     async def get_event_by_slug(self, slug: str) -> dict[str, Any] | None:
         try:
