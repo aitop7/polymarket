@@ -401,13 +401,13 @@ function tapeMeta(kind: TapeKind): {
     return {
       title: 'Binance Price',
       fileHint: 'binance_price_orderbook.parquet',
-      concurrency: 6,
+      concurrency: 20,
     }
   }
   return {
     title: 'Binance Trades',
     fileHint: 'binance_trades.parquet',
-    concurrency: 6,
+    concurrency: 20,
   }
 }
 
@@ -561,9 +561,7 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
             res.data_health ? ` · health ${res.data_health}` : ''
           }`,
         )
-        if (!running) {
-          await refresh({ quiet: true })
-        }
+        // Local row patch is enough — skip full /binance-health rescore (slow).
       } else {
         // Local Data API only — never pulls from VPS.
         const res = await api.repairTradesLocal(mid)
@@ -638,7 +636,10 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
       ? `Stopped · ${done} fixed${failed ? `, ${failed} failed` : ''}`
       : `Done · ${done} fixed${failed ? `, ${failed} failed` : ''}`
     setMessage(lastErr ? `${summary}\n${lastErr}` : summary)
-    void refresh()
+    // Binance Fix already patched rows locally; full list rescore is the slow part.
+    if (kind === 'trades') {
+      void refresh()
+    }
   }
 
   const fixTitle =
@@ -693,7 +694,7 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
               key={tag}
               type="button"
               className={`pmq-tag${active ? ' active' : ''}${tag !== 'all' ? ` grade-${tag}` : ''}`}
-              disabled={loading || running || (tag !== 'all' && n === 0)}
+              disabled={loading || running}
               onClick={() => setGradeFilter(tag)}
               title={
                 tag === 'all'
@@ -767,9 +768,11 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
         ) : !visible.length ? (
           <div className="pmq-empty ok">
             {stats.total > 0
-              ? gradeFilter === 'all'
-                ? 'No markets'
-                : `No ${gradeFilter}`
+              ? gradeFilter === 'unchecked'
+                ? 'No unchecked data'
+                : gradeFilter === 'all'
+                  ? 'No markets'
+                  : `No ${gradeFilter}`
               : 'No markets'}
           </div>
         ) : (

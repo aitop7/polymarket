@@ -1879,6 +1879,7 @@ class VpsSyncClient:
             return {"ok": False, "market_id": mid, "error": str(exc)}
 
         from app.core.live_dataset import (
+            DATA_HEALTH_GREAT,
             META_BINANCE_PRICE_CHECKED,
             META_BINANCE_TRADES_CHECKED,
             read_data_health,
@@ -1894,27 +1895,53 @@ class VpsSyncClient:
         if "trades" in parts:
             stamp_flags.append(META_BINANCE_TRADES_CHECKED)
         if stamp_flags:
-            stamp_tape_checked(local_path, *stamp_flags)
+            await asyncio.to_thread(stamp_tape_checked, local_path, *stamp_flags)
 
-        scored = self.score_binance_health(local_path, start=start, end=end)
-        # Restamp history badge (meta.data_health) after file fix.
-        data_health = self._persist_health(local_path, stub) or "unchecked"
-        meta = _read_meta(local_path / "meta.json") or {}
+        # Fast path: stamped → great without re-reading parquets / full market rescore.
+        # (Full meta.data_health restamp is via header Rescore — keeps Fix parallel.)
+        meta = await asyncio.to_thread(_read_meta, local_path / "meta.json") or {}
+        price_checked = bool(meta.get(META_BINANCE_PRICE_CHECKED))
+        trades_checked = bool(meta.get(META_BINANCE_TRADES_CHECKED))
+        px_path = local_path / "binance_price_orderbook.parquet"
+        tr_path = local_path / "binance_trades.parquet"
+        has_price = px_path.is_file() and px_path.stat().st_size > 0
+        has_trades = tr_path.is_file() and tr_path.stat().st_size > 0
+        price_grade = (
+            DATA_HEALTH_GREAT
+            if has_price and price_checked
+            else ("bad" if not has_price else "unchecked")
+        )
+        trade_grade = (
+            DATA_HEALTH_GREAT
+            if has_trades and trades_checked
+            else ("bad" if not has_trades else "unchecked")
+        )
+        if "price" in parts and "trades" not in parts:
+            grade = price_grade
+        elif "trades" in parts and "price" not in parts:
+            grade = trade_grade
+        else:
+            grade = (
+                "bad"
+                if price_grade == "bad" or trade_grade == "bad"
+                else DATA_HEALTH_GREAT
+            )
+
         return {
             "ok": True,
             "market_id": mid,
             "part": "price" if parts == {"price"} else "trades" if parts == {"trades"} else "all",
             "filled": filled,
-            "grade": scored.get("grade"),
-            "price_grade": scored.get("price_grade"),
-            "trade_grade": scored.get("trade_grade"),
-            "max_gap_ms": scored.get("max_gap_ms"),
-            "max_trade_quiet_ms": scored.get("max_trade_quiet_ms"),
-            "has_price": scored.get("has_price"),
-            "has_trades": scored.get("has_trades"),
-            "binance_price_checked": scored.get("binance_price_checked"),
-            "binance_trades_checked": scored.get("binance_trades_checked"),
-            "data_health": data_health or read_data_health(meta),
+            "grade": grade,
+            "price_grade": price_grade,
+            "trade_grade": trade_grade,
+            "max_gap_ms": 0,
+            "max_trade_quiet_ms": 0,
+            "has_price": has_price,
+            "has_trades": has_trades,
+            "binance_price_checked": price_checked,
+            "binance_trades_checked": trades_checked,
+            "data_health": read_data_health(meta),
             "data_health_comment": read_data_health_comment(meta),
         }
 

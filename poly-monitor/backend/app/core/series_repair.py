@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -17,6 +18,42 @@ BINANCE_HOSTS = (
     "https://api.binance.com",
     "https://api1.binance.com",
 )
+
+# Shared client + gate so parallel Fix jobs reuse connections and don't stampede Binance.
+_BINANCE_HTTP: httpx.AsyncClient | None = None
+_BINANCE_HTTP_LOCK = asyncio.Lock()
+_BINANCE_SEM: asyncio.Semaphore | None = None
+_BINANCE_SEM_LOCK = asyncio.Lock()
+_BINANCE_MAX_INFLIGHT = 24
+_BINANCE_PREFERRED_HOST: str | None = None
+
+
+async def _binance_http() -> httpx.AsyncClient:
+    global _BINANCE_HTTP
+    if _BINANCE_HTTP is not None and not _BINANCE_HTTP.is_closed:
+        return _BINANCE_HTTP
+    async with _BINANCE_HTTP_LOCK:
+        if _BINANCE_HTTP is None or _BINANCE_HTTP.is_closed:
+            _BINANCE_HTTP = httpx.AsyncClient(
+                timeout=httpx.Timeout(25.0, connect=5.0),
+                limits=httpx.Limits(
+                    max_connections=32,
+                    max_keepalive_connections=16,
+                    keepalive_expiry=30.0,
+                ),
+                headers={"User-Agent": "poly-monitor-binance-repair/1.0"},
+            )
+        return _BINANCE_HTTP
+
+
+async def _binance_gate() -> asyncio.Semaphore:
+    global _BINANCE_SEM
+    if _BINANCE_SEM is not None:
+        return _BINANCE_SEM
+    async with _BINANCE_SEM_LOCK:
+        if _BINANCE_SEM is None:
+            _BINANCE_SEM = asyncio.Semaphore(_BINANCE_MAX_INFLIGHT)
+        return _BINANCE_SEM
 
 
 def _meta(market_dir: Path) -> dict[str, Any] | None:
@@ -58,14 +95,23 @@ def _write_df(path: Path, df: pd.DataFrame) -> None:
     tmp.replace(path)
 
 
+def _host_order() -> list[str]:
+    preferred = _BINANCE_PREFERRED_HOST
+    if preferred and preferred in BINANCE_HOSTS:
+        return [preferred, *[h for h in BINANCE_HOSTS if h != preferred]]
+    return list(BINANCE_HOSTS)
+
+
 async def _binance_json(
     http: httpx.AsyncClient, path: str, params: dict[str, Any]
 ) -> Any:
+    global _BINANCE_PREFERRED_HOST
     last_exc: Exception | None = None
-    for base in BINANCE_HOSTS:
+    for base in _host_order():
         try:
             resp = await http.get(f"{base}{path}", params=params)
             resp.raise_for_status()
+            _BINANCE_PREFERRED_HOST = base
             return resp.json()
         except Exception as exc:
             last_exc = exc
@@ -159,29 +205,161 @@ def _fill_seconds(
     df = df.copy()
     df["timestamp"] = df["timestamp"].astype("int64")
     df["timestamp"] = df["timestamp"] - (df["timestamp"] % 1000)
-    have = set(df["timestamp"].tolist()) if not df.empty else set()
+    if not df.empty:
+        df = df.drop_duplicates("timestamp", keep="last")
+
+    existing: dict[int, float] = {}
+    if value_col in df.columns and not df.empty:
+        for ts, px in zip(
+            df["timestamp"].tolist(),
+            pd.to_numeric(df[value_col], errors="coerce").tolist(),
+        ):
+            if px is not None and px == px:  # not NaN
+                existing[int(ts)] = float(px)
+
+    template = {c: 0.0 for c in df.columns if c not in {"timestamp", value_col, "twap"}}
     last = None
     extra: list[dict[str, Any]] = []
-    added = 0
-    template = {c: 0.0 for c in df.columns if c not in {"timestamp", value_col, "twap"}}
     for ts in range(_floor_s(start_ms), _floor_s(end_ms), 1000):
-        if ts in have:
-            if value_col in df.columns:
-                hit = df.loc[df["timestamp"] == ts, value_col]
-                if not hit.empty and pd.notna(hit.iloc[0]):
-                    last = float(hit.iloc[0])
+        if ts in existing:
+            last = existing[ts]
             continue
         px = values.get(ts, last)
         if px is None:
             continue
         last = float(px)
-        row = {"timestamp": ts, value_col: last, **template}
-        extra.append(row)
-        added += 1
-        have.add(ts)
-    if extra:
-        df = pd.concat([df, pd.DataFrame(extra)], ignore_index=True)
-    return df, added
+        existing[ts] = last
+        extra.append({"timestamp": ts, value_col: last, **template})
+    if not extra:
+        return df, 0
+    out = pd.concat([df, pd.DataFrame(extra)], ignore_index=True) if not df.empty else pd.DataFrame(extra)
+    return out, len(extra)
+
+
+def _write_binance_repair_files(
+    market_dir: Path,
+    *,
+    start: int,
+    end: int,
+    do_price: bool,
+    do_trades: bool,
+    klines: dict[int, float],
+    incoming_trades: list[dict[str, Any]] | None,
+    meta: dict[str, Any],
+) -> dict[str, int]:
+    """Sync parquet/meta writes (run via asyncio.to_thread)."""
+    filled: dict[str, int] = {}
+    if do_trades and incoming_trades is not None:
+        try:
+            path = market_dir / "binance_trades.parquet"
+            old = _read_df(path)
+            new = pd.DataFrame(incoming_trades)
+            if not new.empty:
+                merged = new if old.empty else pd.concat([old, new], ignore_index=True)
+                if "timestamp" in merged.columns:
+                    subset = [
+                        c
+                        for c in ("timestamp", "price", "quantity", "buyer_is_maker")
+                        if c in merged.columns
+                    ]
+                    merged = merged.drop_duplicates(subset=subset, keep="last")
+                filled["binance_trades.parquet"] = max(0, len(merged) - len(old))
+                _write_df(path, merged)
+        except Exception as exc:
+            logger.warning("Binance trade repair failed for %s: %s", market_dir.name, exc)
+
+    if do_price and klines:
+        px_path = market_dir / "binance_price_orderbook.parquet"
+        px, n = _fill_seconds(
+            _read_df(px_path),
+            start_ms=start,
+            end_ms=end,
+            value_col="Binance_BTC",
+            values=klines,
+        )
+        _write_df(px_path, px)
+        filled["binance_price_orderbook.parquet"] = n
+
+    if meta:
+        meta = dict(meta)
+        meta["repair_filled"] = {**(meta.get("repair_filled") or {}), **filled}
+        _write_meta(market_dir, meta)
+    return filled
+
+
+async def repair_binance_for_market_dir(
+    market_dir: Path,
+    *,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+    parts: set[str] | None = None,
+) -> dict[str, int]:
+    """Backfill Binance trades and/or 1s BTC price from Binance REST.
+
+    ``parts`` may include ``\"price\"`` and/or ``\"trades\"`` (default: both).
+    """
+    want = {str(p).strip().lower() for p in (parts or {"price", "trades"})}
+    do_price = "price" in want
+    do_trades = "trades" in want
+    if not do_price and not do_trades:
+        return {}
+
+    meta = _meta(market_dir) or {}
+    try:
+        start = int(start_ms if start_ms is not None else meta.get("start_time") or 0)
+        end = int(end_ms if end_ms is not None else meta.get("end_time") or 0)
+    except (TypeError, ValueError):
+        return {}
+    if start <= 0 or end <= start:
+        return {}
+
+    http = await _binance_http()
+    gate = await _binance_gate()
+    klines: dict[int, float] = {}
+    incoming: list[dict[str, Any]] | None = None
+
+    # Gate covers HTTP only — release before parquet so other markets can fetch.
+    async with gate:
+        jobs = []
+        if do_price:
+            jobs.append(_klines_1s(http, start_ms=start, end_ms=end))
+        if do_trades:
+            jobs.append(_agg_trades(http, start_ms=start, end_ms=end))
+        if len(jobs) == 1:
+            result = await jobs[0]
+            if do_price:
+                klines = result  # type: ignore[assignment]
+            else:
+                incoming = result  # type: ignore[assignment]
+        elif jobs:
+            results = await asyncio.gather(*jobs, return_exceptions=True)
+            idx = 0
+            if do_price:
+                r0 = results[idx]
+                idx += 1
+                if isinstance(r0, Exception):
+                    logger.warning("Binance klines failed for %s: %s", market_dir.name, r0)
+                else:
+                    klines = r0  # type: ignore[assignment]
+            if do_trades:
+                r1 = results[idx]
+                if isinstance(r1, Exception):
+                    logger.warning("Binance aggTrades failed for %s: %s", market_dir.name, r1)
+                    incoming = []
+                else:
+                    incoming = r1  # type: ignore[assignment]
+
+    return await asyncio.to_thread(
+        _write_binance_repair_files,
+        market_dir,
+        start=start,
+        end=end,
+        do_price=do_price,
+        do_trades=do_trades,
+        klines=klines,
+        incoming_trades=incoming if do_trades else None,
+        meta=meta,
+    )
 
 
 def _ffill_orderbooks(df: pd.DataFrame, *, start_ms: int, end_ms: int) -> tuple[pd.DataFrame, int]:
@@ -213,81 +391,6 @@ def _ffill_orderbooks(df: pd.DataFrame, *, start_ms: int, end_ms: int) -> tuple[
     return df, len(extra)
 
 
-async def repair_binance_for_market_dir(
-    market_dir: Path,
-    *,
-    start_ms: int | None = None,
-    end_ms: int | None = None,
-    parts: set[str] | None = None,
-) -> dict[str, int]:
-    """Backfill Binance trades and/or 1s BTC price from Binance REST.
-
-    ``parts`` may include ``\"price\"`` and/or ``\"trades\"`` (default: both).
-    """
-    want = {str(p).strip().lower() for p in (parts or {"price", "trades"})}
-    do_price = "price" in want
-    do_trades = "trades" in want
-    if not do_price and not do_trades:
-        return {}
-
-    meta = _meta(market_dir) or {}
-    try:
-        start = int(start_ms if start_ms is not None else meta.get("start_time") or 0)
-        end = int(end_ms if end_ms is not None else meta.get("end_time") or 0)
-    except (TypeError, ValueError):
-        return {}
-    if start <= 0 or end <= start:
-        return {}
-
-    filled: dict[str, int] = {}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=8.0)) as http:
-        klines: dict[int, float] = {}
-        if do_price:
-            klines = await _klines_1s(http, start_ms=start, end_ms=end)
-
-        if do_trades:
-            try:
-                incoming = await _agg_trades(http, start_ms=start, end_ms=end)
-                path = market_dir / "binance_trades.parquet"
-                old = _read_df(path)
-                new = pd.DataFrame(incoming)
-                if not new.empty:
-                    if old.empty:
-                        merged = new
-                    else:
-                        merged = pd.concat([old, new], ignore_index=True)
-                    if "timestamp" in merged.columns:
-                        merged = merged.drop_duplicates(
-                            subset=[
-                                c
-                                for c in ("timestamp", "price", "quantity", "buyer_is_maker")
-                                if c in merged.columns
-                            ],
-                            keep="last",
-                        )
-                    filled["binance_trades.parquet"] = max(0, len(merged) - len(old))
-                    _write_df(path, merged)
-            except Exception as exc:
-                logger.warning("Binance trade repair failed for %s: %s", market_dir.name, exc)
-
-        if do_price and klines:
-            px_path = market_dir / "binance_price_orderbook.parquet"
-            px, n = _fill_seconds(
-                _read_df(px_path),
-                start_ms=start,
-                end_ms=end,
-                value_col="Binance_BTC",
-                values=klines,
-            )
-            _write_df(px_path, px)
-            filled["binance_price_orderbook.parquet"] = n
-
-    if meta:
-        meta["repair_filled"] = {**(meta.get("repair_filled") or {}), **filled}
-        _write_meta(market_dir, meta)
-    return filled
-
-
 async def repair_series_for_market_dir(market_dir: Path) -> dict[str, int]:
     """Backfill Binance trades + 1s price/book holes. Returns per-file added counts."""
     meta = _meta(market_dir)
@@ -302,7 +405,9 @@ async def repair_series_for_market_dir(market_dir: Path) -> dict[str, int]:
         return {}
 
     filled: dict[str, int] = {}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=8.0)) as http:
+    http = await _binance_http()
+    gate = await _binance_gate()
+    async with gate:
         klines = await _klines_1s(http, start_ms=start_ms, end_ms=end_ms)
         try:
             incoming = await _agg_trades(http, start_ms=start_ms, end_ms=end_ms)
@@ -316,7 +421,11 @@ async def repair_series_for_market_dir(market_dir: Path) -> dict[str, int]:
                     merged = pd.concat([old, new], ignore_index=True)
                 if "timestamp" in merged.columns:
                     merged = merged.drop_duplicates(
-                        subset=[c for c in ("timestamp", "price", "quantity", "buyer_is_maker") if c in merged.columns],
+                        subset=[
+                            c
+                            for c in ("timestamp", "price", "quantity", "buyer_is_maker")
+                            if c in merged.columns
+                        ],
                         keep="last",
                     )
                 filled["binance_trades.parquet"] = max(0, len(merged) - len(old))
@@ -358,7 +467,9 @@ async def repair_series_for_market_dir(market_dir: Path) -> dict[str, int]:
                         if pd.notna(row.get("twap")):
                             continue
                         ts = int(row["timestamp"])
-                        win = spots[(spots["timestamp"] > ts - 30_000) & (spots["timestamp"] <= ts)]
+                        win = spots[
+                            (spots["timestamp"] > ts - 30_000) & (spots["timestamp"] <= ts)
+                        ]
                         if not win.empty:
                             cl.at[i, "twap"] = float(win["Chainlink_BTC"].mean())
                 _write_df(cl_path, cl)
