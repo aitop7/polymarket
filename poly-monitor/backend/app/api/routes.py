@@ -567,8 +567,11 @@ def generate_pm_orderbooks(
     mid = str(market_id or "").strip()
     if not mid:
         raise HTTPException(400, "market_id required")
-    if not pmdata_enabled():
-        raise HTTPException(400, "PMDATA_API_KEY is not configured in poly-monitor/.env")
+    if not pmdata_enabled("books"):
+        raise HTTPException(
+            400,
+            "PMDATA_API_KEY_BOOKS (or PMDATA_API_KEY) is not configured in poly-monitor/.env",
+        )
     try:
         result = generate_pm_orderbooks_for_market(mid, force_download=bool(force))
     except PmDataBlockedError as exc:
@@ -597,8 +600,11 @@ def generate_pm_chainlink(
     mid = str(market_id or "").strip()
     if not mid:
         raise HTTPException(400, "market_id required")
-    if not pmdata_enabled():
-        raise HTTPException(400, "PMDATA_API_KEY is not configured in poly-monitor/.env")
+    if not pmdata_enabled("chainlink"):
+        raise HTTPException(
+            400,
+            "PMDATA_API_KEY_CHAINLINK (or PMDATA_API_KEY) is not configured in poly-monitor/.env",
+        )
     try:
         result = generate_pm_chainlink_for_market(mid, force_download=bool(force))
     except PmDataBlockedError as exc:

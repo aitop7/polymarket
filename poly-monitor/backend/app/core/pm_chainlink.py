@@ -155,8 +155,10 @@ def generate_pm_chainlink_for_market(
     force_download: bool = False,
     slot_ms: int = SLOT_MS,
 ) -> dict[str, Any]:
-    if not pmdata_enabled():
-        raise RuntimeError("PMDATA_API_KEY is not configured")
+    if not pmdata_enabled("chainlink"):
+        raise RuntimeError(
+            "PMDATA_API_KEY_CHAINLINK (or PMDATA_API_KEY) is not configured"
+        )
 
     mid = str(market_id).strip()
     market_dir = find_live_market_dir(mid)

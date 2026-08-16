@@ -42,7 +42,10 @@ class Settings(BaseSettings):
     fetch_live_data_dir: Path = _DEFAULT_LIVE_DIR
     vps_sync_url: str = ""
     vps_sync_token: str = ""
+    # Shared fallback when purpose-specific keys are unset.
     pmdata_api_key: str = ""
+    pmdata_api_key_books: str = ""
+    pmdata_api_key_chainlink: str = ""
     host: str = "127.0.0.1"
     port: int = 8000
     cors_origins: str = (
