@@ -15,8 +15,19 @@ type PmMissingRow = {
 type QueueKind = 'books' | 'chainlink'
 
 const CONCURRENCY: Record<QueueKind, number> = {
-  books: 6,
-  chainlink: 3,
+  // PMData bans keys for bursty downloads — keep this low.
+  books: 2,
+  chainlink: 1,
+}
+
+function isPmDataBlockedError(message: string): boolean {
+  const s = message.toLowerCase()
+  return (
+    s.includes('temporarily blocked') ||
+    s.includes('abnormal download') ||
+    s.includes('account has been temporarily blocked') ||
+    s.includes('pmdata account temporarily blocked')
+  )
 }
 
 function formatSlotLabel(timeEt: string, startMs?: number, endMs?: number): string {
@@ -194,6 +205,9 @@ function PmQueuePanel({
         } catch (err) {
           failed += 1
           lastErr = err instanceof Error ? err.message : String(err)
+          if (lastErr && isPmDataBlockedError(lastErr)) {
+            abort.current = true
+          }
         }
         setProgress({ done: done + failed, total: queue.length })
       }

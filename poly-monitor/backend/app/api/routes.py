@@ -561,7 +561,7 @@ def generate_pm_orderbooks(
 ) -> dict[str, Any]:
     """Download PMData L2 for the market slug and write pm_orderbooks.parquet (0.5s grid)."""
     from app.core.pm_orderbooks import generate_pm_orderbooks_for_market
-    from app.core.pmdata_client import pmdata_enabled
+    from app.core.pmdata_client import PmDataBlockedError, pmdata_enabled
     from app.live.vps_sync import get_vps_sync
 
     mid = str(market_id or "").strip()
@@ -571,6 +571,8 @@ def generate_pm_orderbooks(
         raise HTTPException(400, "PMDATA_API_KEY is not configured in poly-monitor/.env")
     try:
         result = generate_pm_orderbooks_for_market(mid, force_download=bool(force))
+    except PmDataBlockedError as exc:
+        raise HTTPException(403, str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:
@@ -589,7 +591,7 @@ def generate_pm_chainlink(
 ) -> dict[str, Any]:
     """Download PMData Chainlink streams and write pm_chainlink_price.parquet (0.5s grid)."""
     from app.core.pm_chainlink import generate_pm_chainlink_for_market
-    from app.core.pmdata_client import pmdata_enabled
+    from app.core.pmdata_client import PmDataBlockedError, pmdata_enabled
     from app.live.vps_sync import get_vps_sync
 
     mid = str(market_id or "").strip()
@@ -599,6 +601,8 @@ def generate_pm_chainlink(
         raise HTTPException(400, "PMDATA_API_KEY is not configured in poly-monitor/.env")
     try:
         result = generate_pm_chainlink_for_market(mid, force_download=bool(force))
+    except PmDataBlockedError as exc:
+        raise HTTPException(403, str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:
