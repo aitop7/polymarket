@@ -43,6 +43,8 @@ type ChartPoint = Point & {
   downPct?: number
   upEma?: number
   downEma?: number
+  upSavgol?: number
+  downSavgol?: number
 }
 
 type Props = {
@@ -72,8 +74,15 @@ type Props = {
   /** Outcomes mode: show EMA overlays on Up/Down */
   showEma?: boolean
   onShowEmaChange?: (next: boolean) => void
+  /** Outcomes mode: show Savitzky–Golay overlays on Up/Down */
+  showSavgol?: boolean
+  onShowSavgolChange?: (next: boolean) => void
   /** EMA period in samples (default 20) */
   emaPeriod?: number
+  /** Savitzky–Golay window length (odd, default 11) */
+  savgolWindow?: number
+  /** Savitzky–Golay polynomial order (default 2) */
+  savgolPoly?: number
 }
 
 const SERIES_META: {
@@ -248,9 +257,14 @@ type ChartDatum = Point & {
   downPct?: number | null
   upEma?: number | null
   downEma?: number | null
+  upSavgol?: number | null
+  downSavgol?: number | null
 }
 
 const DEFAULT_EMA_PERIOD = 20
+/** Odd window length for Savitzky–Golay (samples). */
+const DEFAULT_SAVGOL_WINDOW = 11
+const DEFAULT_SAVGOL_POLY = 2
 
 /** Mid-range outcome (probability). Stubs at ≤2¢ / ≥98¢ are open placeholders. */
 function isMidOutcome(v: number): boolean {
@@ -267,7 +281,12 @@ function isStubOutcome(v: number): boolean {
  * - Drop stub / huge jumps (leave a gap; do not forward-fill across them)
  * - Forward-fill only when this tick has no Up/Down quote (BTC-only rows)
  */
-function mapOutcomesChartData(data: Point[], emaPeriod: number): ChartPoint[] {
+function mapOutcomesChartData(
+  data: Point[],
+  emaPeriod: number,
+  savgolWindow = DEFAULT_SAVGOL_WINDOW,
+  savgolPoly = DEFAULT_SAVGOL_POLY,
+): ChartPoint[] {
   const MAX_JUMP_PCT = 45
   let seenMid = false
   let lastUpPct: number | undefined
@@ -333,18 +352,18 @@ function mapOutcomesChartData(data: Point[], emaPeriod: number): ChartPoint[] {
     j -= 1
   }
   const sliced = i || j < mapped.length ? mapped.slice(i, j) : mapped
-  const upEma = emaSeries(
-    sliced.map((d) => d.upPct),
-    emaPeriod,
-  )
-  const downEma = emaSeries(
-    sliced.map((d) => d.downPct),
-    emaPeriod,
-  )
+  const upVals = sliced.map((d) => d.upPct)
+  const downVals = sliced.map((d) => d.downPct)
+  const upEma = emaSeries(upVals, emaPeriod)
+  const downEma = emaSeries(downVals, emaPeriod)
+  const upSavgol = savgolSeries(upVals, savgolWindow, savgolPoly)
+  const downSavgol = savgolSeries(downVals, savgolWindow, savgolPoly)
   return sliced.map((d, idx) => ({
     ...d,
     upEma: upEma[idx],
     downEma: downEma[idx],
+    upSavgol: upSavgol[idx],
+    downSavgol: downSavgol[idx],
   }))
 }
 
@@ -362,6 +381,141 @@ function emaSeries(values: Array<number | null | undefined>, period: number): Ar
     }
     ema = ema == null ? v : alpha * v + (1 - alpha) * ema
     out[i] = ema
+  }
+  return out
+}
+
+/** Solve dense square system Ax=b via Gauss–Jordan (small polyorder only). */
+function solveLinearSystem(aIn: number[][], bIn: number[]): number[] | null {
+  const n = bIn.length
+  const m = aIn.map((row, i) => [...row, bIn[i]])
+  for (let col = 0; col < n; col++) {
+    let pivot = col
+    for (let r = col + 1; r < n; r++) {
+      if (Math.abs(m[r][col]) > Math.abs(m[pivot][col])) pivot = r
+    }
+    if (Math.abs(m[pivot][col]) < 1e-12) return null
+    if (pivot !== col) {
+      const tmp = m[col]
+      m[col] = m[pivot]
+      m[pivot] = tmp
+    }
+    const div = m[col][col]
+    for (let c = col; c <= n; c++) m[col][c] /= div
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue
+      const f = m[r][col]
+      for (let c = col; c <= n; c++) m[r][c] -= f * m[col][c]
+    }
+  }
+  return m.map((row) => row[n])
+}
+
+/** Convolution coeffs for Savitzky–Golay smoothing (0th derivative). */
+function savgolCoeffs(window: number, polyorder: number): number[] | null {
+  let w = Math.max(3, Math.floor(window))
+  if (w % 2 === 0) w += 1
+  let p = Math.max(0, Math.min(Math.floor(polyorder), w - 1))
+  const half = (w - 1) / 2
+  // A[i][j] = t^j, t = -half..half
+  const ata: number[][] = Array.from({ length: p + 1 }, () => Array(p + 1).fill(0))
+  const at: number[][] = Array.from({ length: p + 1 }, () => Array(w).fill(0))
+  for (let i = 0; i < w; i++) {
+    const t = i - half
+    let pow = 1
+    for (let j = 0; j <= p; j++) {
+      at[j][i] = pow
+      pow *= t
+    }
+  }
+  for (let r = 0; r <= p; r++) {
+    for (let c = 0; c <= p; c++) {
+      let s = 0
+      for (let i = 0; i < w; i++) s += at[r][i] * at[c][i]
+      ata[r][c] = s
+    }
+  }
+  // Want e0^T (AᵀA)⁻¹ Aᵀ → solve (AᵀA) x = e0, then coeffs = A x? 
+  // Actually c = A (AᵀA)⁻¹ e0 where e0 = [1,0,0,...]
+  const e0 = Array(p + 1).fill(0)
+  e0[0] = 1
+  const x = solveLinearSystem(ata, e0)
+  if (!x) return null
+  const coeffs = Array(w).fill(0)
+  for (let i = 0; i < w; i++) {
+    let s = 0
+    for (let j = 0; j <= p; j++) s += at[j][i] * x[j]
+    coeffs[i] = s
+  }
+  return coeffs
+}
+
+/**
+ * Savitzky–Golay smooth over finite samples.
+ * Null gaps are left as gaps (no bleed across jumps); edges use a shrinking window.
+ */
+function savgolSeries(
+  values: Array<number | null | undefined>,
+  window = DEFAULT_SAVGOL_WINDOW,
+  polyorder = DEFAULT_SAVGOL_POLY,
+): Array<number | undefined> {
+  const out: Array<number | undefined> = new Array(values.length)
+  const coeffs = savgolCoeffs(window, polyorder)
+  if (!coeffs || values.length === 0) {
+    return out.fill(undefined)
+  }
+  const w = coeffs.length
+  const half = (w - 1) / 2
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] == null || !Number.isFinite(Number(values[i]))) {
+      out[i] = undefined
+      continue
+    }
+    let sum = 0
+    let weight = 0
+    let ok = true
+    for (let k = -half; k <= half; k++) {
+      const j = i + k
+      if (j < 0 || j >= values.length) {
+        ok = false
+        break
+      }
+      const v = values[j]
+      if (v == null || !Number.isFinite(v)) {
+        ok = false
+        break
+      }
+      const c = coeffs[k + half]
+      sum += c * v
+      weight += c
+    }
+    if (!ok) {
+      // Edge / gap: fall back to a smaller odd window centered on i when possible.
+      const maxHalf = Math.min(i, values.length - 1 - i, half)
+      if (maxHalf < 1) {
+        out[i] = Number(values[i])
+        continue
+      }
+      const w2 = maxHalf * 2 + 1
+      const c2 = savgolCoeffs(w2, Math.min(polyorder, w2 - 1))
+      if (!c2) {
+        out[i] = Number(values[i])
+        continue
+      }
+      let s2 = 0
+      let good = true
+      for (let k = -maxHalf; k <= maxHalf; k++) {
+        const v = values[i + k]
+        if (v == null || !Number.isFinite(v)) {
+          good = false
+          break
+        }
+        s2 += c2[k + maxHalf] * v
+      }
+      out[i] = good ? s2 : Number(values[i])
+      continue
+    }
+    out[i] = weight !== 0 ? sum : Number(values[i])
   }
   return out
 }
@@ -387,6 +541,7 @@ function tipFromDataAtTime(
   seriesVisible: BtcSeriesVisibility,
   showEma = false,
   xDomain?: TimeDomain | null,
+  showSavgol = false,
 ): HoverTip | null {
   const point = findNearestPoint(data, t)
   if (!point) return null
@@ -421,6 +576,14 @@ function tipFromDataAtTime(
         valueText: formatTipValue('outcomes', point.upEma),
       })
     }
+    if (showSavgol && point.upSavgol != null && Number.isFinite(point.upSavgol)) {
+      rows.push({
+        label: 'Up SG',
+        color: '#0f766e',
+        dataKey: 'upSavgol',
+        valueText: formatTipValue('outcomes', point.upSavgol),
+      })
+    }
     if (point.downPct != null && Number.isFinite(point.downPct)) {
       rows.push({
         label: 'Down',
@@ -437,6 +600,14 @@ function tipFromDataAtTime(
         valueText: formatTipValue('outcomes', point.downEma),
       })
     }
+    if (showSavgol && point.downSavgol != null && Number.isFinite(point.downSavgol)) {
+      rows.push({
+        label: 'Down SG',
+        color: '#be123c',
+        dataKey: 'downSavgol',
+        valueText: formatTipValue('outcomes', point.downSavgol),
+      })
+    }
   }
   return {
     time: formatTipDateTime(point.t),
@@ -451,6 +622,7 @@ function defaultTipTime(
   mode: 'btc' | 'outcomes',
   seriesVisible: BtcSeriesVisibility,
   showEma = false,
+  showSavgol = false,
 ): number | null {
   if (!data.length) return null
   const t1 = domain?.[1]
@@ -468,6 +640,8 @@ function defaultTipTime(
     if (p.downPct != null && Number.isFinite(p.downPct)) return true
     if (showEma && p.upEma != null && Number.isFinite(p.upEma)) return true
     if (showEma && p.downEma != null && Number.isFinite(p.downEma)) return true
+    if (showSavgol && p.upSavgol != null && Number.isFinite(p.upSavgol)) return true
+    if (showSavgol && p.downSavgol != null && Number.isFinite(p.downSavgol)) return true
     return false
   }
 
@@ -626,9 +800,14 @@ export default function PriceChart({
   highlightTime = null,
   showEma = false,
   onShowEmaChange,
+  showSavgol = false,
+  onShowSavgolChange,
   emaPeriod = DEFAULT_EMA_PERIOD,
+  savgolWindow = DEFAULT_SAVGOL_WINDOW,
+  savgolPoly = DEFAULT_SAVGOL_POLY,
 }: Props) {
   const showBtc = mode === 'btc'
+  const showSmooth = showEma || showSavgol
   const twapFillId = `twapAreaFill-${mode}`
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const dragRef = useRef<{
@@ -654,26 +833,62 @@ export default function PriceChart({
         downPct: undefined,
       }))
     }
-    return mapOutcomesChartData(data, emaPeriod)
-  }, [data, mode, emaPeriod])
+    return mapOutcomesChartData(data, emaPeriod, savgolWindow, savgolPoly)
+  }, [data, mode, emaPeriod, savgolWindow, savgolPoly])
 
-  // Prefer TWAP; only fall back to Binance when Current Price has no samples at all.
-  const plotVisible = useMemo((): BtcSeriesVisibility => {
-    if (!showBtc) return seriesVisible
+  // Prefer TWAP; then Chainlink; only fall back to Binance when neither exists.
+  // Apply once into seriesVisible so toggles stay clickable (don't fight a derived plotVisible).
+  const autoFallbackDone = useRef(false)
+  const chartIdentity = `${chartData[0]?.t ?? 0}-${chartData.length}-${chartData[chartData.length - 1]?.t ?? 0}`
+  useEffect(() => {
+    autoFallbackDone.current = false
+  }, [chartIdentity])
+
+  useEffect(() => {
+    if (!showBtc || !onSeriesVisibleChange || autoFallbackDone.current) return
+    if (chartData.length === 0) return
     const hasTwap = chartData.some((d) => d.twap != null && Number.isFinite(Number(d.twap)))
-    if (hasTwap || !seriesVisible.twap) return seriesVisible
+    if (hasTwap) {
+      autoFallbackDone.current = true
+      return
+    }
+    // Only auto-switch from the default "TWAP only" preference.
+    if (!seriesVisible.twap || seriesVisible.chainlink || seriesVisible.binance) {
+      autoFallbackDone.current = true
+      return
+    }
+    const hasChainlink = chartData.some(
+      (d) => d.chainlink != null && Number.isFinite(Number(d.chainlink)),
+    )
+    if (hasChainlink) {
+      autoFallbackDone.current = true
+      onSeriesVisibleChange({ twap: false, chainlink: true, binance: false })
+      return
+    }
     const hasBinance = chartData.some((d) => d.btc != null && Number.isFinite(Number(d.btc)))
-    if (!hasBinance) return seriesVisible
-    return { ...seriesVisible, twap: false, binance: true }
-  }, [showBtc, seriesVisible, chartData])
+    if (hasBinance) {
+      autoFallbackDone.current = true
+      onSeriesVisibleChange({ twap: false, chainlink: false, binance: true })
+    }
+  }, [showBtc, chartData, seriesVisible, onSeriesVisibleChange])
+
+  const plotVisible = seriesVisible
 
   const hoverTip = useMemo(() => {
     // Default: live current / history last price. Hover overrides without
     // sticking a crosshair when the pointer leaves.
     const tipTime =
-      hoverTime ?? defaultTipTime(chartData, xDomain, mode, plotVisible, showEma)
+      hoverTime ?? defaultTipTime(chartData, xDomain, mode, plotVisible, showEma, showSavgol)
     if (tipTime == null) return null
-    return tipFromDataAtTime(mode, chartData, tipTime, plotVisible, showEma, xDomain)
+    return tipFromDataAtTime(
+      mode,
+      chartData,
+      tipTime,
+      plotVisible,
+      showEma,
+      xDomain,
+      showSavgol,
+    )
   }, [
     hoverTime,
     mode,
@@ -682,6 +897,7 @@ export default function PriceChart({
     plotVisible.chainlink,
     plotVisible.binance,
     showEma,
+    showSavgol,
     xDomain,
   ])
 
@@ -904,20 +1120,36 @@ export default function PriceChart({
               ))}
             </div>
           ) : null}
-          {!collapsed && !showBtc && onShowEmaChange ? (
+          {!collapsed && !showBtc && (onShowEmaChange || onShowSavgolChange) ? (
             <div className="chart-series-toggles" role="group" aria-label="Outcomes series visibility">
-              <label className={`chart-series-toggle ${showEma ? 'on' : ''}`}>
-                <input
-                  type="checkbox"
-                  checked={showEma}
-                  onChange={() => onShowEmaChange(!showEma)}
-                />
-                <span
-                  className="chart-series-swatch"
-                  style={{ background: '#059669' }}
-                />
-                EMA
-              </label>
+              {onShowEmaChange ? (
+                <label className={`chart-series-toggle ${showEma ? 'on' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={showEma}
+                    onChange={() => onShowEmaChange(!showEma)}
+                  />
+                  <span
+                    className="chart-series-swatch"
+                    style={{ background: '#059669' }}
+                  />
+                  EMA
+                </label>
+              ) : null}
+              {onShowSavgolChange ? (
+                <label className={`chart-series-toggle ${showSavgol ? 'on' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={showSavgol}
+                    onChange={() => onShowSavgolChange(!showSavgol)}
+                  />
+                  <span
+                    className="chart-series-swatch"
+                    style={{ background: '#0f766e' }}
+                  />
+                  SG
+                </label>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -1092,13 +1324,13 @@ export default function PriceChart({
                   dataKey="upPct"
                   name="Up"
                   stroke="#10b981"
-                  strokeOpacity={showEma ? 0.5 : 1}
-                  strokeDasharray={showEma ? '4 3' : undefined}
+                  strokeOpacity={showSmooth ? 0.45 : 1}
+                  strokeDasharray={showSmooth ? '4 3' : undefined}
                   dot={false}
                   activeDot={(dotProps) => (
                     <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#10b981" />
                   )}
-                  strokeWidth={showEma ? 1.5 : 2}
+                  strokeWidth={showSmooth ? 1.5 : 2}
                   isAnimationActive={false}
                   connectNulls={false}
                 />
@@ -1107,13 +1339,13 @@ export default function PriceChart({
                   dataKey="downPct"
                   name="Down"
                   stroke="#ef4444"
-                  strokeOpacity={showEma ? 0.5 : 1}
-                  strokeDasharray={showEma ? '4 3' : undefined}
+                  strokeOpacity={showSmooth ? 0.45 : 1}
+                  strokeDasharray={showSmooth ? '4 3' : undefined}
                   dot={false}
                   activeDot={(dotProps) => (
                     <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#ef4444" />
                   )}
-                  strokeWidth={showEma ? 1.5 : 2}
+                  strokeWidth={showSmooth ? 1.5 : 2}
                   isAnimationActive={false}
                   connectNulls={false}
                 />
@@ -1127,7 +1359,7 @@ export default function PriceChart({
                       strokeOpacity={1}
                       dot={false}
                       activeDot={false}
-                      strokeWidth={2.5}
+                      strokeWidth={2.35}
                       isAnimationActive={false}
                       connectNulls
                       legendType="none"
@@ -1140,7 +1372,39 @@ export default function PriceChart({
                       strokeOpacity={1}
                       dot={false}
                       activeDot={false}
-                      strokeWidth={2.5}
+                      strokeWidth={2.35}
+                      isAnimationActive={false}
+                      connectNulls
+                      legendType="none"
+                    />
+                  </>
+                ) : null}
+                {showSavgol ? (
+                  <>
+                    <Line
+                      type="monotone"
+                      dataKey="upSavgol"
+                      name="Up SG"
+                      stroke="#0f766e"
+                      strokeOpacity={1}
+                      strokeDasharray="6 3"
+                      dot={false}
+                      activeDot={false}
+                      strokeWidth={2.15}
+                      isAnimationActive={false}
+                      connectNulls
+                      legendType="none"
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="downSavgol"
+                      name="Down SG"
+                      stroke="#be123c"
+                      strokeOpacity={1}
+                      strokeDasharray="6 3"
+                      dot={false}
+                      activeDot={false}
+                      strokeWidth={2.15}
                       isAnimationActive={false}
                       connectNulls
                       legendType="none"

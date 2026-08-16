@@ -338,12 +338,14 @@ def series_for_chart(
         j -= 1
     if i or j < len(out):
         out = out[i:j]
-    # Frozen TWAP/chainlink (stalled RTDS) → null so UI can fall back to Binance.
-    for key in ("twap", "chainlink"):
-        vals = [float(p[key]) for p in out if p.get(key) is not None]
-        if len(vals) >= 5 and (max(vals) - min(vals)) < 1.0:
-            for p in out:
-                p[key] = None
+    # Live-only: wipe a stuck RTDS tape (identical samples). Do NOT apply this to
+    # history — quiet 5m windows often move TWAP/Chainlink by well under $1.
+    if market_id is None:
+        for key in ("twap", "chainlink"):
+            vals = [float(p[key]) for p in out if p.get(key) is not None]
+            if len(vals) >= 8 and (max(vals) - min(vals)) < 0.05:
+                for p in out:
+                    p[key] = None
     if market_id:
         out = attach_volumes_to_series(out, volumes_for_market_id(str(market_id)))
     return out

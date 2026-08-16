@@ -386,6 +386,7 @@ export default function MarketPage({ mode }: Props) {
     binance: false,
   })
   const [showOutcomeEma, setShowOutcomeEma] = useState(false)
+  const [showOutcomeSavgol, setShowOutcomeSavgol] = useState(false)
   const [sharedHoverTime, setSharedHoverTime] = useState<number | null>(null)
   const [chartXDomain, setChartXDomain] = useState<TimeDomain | null>(null)
   const [followLiveX, setFollowLiveX] = useState(true)
@@ -1694,6 +1695,8 @@ export default function MarketPage({ mode }: Props) {
             traderMarks={traderMarks}
             showEma={showOutcomeEma}
             onShowEmaChange={setShowOutcomeEma}
+            showSavgol={showOutcomeSavgol}
+            onShowSavgolChange={setShowOutcomeSavgol}
           />
           <VolumeChart
             data={chartData}
