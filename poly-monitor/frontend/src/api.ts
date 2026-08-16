@@ -380,6 +380,8 @@ export const api = {
         max_trade_quiet_ms?: number
         has_price?: boolean
         has_trades?: boolean
+        binance_price_checked?: boolean
+        binance_trades_checked?: boolean
       }>
     }>(`/api/markets/binance-health${q}`, { cache: 'no-store' })
   },
@@ -438,6 +440,8 @@ export const api = {
       max_trade_quiet_ms?: number
       has_price?: boolean
       has_trades?: boolean
+      binance_price_checked?: boolean
+      binance_trades_checked?: boolean
       data_health?: DataHealth
       data_health_comment?: string | null
       error?: string

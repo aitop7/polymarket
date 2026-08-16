@@ -785,7 +785,7 @@ async def fetch_wallet_summary(address: str) -> dict[str, Any]:
         "open_positions": int(extras.get("n_open") or 0),
         "closed_sample": closed_n,
         "polygonscan_url": f"https://polygonscan.com/address/{wallet}",
-        "orbscan_url": f"https://orbscan.com/address/{wallet}",
+        "orbscan_url": f"https://orbscan.com/profile/{wallet}",
         "polymarket_url": f"https://polymarket.com/profile/{wallet}",
     }
 

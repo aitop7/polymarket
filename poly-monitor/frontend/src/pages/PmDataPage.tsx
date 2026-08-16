@@ -56,6 +56,17 @@ function RefreshIcon() {
   )
 }
 
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="11" height="11" aria-hidden>
+      <path
+        fill="currentColor"
+        d="M9.55 17.6 4.9 12.95l1.4-1.4 3.25 3.25 7.25-7.25 1.4 1.4z"
+      />
+    </svg>
+  )
+}
+
 function PmQueuePanel({
   kind,
   title,
@@ -338,6 +349,8 @@ type TapeHealthRow = {
   has_price?: boolean
   has_trades?: boolean
   trades_repaired_complete?: boolean
+  binance_price_checked?: boolean
+  binance_trades_checked?: boolean
 }
 
 type TapeKind = 'trades' | 'binance-price' | 'binance-trades'
@@ -347,6 +360,26 @@ function isTapeHealthy(grade?: string | null): boolean {
   const g = (grade || '').toLowerCase()
   return g === 'great' || g === 'good'
 }
+
+/** True when this panel's Fix stamp is set on meta (won't requeue). */
+function isTapeChecked(kind: TapeKind, r: TapeHealthRow): boolean {
+  if (kind === 'binance-price') return Boolean(r.binance_price_checked)
+  if (kind === 'binance-trades') return Boolean(r.binance_trades_checked)
+  return Boolean(r.trades_repaired_complete)
+}
+
+/** Filter chips — all grades except great (great is always fine / omitted).
+ *  `unchecked` = not yet Fix-stamped in meta.json (not a gap grade). */
+type TapeGradeFilter = 'all' | 'good' | 'ok' | 'low' | 'bad' | 'unchecked'
+
+const TAPE_GRADE_FILTERS: TapeGradeFilter[] = [
+  'all',
+  'good',
+  'ok',
+  'low',
+  'bad',
+  'unchecked',
+]
 
 function formatQuietMs(ms?: number): string {
   const n = Number(ms)
@@ -383,7 +416,7 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
   const [rows, setRows] = useState<TapeHealthRow[]>([])
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
-  const [issuesOnly, setIssuesOnly] = useState(true)
+  const [gradeFilter, setGradeFilter] = useState<TapeGradeFilter>('unchecked')
   const [message, setMessage] = useState<string | null>(null)
   const [messageTone, setMessageTone] = useState<'info' | 'ok' | 'err'>('info')
   const [activeIds, setActiveIds] = useState<Set<string>>(() => new Set())
@@ -409,7 +442,14 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
     let healthy = 0
     for (const r of rows) {
       const g = (issueGrade(r) || 'unchecked').toLowerCase()
-      nextCounts[g] = (nextCounts[g] || 0) + 1
+      // Gap grades (great/good/ok/low/bad) from scoring.
+      if (g === 'great' || g === 'good' || g === 'ok' || g === 'low' || g === 'bad') {
+        nextCounts[g] = (nextCounts[g] || 0) + 1
+      }
+      // `unchecked` chip = not Fix-stamped yet (meta flag missing).
+      if (!isTapeChecked(kind, r)) {
+        nextCounts.unchecked += 1
+      }
       if (isTapeHealthy(g)) healthy += 1
     }
     return {
@@ -423,14 +463,22 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
   }, [rows, kind])
 
   const coveragePct = stats.total > 0 ? Math.round((stats.healthy / stats.total) * 100) : 0
-  const issueRows = useMemo(
-    () => rows.filter((r) => !isTapeHealthy(issueGrade(r))),
-    [rows, kind],
-  )
-  const visible = useMemo(
-    () => (issuesOnly ? issueRows : rows),
-    [rows, issueRows, issuesOnly],
-  )
+  const visible = useMemo(() => {
+    if (gradeFilter === 'all') return rows
+    if (gradeFilter === 'unchecked') {
+      return rows.filter((r) => !isTapeChecked(kind, r))
+    }
+    return rows.filter(
+      (r) => (issueGrade(r) || '').toLowerCase() === gradeFilter,
+    )
+  }, [rows, gradeFilter, kind])
+  /** Fix targets: current filter, or non-healthy when All. */
+  const fixRows = useMemo(() => {
+    if (gradeFilter === 'all') {
+      return rows.filter((r) => !isTapeHealthy(issueGrade(r)))
+    }
+    return visible
+  }, [rows, visible, gradeFilter, kind])
   const groups = useMemo(() => groupByDate(visible), [visible])
   const pillClass =
     loading ? '' : stats.issues === 0 && stats.total > 0 ? ' ok' : stats.issues > 0 ? ' pending' : ''
@@ -494,6 +542,8 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
           max_trade_quiet_ms: res.max_trade_quiet_ms,
           has_price: res.has_price,
           has_trades: res.has_trades,
+          binance_price_checked: Boolean(res.binance_price_checked),
+          binance_trades_checked: Boolean(res.binance_trades_checked),
         })
         const filled = res.filled || {}
         const key =
@@ -548,12 +598,12 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
   }
 
   const runAll = async () => {
-    if (running || !issueRows.length) return
+    if (running || !fixRows.length) return
     abort.current = false
     setRunning(true)
     setMessage(null)
     setMessageTone('info')
-    const queue = [...issueRows].sort(
+    const queue = [...fixRows].sort(
       (a, b) => (a.start_time || 0) - (b.start_time || 0) || a.market_id.localeCompare(b.market_id),
     )
     setProgress({ done: 0, total: queue.length })
@@ -614,26 +664,13 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
             <button
               type="button"
               className="pmq-btn primary"
-              disabled={loading || issueRows.length === 0}
+              disabled={loading || fixRows.length === 0}
               onClick={() => void runAll()}
               title={fixTitle}
             >
               Fix
             </button>
           )}
-          <button
-            type="button"
-            className="pmq-btn"
-            disabled={loading || running}
-            onClick={() => setIssuesOnly((v) => !v)}
-            title={
-              issuesOnly
-                ? 'Hiding great/good — click for all'
-                : 'Showing all — click to hide great/good'
-            }
-          >
-            {issuesOnly ? 'Issues' : 'All'}
-          </button>
           <button
             type="button"
             className="pmq-btn icon"
@@ -646,6 +683,32 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
           </button>
         </div>
       </header>
+
+      <div className="pmq-tags" role="group" aria-label={`${title} grade filter`}>
+        {TAPE_GRADE_FILTERS.map((tag) => {
+          const n = tag === 'all' ? stats.total : counts[tag] || 0
+          const active = gradeFilter === tag
+          return (
+            <button
+              key={tag}
+              type="button"
+              className={`pmq-tag${active ? ' active' : ''}${tag !== 'all' ? ` grade-${tag}` : ''}`}
+              disabled={loading || running || (tag !== 'all' && n === 0)}
+              onClick={() => setGradeFilter(tag)}
+              title={
+                tag === 'all'
+                  ? `Show all ${stats.total} markets`
+                  : tag === 'unchecked'
+                    ? `Not Fix-stamped in meta yet (${n})`
+                    : `Show ${tag} only (${n})`
+              }
+            >
+              {tag}
+              <span className="pmq-tag-n">{n}</span>
+            </button>
+          )
+        })}
+      </div>
 
       <div
         className="pmq-meter"
@@ -704,9 +767,9 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
         ) : !visible.length ? (
           <div className="pmq-empty ok">
             {stats.total > 0
-              ? issuesOnly
-                ? 'No issues'
-                : 'No markets'
+              ? gradeFilter === 'all'
+                ? 'No markets'
+                : `No ${gradeFilter}`
               : 'No markets'}
           </div>
         ) : (
@@ -719,11 +782,12 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
               {list.map((m) => {
                 const grade = (issueGrade(m) || 'unchecked').toLowerCase()
                 const active = activeIds.has(m.market_id)
+                const checked = isTapeChecked(kind, m)
                 const detail = [
                   kind === 'binance-price' && m.has_price === false ? 'no price' : null,
                   kind === 'binance-trades' && m.has_trades === false ? 'no trades' : null,
                   kind === 'trades' && m.has_trades === false ? 'no trades' : null,
-                  kind === 'trades' && m.trades_repaired_complete ? 'repaired' : null,
+                  checked ? 'checked in meta' : null,
                   kind === 'binance-price'
                     ? `gap ${formatQuietMs(m.max_gap_ms)}`
                     : `quiet ${formatQuietMs(m.max_trade_quiet_ms)}`,
@@ -734,7 +798,7 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
                   <div
                     key={m.market_id}
                     ref={active ? activeRowRef : undefined}
-                    className={`pmq-row${active ? ' active' : ''}`}
+                    className={`pmq-row${active ? ' active' : ''}${checked ? ' checked' : ''}`}
                   >
                     <div className="pmq-row-main" title={detail || m.market_id}>
                       <span className="pmq-time">
@@ -742,6 +806,11 @@ function TapeHealthPanel({ kind }: { kind: TapeKind }) {
                       </span>
                       <span className="pmq-id">{m.market_id}</span>
                       <span className={`pmq-grade health-${grade}`}>{grade}</span>
+                      {checked ? (
+                        <span className="pmq-checked" title="Fix-stamped in meta.json" aria-label="Checked">
+                          <CheckIcon />
+                        </span>
+                      ) : null}
                     </div>
                     <button
                       type="button"

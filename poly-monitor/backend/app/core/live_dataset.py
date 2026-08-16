@@ -315,6 +315,33 @@ def write_data_health(
     return status
 
 
+# Tape / Binance Fix stamps — when set, panel + history gap scoring skips that file.
+META_TRADES_CHECKED = "trades_repaired_complete"
+META_BINANCE_PRICE_CHECKED = "binance_price_checked"
+META_BINANCE_TRADES_CHECKED = "binance_trades_checked"
+
+
+def stamp_tape_checked(
+    market_dir: Path,
+    *flags: str,
+    checked_at_ms: int | None = None,
+) -> dict[str, Any]:
+    """Set one or more Fix-checked flags on meta.json (atomic rewrite)."""
+    meta_path = market_dir / "meta.json"
+    meta = _read_meta(meta_path) or {}
+    now = int(checked_at_ms if checked_at_ms is not None else time.time() * 1000)
+    for raw in flags:
+        key = str(raw or "").strip()
+        if not key:
+            continue
+        meta[key] = True
+        meta[f"{key}_at"] = now
+    tmp = meta_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(meta_path)
+    return meta
+
+
 def _nonempty_file(path: Path) -> bool:
     try:
         return path.is_file() and path.stat().st_size > 0

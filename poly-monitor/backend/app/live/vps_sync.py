@@ -407,11 +407,16 @@ class VpsSyncClient:
         from app.core.live_dataset import (
             CHAINLINK_FILE,
             DATA_HEALTH_BAD,
+            DATA_HEALTH_GREAT,
+            META_BINANCE_PRICE_CHECKED,
+            META_BINANCE_TRADES_CHECKED,
+            META_TRADES_CHECKED,
             ORDERBOOKS_FILE,
             grade_data_health,
             grade_trade_health,
             resolve_chainlink_path,
             resolve_orderbooks_path,
+            stamp_tape_checked,
             worse_data_health,
         )
 
@@ -490,11 +495,19 @@ class VpsSyncClient:
         max_trade_quiet = 0
         by_file: dict[str, list[tuple[int, str]]] = {}
         skip_pm_trade_quiet = False
+        skip_binance_price = False
+        skip_binance_trades = False
         try:
             meta_skip = json.loads((dest / "meta.json").read_text(encoding="utf-8"))
             skip_pm_trade_quiet = bool(meta_skip.get("trades_repaired_complete"))
+            skip_binance_price = bool(meta_skip.get("binance_price_checked"))
+            skip_binance_trades = bool(meta_skip.get("binance_trades_checked"))
         except (OSError, json.JSONDecodeError, TypeError):
             skip_pm_trade_quiet = False
+            skip_binance_price = False
+            skip_binance_trades = False
+
+        auto_stamp: list[str] = []
 
         preferred_books = resolve_orderbooks_path(dest)
         orderbooks_source = preferred_books.name if preferred_books is not None else None
@@ -502,6 +515,8 @@ class VpsSyncClient:
         chainlink_source = preferred_chainlink.name if preferred_chainlink is not None else None
         for name in _PRICE_1S_FILES:
             step_ms: int | None = None
+            if name == "binance_price_orderbook.parquet" and skip_binance_price:
+                continue
             if name == ORDERBOOKS_FILE:
                 # Prefer pm_orderbooks.parquet when present; else live orderbooks.
                 # Never score the gappy live orderbooks file when PM L2 exists.
@@ -550,12 +565,20 @@ class VpsSyncClient:
             max_gap = max(max_gap, gap)
             if file_notes:
                 by_file[name] = file_notes
+            if (
+                name == "binance_price_orderbook.parquet"
+                and not skip_binance_price
+                and grade_data_health(gap) == DATA_HEALTH_GREAT
+            ):
+                auto_stamp.append(META_BINANCE_PRICE_CHECKED)
 
         for name in _TRADE_FILES:
             remote_has = True if local_only else (name in remote_names)
             if not local_only and name not in remote_names:
                 continue
             if name == "trades.parquet" and skip_pm_trade_quiet:
+                continue
+            if name == "binance_trades.parquet" and skip_binance_trades:
                 continue
             quiet, file_notes = self._trade_series_stats(
                 dest / name, name=name, start=start, end=end, remote_has=remote_has
@@ -564,6 +587,20 @@ class VpsSyncClient:
             max_trade_quiet = max(max_trade_quiet, quiet)
             if file_notes:
                 by_file[name] = file_notes
+            if grade_trade_health(quiet) == DATA_HEALTH_GREAT:
+                if name == "trades.parquet" and not skip_pm_trade_quiet:
+                    auto_stamp.append(META_TRADES_CHECKED)
+                elif name == "binance_trades.parquet" and not skip_binance_trades:
+                    auto_stamp.append(META_BINANCE_TRADES_CHECKED)
+
+        if auto_stamp:
+            try:
+                # Dedupe while preserving order.
+                seen: set[str] = set()
+                flags = [f for f in auto_stamp if not (f in seen or seen.add(f))]
+                stamp_tape_checked(dest, *flags)
+            except Exception:
+                pass
 
         notes_by_file, notes, comment = self._format_notes_by_file(by_file)
 
@@ -1469,15 +1506,25 @@ class VpsSyncClient:
         *,
         start: int,
         end: int,
+        meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Grade Binance price + trade files only for one market window."""
         from app.core.live_dataset import (
             DATA_HEALTH_BAD,
+            DATA_HEALTH_GREAT,
             DATA_HEALTH_UNCHECKED,
+            META_BINANCE_PRICE_CHECKED,
+            META_BINANCE_TRADES_CHECKED,
             grade_data_health,
             grade_trade_health,
+            stamp_tape_checked,
             worse_data_health,
+            _read_meta,
         )
+
+        info = meta if isinstance(meta, dict) else (_read_meta(dest / "meta.json") or {})
+        price_checked = bool(info.get(META_BINANCE_PRICE_CHECKED))
+        trades_checked = bool(info.get(META_BINANCE_TRADES_CHECKED))
 
         if start <= 0 or end <= start:
             return {
@@ -1488,29 +1535,55 @@ class VpsSyncClient:
                 "max_trade_quiet_ms": 0,
                 "has_price": False,
                 "has_trades": False,
+                "binance_price_checked": price_checked,
+                "binance_trades_checked": trades_checked,
             }
 
         px_path = dest / "binance_price_orderbook.parquet"
         tr_path = dest / "binance_trades.parquet"
         has_price = px_path.is_file() and px_path.stat().st_size > 0
         has_trades = tr_path.is_file() and tr_path.stat().st_size > 0
+        to_stamp: list[str] = []
 
-        gap, _ = self._price_series_stats(
-            px_path,
-            name="binance_price_orderbook.parquet",
-            start=start,
-            end=end,
-            remote_has=True,
-        )
-        quiet, _ = self._trade_series_stats(
-            tr_path,
-            name="binance_trades.parquet",
-            start=start,
-            end=end,
-            remote_has=True,
-        )
-        price_grade = grade_data_health(gap) if has_price else DATA_HEALTH_BAD
-        trade_grade = grade_trade_health(quiet) if has_trades else DATA_HEALTH_BAD
+        if has_price and price_checked:
+            gap = 0
+            price_grade = DATA_HEALTH_GREAT
+        else:
+            gap, _ = self._price_series_stats(
+                px_path,
+                name="binance_price_orderbook.parquet",
+                start=start,
+                end=end,
+                remote_has=True,
+            )
+            price_grade = grade_data_health(gap) if has_price else DATA_HEALTH_BAD
+            # Already great — stamp checked so we never re-Fix / recheck.
+            if has_price and price_grade == DATA_HEALTH_GREAT:
+                to_stamp.append(META_BINANCE_PRICE_CHECKED)
+                price_checked = True
+
+        if has_trades and trades_checked:
+            quiet = 0
+            trade_grade = DATA_HEALTH_GREAT
+        else:
+            quiet, _ = self._trade_series_stats(
+                tr_path,
+                name="binance_trades.parquet",
+                start=start,
+                end=end,
+                remote_has=True,
+            )
+            trade_grade = grade_trade_health(quiet) if has_trades else DATA_HEALTH_BAD
+            if has_trades and trade_grade == DATA_HEALTH_GREAT:
+                to_stamp.append(META_BINANCE_TRADES_CHECKED)
+                trades_checked = True
+
+        if to_stamp:
+            try:
+                stamp_tape_checked(dest, *to_stamp)
+            except Exception:
+                pass
+
         if not has_price and not has_trades:
             grade = DATA_HEALTH_BAD
         elif not has_price:
@@ -1527,6 +1600,8 @@ class VpsSyncClient:
             "max_trade_quiet_ms": int(quiet),
             "has_price": has_price,
             "has_trades": has_trades,
+            "binance_price_checked": price_checked,
+            "binance_trades_checked": trades_checked,
         }
 
     def list_binance_health(self, *, date_et: str | None = None) -> dict[str, Any]:
@@ -1566,6 +1641,8 @@ class VpsSyncClient:
             except (TypeError, ValueError):
                 start = end = 0
             scored = self.score_binance_health(d, start=start, end=end)
+            # Panel grade: use price or trade side depending on list view; overall grade
+            # kept for combined counts. Per-file panels use price_grade / trade_grade.
             grade = str(scored.get("grade") or "unchecked")
             counts[grade] = counts.get(grade, 0) + 1
             markets.append(
@@ -1583,6 +1660,8 @@ class VpsSyncClient:
                     "max_trade_quiet_ms": scored.get("max_trade_quiet_ms"),
                     "has_price": scored.get("has_price"),
                     "has_trades": scored.get("has_trades"),
+                    "binance_price_checked": scored.get("binance_price_checked"),
+                    "binance_trades_checked": scored.get("binance_trades_checked"),
                 }
             )
 
@@ -1618,7 +1697,9 @@ class VpsSyncClient:
             DATA_HEALTH_BAD,
             DATA_HEALTH_GREAT,
             DATA_HEALTH_UNCHECKED,
+            META_TRADES_CHECKED,
             grade_trade_health,
+            stamp_tape_checked,
             _read_meta,
         )
 
@@ -1644,7 +1725,7 @@ class VpsSyncClient:
 
         tr_path = market_dir / "trades.parquet"
         has_trades = tr_path.is_file() and tr_path.stat().st_size > 0
-        repaired = bool(info.get("trades_repaired_complete"))
+        repaired = bool(info.get(META_TRADES_CHECKED) or info.get("trades_repaired_complete"))
         if not has_trades:
             quiet, _ = self._trade_series_stats(
                 tr_path,
@@ -1667,6 +1748,13 @@ class VpsSyncClient:
                 remote_has=True,
             )
             grade = grade_trade_health(quiet)
+            # Already great — stamp so we never re-Fix / recheck.
+            if grade == DATA_HEALTH_GREAT:
+                try:
+                    stamp_tape_checked(market_dir, META_TRADES_CHECKED)
+                except Exception:
+                    pass
+                repaired = True
         return {
             "grade": grade,
             "trade_grade": grade,
@@ -1790,9 +1878,25 @@ class VpsSyncClient:
         except Exception as exc:
             return {"ok": False, "market_id": mid, "error": str(exc)}
 
-        scored = self.score_binance_health(local_path, start=start, end=end)
-        from app.core.live_dataset import read_data_health, read_data_health_comment, _read_meta
+        from app.core.live_dataset import (
+            META_BINANCE_PRICE_CHECKED,
+            META_BINANCE_TRADES_CHECKED,
+            read_data_health,
+            read_data_health_comment,
+            stamp_tape_checked,
+            _read_meta,
+        )
 
+        # Mark fixed parts checked so panels don't requeue them.
+        stamp_flags: list[str] = []
+        if "price" in parts:
+            stamp_flags.append(META_BINANCE_PRICE_CHECKED)
+        if "trades" in parts:
+            stamp_flags.append(META_BINANCE_TRADES_CHECKED)
+        if stamp_flags:
+            stamp_tape_checked(local_path, *stamp_flags)
+
+        scored = self.score_binance_health(local_path, start=start, end=end)
         # Restamp history badge (meta.data_health) after file fix.
         data_health = self._persist_health(local_path, stub) or "unchecked"
         meta = _read_meta(local_path / "meta.json") or {}
@@ -1808,6 +1912,8 @@ class VpsSyncClient:
             "max_trade_quiet_ms": scored.get("max_trade_quiet_ms"),
             "has_price": scored.get("has_price"),
             "has_trades": scored.get("has_trades"),
+            "binance_price_checked": scored.get("binance_price_checked"),
+            "binance_trades_checked": scored.get("binance_trades_checked"),
             "data_health": data_health or read_data_health(meta),
             "data_health_comment": read_data_health_comment(meta),
         }
@@ -1815,8 +1921,10 @@ class VpsSyncClient:
     async def repair_pm_trades_local(self, market_id: str) -> dict[str, Any]:
         """Local-only Polymarket trades.parquet backfill via Data API (no VPS)."""
         from app.core.live_dataset import (
+            META_TRADES_CHECKED,
             read_data_health,
             read_data_health_comment,
+            stamp_tape_checked,
             _read_meta,
         )
         from app.core.trade_repair import backfill_trades_for_market_dir
@@ -1837,6 +1945,13 @@ class VpsSyncClient:
             added = int(await backfill_trades_for_market_dir(local_path) or 0)
         except Exception as exc:
             return {"ok": False, "market_id": mid, "error": str(exc)}
+
+        tr_path = local_path / "trades.parquet"
+        has_trades = tr_path.is_file() and tr_path.stat().st_size > 0
+        # Always stamp after a successful Fix attempt when a tape exists,
+        # even if Data API added 0 rows (nothing more to fetch).
+        if has_trades:
+            stamp_tape_checked(local_path, META_TRADES_CHECKED)
 
         meta = _read_meta(local_path / "meta.json") or {}
         scored = self._score_pm_trades_file(

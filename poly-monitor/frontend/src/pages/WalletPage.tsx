@@ -504,7 +504,7 @@ export default function WalletPage() {
         open_positions: 0,
         closed_sample: 0,
         polygonscan_url: `https://polygonscan.com/address/${normalized}`,
-        orbscan_url: `https://orbscan.com/address/${normalized}`,
+        orbscan_url: `https://orbscan.com/profile/${normalized}`,
         polymarket_url: `https://polymarket.com/profile/${normalized}`,
         comment: savedHit.comment || '',
       })
