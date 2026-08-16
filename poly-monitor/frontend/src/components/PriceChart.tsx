@@ -5,6 +5,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
   Scatter,
@@ -47,6 +48,24 @@ type ChartPoint = Point & {
   downEma?: number
   upSavgol?: number
   downSavgol?: number
+  /** BTC series momentum ($/s): (v(t) − v(t−Δ)) / Δ */
+  twapMom?: number
+  chainlinkMom?: number
+  btcMom?: number
+  /** Outcomes momentum (¢/s) — raw / EMA / mom(SG price) / SG(mom) */
+  upMom?: number
+  downMom?: number
+  upEmaMom?: number
+  downEmaMom?: number
+  upSavgolMom?: number
+  downSavgolMom?: number
+  /** Savitzky–Golay applied to each momentum series */
+  upMomSg?: number
+  downMomSg?: number
+  upEmaMomSg?: number
+  downEmaMomSg?: number
+  upSavgolMomSg?: number
+  downSavgolMomSg?: number
 }
 
 type Props = {
@@ -264,12 +283,73 @@ type ChartDatum = Point & {
   downEma?: number | null
   upSavgol?: number | null
   downSavgol?: number | null
+  twapMom?: number | null
+  chainlinkMom?: number | null
+  btcMom?: number | null
+  upMom?: number | null
+  downMom?: number | null
+  upEmaMom?: number | null
+  downEmaMom?: number | null
+  upSavgolMom?: number | null
+  downSavgolMom?: number | null
+  upMomSg?: number | null
+  downMomSg?: number | null
+  upEmaMomSg?: number | null
+  downEmaMomSg?: number | null
+  upSavgolMomSg?: number | null
+  downSavgolMomSg?: number | null
 }
 
 const DEFAULT_EMA_PERIOD = 20
 /** Odd window length for Savitzky–Golay (samples). */
 const DEFAULT_SAVGOL_WINDOW = 11
 const DEFAULT_SAVGOL_POLY = 2
+/** Lookback Δ for momentum velocity, matching momentum_pair default. */
+const MOMENTUM_DELTA_MS = 1000
+const MOMENTUM_COLOR = '#7c3aed'
+
+function clampEmaPeriod(n: number): number {
+  const v = Math.round(Number(n))
+  if (!Number.isFinite(v)) return DEFAULT_EMA_PERIOD
+  return Math.max(1, Math.min(120, v))
+}
+
+/** Savitzky–Golay window must be odd and ≥ polyorder + 1. */
+function clampSavgolWindow(n: number, poly = DEFAULT_SAVGOL_POLY): number {
+  let w = Math.round(Number(n))
+  if (!Number.isFinite(w)) w = DEFAULT_SAVGOL_WINDOW
+  w = Math.max(3, Math.min(101, w))
+  if (w % 2 === 0) w += 1
+  if (w > 101) w = 101
+  const need = Math.max(3, Math.floor(poly) + 1)
+  const needOdd = need % 2 === 0 ? need + 1 : need
+  return Math.max(needOdd, w)
+}
+
+function clampSavgolPoly(n: number, window: number): number {
+  let p = Math.round(Number(n))
+  if (!Number.isFinite(p)) p = DEFAULT_SAVGOL_POLY
+  return Math.max(0, Math.min(Math.max(0, window - 1), p))
+}
+
+type MomSourceKey = 'price' | 'ema' | 'sg'
+type MomSideKey = 'up' | 'down'
+type MomCurveKey = 'priceRaw' | 'priceSg' | 'emaRaw' | 'emaSg' | 'sgRaw' | 'sgSg'
+type MomSourceFilter = Record<MomSourceKey, boolean>
+type MomSideFilter = Record<MomSideKey, boolean>
+type MomCurveFilter = Record<MomCurveKey, boolean>
+
+const DEFAULT_MOM_SOURCE: MomSourceFilter = { price: true, ema: false, sg: false }
+const DEFAULT_MOM_SIDE: MomSideFilter = { up: true, down: true }
+/** Per-curve toggles on the momentum panel (raw′ vs SG(′)). */
+const DEFAULT_MOM_CURVE: MomCurveFilter = {
+  priceRaw: true,
+  priceSg: true,
+  emaRaw: true,
+  emaSg: true,
+  sgRaw: true,
+  sgSg: true,
+}
 
 /** Mid-range outcome (probability). Stubs at ≤2¢ / ≥98¢ are open placeholders. */
 function isMidOutcome(v: number): boolean {
@@ -525,6 +605,140 @@ function savgolSeries(
   return out
 }
 
+/**
+ * First derivative / velocity: (v(t) − v(t−Δ)) / Δ_seconds.
+ * Uses the latest finite sample at or before t−Δ (same rule as momentum_pair).
+ */
+function momentumSeries(
+  times: number[],
+  values: Array<number | null | undefined>,
+  deltaMs = MOMENTUM_DELTA_MS,
+): Array<number | undefined> {
+  const out: Array<number | undefined> = new Array(values.length)
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    const t = times[i]
+    if (v == null || !Number.isFinite(v) || !Number.isFinite(t)) {
+      out[i] = undefined
+      continue
+    }
+    const target = t - deltaMs
+    let bestTs: number | null = null
+    let bestVal: number | null = null
+    for (let j = i - 1; j >= 0; j--) {
+      const tj = times[j]
+      const vj = values[j]
+      if (vj == null || !Number.isFinite(vj) || !Number.isFinite(tj)) continue
+      if (tj > target) continue
+      // First hit walking backward is the latest sample at or before target.
+      bestTs = tj
+      bestVal = vj
+      break
+    }
+    if (bestVal == null || bestTs == null) {
+      out[i] = undefined
+      continue
+    }
+    const dt = (t - bestTs) / 1000
+    if (dt <= 0) {
+      out[i] = undefined
+      continue
+    }
+    out[i] = (v - bestVal) / dt
+  }
+  return out
+}
+
+function attachMomentum(
+  rows: ChartPoint[],
+  mode: 'btc' | 'outcomes',
+  savgolWindow = DEFAULT_SAVGOL_WINDOW,
+  savgolPoly = DEFAULT_SAVGOL_POLY,
+): ChartPoint[] {
+  if (!rows.length) return rows
+  const times = rows.map((d) => Number(d.t))
+  if (mode === 'btc') {
+    const twapMom = momentumSeries(
+      times,
+      rows.map((d) => d.twap),
+    )
+    const chainlinkMom = momentumSeries(
+      times,
+      rows.map((d) => d.chainlink),
+    )
+    const btcMom = momentumSeries(
+      times,
+      rows.map((d) => d.btc),
+    )
+    return rows.map((d, i) => ({
+      ...d,
+      twapMom: twapMom[i],
+      chainlinkMom: chainlinkMom[i],
+      btcMom: btcMom[i],
+    }))
+  }
+  const upMom = momentumSeries(
+    times,
+    rows.map((d) => d.upPct),
+  )
+  const downMom = momentumSeries(
+    times,
+    rows.map((d) => d.downPct),
+  )
+  const upEmaMom = momentumSeries(
+    times,
+    rows.map((d) => d.upEma),
+  )
+  const downEmaMom = momentumSeries(
+    times,
+    rows.map((d) => d.downEma),
+  )
+  const upSavgolMom = momentumSeries(
+    times,
+    rows.map((d) => d.upSavgol),
+  )
+  const downSavgolMom = momentumSeries(
+    times,
+    rows.map((d) => d.downSavgol),
+  )
+  // SG applied to each momentum series: SG(Price′), SG(EMA′), SG(SG′).
+  const upMomSg = savgolSeries(upMom, savgolWindow, savgolPoly)
+  const downMomSg = savgolSeries(downMom, savgolWindow, savgolPoly)
+  const upEmaMomSg = savgolSeries(upEmaMom, savgolWindow, savgolPoly)
+  const downEmaMomSg = savgolSeries(downEmaMom, savgolWindow, savgolPoly)
+  const upSavgolMomSg = savgolSeries(upSavgolMom, savgolWindow, savgolPoly)
+  const downSavgolMomSg = savgolSeries(downSavgolMom, savgolWindow, savgolPoly)
+  return rows.map((d, i) => ({
+    ...d,
+    upMom: upMom[i],
+    downMom: downMom[i],
+    upEmaMom: upEmaMom[i],
+    downEmaMom: downEmaMom[i],
+    upSavgolMom: upSavgolMom[i],
+    downSavgolMom: downSavgolMom[i],
+    upMomSg: upMomSg[i],
+    downMomSg: downMomSg[i],
+    upEmaMomSg: upEmaMomSg[i],
+    downEmaMomSg: downEmaMomSg[i],
+    upSavgolMomSg: upSavgolMomSg[i],
+    downSavgolMomSg: downSavgolMomSg[i],
+  }))
+}
+
+function formatTipMomentum(mode: 'btc' | 'outcomes', raw: number): string {
+  if (!Number.isFinite(raw)) return '—'
+  const abs =
+    mode === 'btc'
+      ? Math.abs(raw).toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })
+      : Math.abs(raw).toFixed(2)
+  const sign = raw > 0 ? '+' : raw < 0 ? '−' : ''
+  if (mode === 'btc') return `${sign}$${abs}/s`
+  return `${sign}${abs}¢/s`
+}
+
 function findNearestPoint(data: ChartDatum[], t: number): ChartDatum | null {
   if (!data.length) return null
   let best = data[0]
@@ -547,6 +761,10 @@ function tipFromDataAtTime(
   showEma = false,
   xDomain?: TimeDomain | null,
   showSavgol = false,
+  showMomentum = false,
+  momSource: MomSourceFilter = DEFAULT_MOM_SOURCE,
+  momSide: MomSideFilter = DEFAULT_MOM_SIDE,
+  momCurve: MomCurveFilter = DEFAULT_MOM_CURVE,
 ): HoverTip | null {
   const point = findNearestPoint(data, t)
   if (!point) return null
@@ -564,8 +782,43 @@ function tipFromDataAtTime(
         valueText: formatTipValueWithDelta('btc', v, open),
       })
     }
+    if (showMomentum) {
+      const momKeys: {
+        key: BtcSeriesKey
+        dataKey: 'twapMom' | 'chainlinkMom' | 'btcMom'
+        label: string
+        color: string
+      }[] = [
+        { key: 'twap', dataKey: 'twapMom', label: 'Current Mom', color: TWAP_COLOR },
+        { key: 'chainlink', dataKey: 'chainlinkMom', label: 'Chainlink Mom', color: '#22c55e' },
+        { key: 'binance', dataKey: 'btcMom', label: 'Binance Mom', color: '#2563eb' },
+      ]
+      for (const s of momKeys) {
+        if (!seriesVisible[s.key]) continue
+        const v = point[s.dataKey]
+        if (v == null || !Number.isFinite(Number(v))) continue
+        rows.push({
+          label: s.label,
+          color: s.color,
+          dataKey: s.dataKey,
+          valueText: formatTipMomentum('btc', Number(v)),
+        })
+      }
+    }
   } else {
-    if (point.upPct != null && Number.isFinite(point.upPct)) {
+    const wantUp = !showMomentum || momSide.up
+    const wantDown = !showMomentum || momSide.down
+    const wantPrice = !showMomentum || momSource.price
+    const wantEma = showMomentum ? momSource.ema : showEma
+    const wantSg = showMomentum ? momSource.sg : showSavgol
+    const showPriceRaw = !showMomentum || momCurve.priceRaw
+    const showPriceSg = !showMomentum || momCurve.priceSg
+    const showEmaRaw = !showMomentum || momCurve.emaRaw
+    const showEmaSg = !showMomentum || momCurve.emaSg
+    const showSgRaw = !showMomentum || momCurve.sgRaw
+    const showSgSg = !showMomentum || momCurve.sgSg
+
+    if (wantUp && wantPrice && point.upPct != null && Number.isFinite(point.upPct)) {
       rows.push({
         label: 'Up',
         color: '#10b981',
@@ -573,7 +826,7 @@ function tipFromDataAtTime(
         valueText: formatTipValue('outcomes', point.upPct),
       })
     }
-    if (showEma && point.upEma != null && Number.isFinite(point.upEma)) {
+    if (wantUp && wantEma && point.upEma != null && Number.isFinite(point.upEma)) {
       rows.push({
         label: 'Up EMA',
         color: '#059669',
@@ -581,7 +834,7 @@ function tipFromDataAtTime(
         valueText: formatTipValue('outcomes', point.upEma),
       })
     }
-    if (showSavgol && point.upSavgol != null && Number.isFinite(point.upSavgol)) {
+    if (wantUp && wantSg && point.upSavgol != null && Number.isFinite(point.upSavgol)) {
       rows.push({
         label: 'Up SG',
         color: '#0f766e',
@@ -589,7 +842,97 @@ function tipFromDataAtTime(
         valueText: formatTipValue('outcomes', point.upSavgol),
       })
     }
-    if (point.downPct != null && Number.isFinite(point.downPct)) {
+    if (
+      showMomentum &&
+      wantUp &&
+      wantPrice &&
+      showPriceRaw &&
+      point.upMom != null &&
+      Number.isFinite(point.upMom)
+    ) {
+      rows.push({
+        label: 'Up′',
+        color: '#10b981',
+        dataKey: 'upMom',
+        valueText: formatTipMomentum('outcomes', point.upMom),
+      })
+    }
+    if (
+      showMomentum &&
+      wantUp &&
+      wantPrice &&
+      showPriceSg &&
+      point.upMomSg != null &&
+      Number.isFinite(point.upMomSg)
+    ) {
+      rows.push({
+        label: 'SG(Up′)',
+        color: '#0f766e',
+        dataKey: 'upMomSg',
+        valueText: formatTipMomentum('outcomes', point.upMomSg),
+      })
+    }
+    if (
+      showMomentum &&
+      wantUp &&
+      wantEma &&
+      showEmaRaw &&
+      point.upEmaMom != null &&
+      Number.isFinite(point.upEmaMom)
+    ) {
+      rows.push({
+        label: 'Up EMA′',
+        color: '#059669',
+        dataKey: 'upEmaMom',
+        valueText: formatTipMomentum('outcomes', point.upEmaMom),
+      })
+    }
+    if (
+      showMomentum &&
+      wantUp &&
+      wantEma &&
+      showEmaSg &&
+      point.upEmaMomSg != null &&
+      Number.isFinite(point.upEmaMomSg)
+    ) {
+      rows.push({
+        label: 'SG(Up EMA′)',
+        color: '#0f766e',
+        dataKey: 'upEmaMomSg',
+        valueText: formatTipMomentum('outcomes', point.upEmaMomSg),
+      })
+    }
+    if (
+      showMomentum &&
+      wantUp &&
+      wantSg &&
+      showSgRaw &&
+      point.upSavgolMom != null &&
+      Number.isFinite(point.upSavgolMom)
+    ) {
+      rows.push({
+        label: 'Up SG′',
+        color: '#0f766e',
+        dataKey: 'upSavgolMom',
+        valueText: formatTipMomentum('outcomes', point.upSavgolMom),
+      })
+    }
+    if (
+      showMomentum &&
+      wantUp &&
+      wantSg &&
+      showSgSg &&
+      point.upSavgolMomSg != null &&
+      Number.isFinite(point.upSavgolMomSg)
+    ) {
+      rows.push({
+        label: 'SG(Up SG′)',
+        color: '#115e59',
+        dataKey: 'upSavgolMomSg',
+        valueText: formatTipMomentum('outcomes', point.upSavgolMomSg),
+      })
+    }
+    if (wantDown && wantPrice && point.downPct != null && Number.isFinite(point.downPct)) {
       rows.push({
         label: 'Down',
         color: '#ef4444',
@@ -597,7 +940,7 @@ function tipFromDataAtTime(
         valueText: formatTipValue('outcomes', point.downPct),
       })
     }
-    if (showEma && point.downEma != null && Number.isFinite(point.downEma)) {
+    if (wantDown && wantEma && point.downEma != null && Number.isFinite(point.downEma)) {
       rows.push({
         label: 'Down EMA',
         color: '#dc2626',
@@ -605,12 +948,102 @@ function tipFromDataAtTime(
         valueText: formatTipValue('outcomes', point.downEma),
       })
     }
-    if (showSavgol && point.downSavgol != null && Number.isFinite(point.downSavgol)) {
+    if (wantDown && wantSg && point.downSavgol != null && Number.isFinite(point.downSavgol)) {
       rows.push({
         label: 'Down SG',
         color: '#be123c',
         dataKey: 'downSavgol',
         valueText: formatTipValue('outcomes', point.downSavgol),
+      })
+    }
+    if (
+      showMomentum &&
+      wantDown &&
+      wantPrice &&
+      showPriceRaw &&
+      point.downMom != null &&
+      Number.isFinite(point.downMom)
+    ) {
+      rows.push({
+        label: 'Down′',
+        color: '#ef4444',
+        dataKey: 'downMom',
+        valueText: formatTipMomentum('outcomes', point.downMom),
+      })
+    }
+    if (
+      showMomentum &&
+      wantDown &&
+      wantPrice &&
+      showPriceSg &&
+      point.downMomSg != null &&
+      Number.isFinite(point.downMomSg)
+    ) {
+      rows.push({
+        label: 'SG(Down′)',
+        color: '#be123c',
+        dataKey: 'downMomSg',
+        valueText: formatTipMomentum('outcomes', point.downMomSg),
+      })
+    }
+    if (
+      showMomentum &&
+      wantDown &&
+      wantEma &&
+      showEmaRaw &&
+      point.downEmaMom != null &&
+      Number.isFinite(point.downEmaMom)
+    ) {
+      rows.push({
+        label: 'Down EMA′',
+        color: '#dc2626',
+        dataKey: 'downEmaMom',
+        valueText: formatTipMomentum('outcomes', point.downEmaMom),
+      })
+    }
+    if (
+      showMomentum &&
+      wantDown &&
+      wantEma &&
+      showEmaSg &&
+      point.downEmaMomSg != null &&
+      Number.isFinite(point.downEmaMomSg)
+    ) {
+      rows.push({
+        label: 'SG(Down EMA′)',
+        color: '#be123c',
+        dataKey: 'downEmaMomSg',
+        valueText: formatTipMomentum('outcomes', point.downEmaMomSg),
+      })
+    }
+    if (
+      showMomentum &&
+      wantDown &&
+      wantSg &&
+      showSgRaw &&
+      point.downSavgolMom != null &&
+      Number.isFinite(point.downSavgolMom)
+    ) {
+      rows.push({
+        label: 'Down SG′',
+        color: '#be123c',
+        dataKey: 'downSavgolMom',
+        valueText: formatTipMomentum('outcomes', point.downSavgolMom),
+      })
+    }
+    if (
+      showMomentum &&
+      wantDown &&
+      wantSg &&
+      showSgSg &&
+      point.downSavgolMomSg != null &&
+      Number.isFinite(point.downSavgolMomSg)
+    ) {
+      rows.push({
+        label: 'SG(Down SG′)',
+        color: '#9f1239',
+        dataKey: 'downSavgolMomSg',
+        valueText: formatTipMomentum('outcomes', point.downSavgolMomSg),
       })
     }
   }
@@ -808,14 +1241,40 @@ export default function PriceChart(props: Props) {
     onShowEmaChange,
     showSavgol = false,
     onShowSavgolChange,
-    emaPeriod = DEFAULT_EMA_PERIOD,
-    savgolWindow = DEFAULT_SAVGOL_WINDOW,
-    savgolPoly = DEFAULT_SAVGOL_POLY,
+    emaPeriod: emaPeriodProp = DEFAULT_EMA_PERIOD,
+    savgolWindow: savgolWindowProp = DEFAULT_SAVGOL_WINDOW,
+    savgolPoly: savgolPolyProp = DEFAULT_SAVGOL_POLY,
     lightbox = false,
     onLightboxClose,
   } = props
   const showBtc = mode === 'btc'
-  const showSmooth = showEma || showSavgol
+  /** Lightbox: shared Price/EMA/SG + Up/Down filters drive price + momentum. */
+  const showMomentum = lightbox
+  const [momSource, setMomSource] = useState<MomSourceFilter>(DEFAULT_MOM_SOURCE)
+  const [momSide, setMomSide] = useState<MomSideFilter>(DEFAULT_MOM_SIDE)
+  const [momCurve, setMomCurve] = useState<MomCurveFilter>(DEFAULT_MOM_CURVE)
+  const [emaPeriod, setEmaPeriod] = useState(() => clampEmaPeriod(emaPeriodProp))
+  const [savgolWindow, setSavgolWindow] = useState(() =>
+    clampSavgolWindow(savgolWindowProp, savgolPolyProp),
+  )
+  const [savgolPoly, setSavgolPoly] = useState(() =>
+    clampSavgolPoly(savgolPolyProp, savgolWindowProp),
+  )
+  useEffect(() => {
+    setEmaPeriod(clampEmaPeriod(emaPeriodProp))
+  }, [emaPeriodProp])
+  useEffect(() => {
+    const w = clampSavgolWindow(savgolWindowProp, savgolPolyProp)
+    const p = clampSavgolPoly(savgolPolyProp, w)
+    setSavgolWindow(w)
+    setSavgolPoly(p)
+  }, [savgolWindowProp, savgolPolyProp])
+  const plotPrice = lightbox ? momSource.price : true
+  const plotEma = lightbox ? momSource.ema : showEma
+  const plotSg = lightbox ? momSource.sg : showSavgol
+  const plotUp = lightbox ? momSide.up : true
+  const plotDown = lightbox ? momSide.down : true
+  const showSmooth = plotEma || plotSg
   const twapFillId = `twapAreaFill-${mode}${lightbox ? '-lb' : ''}`
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const dragRef = useRef<{
@@ -836,15 +1295,22 @@ export default function PriceChart(props: Props) {
   const setHoverTime = onHoverTimeChange ?? setLocalHoverTime
 
   const chartData = useMemo((): ChartPoint[] => {
-    if (mode !== 'outcomes') {
-      return data.map((d) => ({
-        ...d,
-        upPct: undefined,
-        downPct: undefined,
-      }))
-    }
-    return mapOutcomesChartData(data, emaPeriod, savgolWindow, savgolPoly)
-  }, [data, mode, emaPeriod, savgolWindow, savgolPoly])
+    const base: ChartPoint[] =
+      mode !== 'outcomes'
+        ? data.map((d) => ({
+            ...d,
+            upPct: undefined,
+            downPct: undefined,
+          }))
+        : mapOutcomesChartData(data, emaPeriod, savgolWindow, savgolPoly)
+    if (!lightbox) return base
+    return attachMomentum(
+      base,
+      mode === 'outcomes' ? 'outcomes' : 'btc',
+      savgolWindow,
+      savgolPoly,
+    )
+  }, [data, mode, emaPeriod, savgolWindow, savgolPoly, lightbox])
 
   // Prefer TWAP; then Chainlink; only fall back to Binance when neither exists.
   // Apply once into seriesVisible so toggles stay clickable (don't fight a derived plotVisible).
@@ -898,6 +1364,10 @@ export default function PriceChart(props: Props) {
       showEma,
       xDomain,
       showSavgol,
+      showMomentum,
+      momSource,
+      momSide,
+      momCurve,
     )
   }, [
     hoverTime,
@@ -909,6 +1379,10 @@ export default function PriceChart(props: Props) {
     showEma,
     showSavgol,
     xDomain,
+    showMomentum,
+    momSource,
+    momSide,
+    momCurve,
   ])
 
   const onChartMouseMove = (state: {
@@ -960,9 +1434,83 @@ export default function PriceChart(props: Props) {
     plotVisible.binance,
   ])
 
+  const momSeriesKeys = useMemo((): Array<keyof ChartPoint> => {
+    if (!showMomentum) return []
+    if (showBtc) {
+      return [
+        plotVisible.twap ? ('twapMom' as const) : null,
+        plotVisible.chainlink ? ('chainlinkMom' as const) : null,
+        plotVisible.binance ? ('btcMom' as const) : null,
+      ].filter(Boolean) as Array<keyof ChartPoint>
+    }
+    return [
+      // Price′ and SG(Price′)
+      momSide.up && momSource.price && momCurve.priceRaw ? ('upMom' as const) : null,
+      momSide.down && momSource.price && momCurve.priceRaw ? ('downMom' as const) : null,
+      momSide.up && momSource.price && momCurve.priceSg ? ('upMomSg' as const) : null,
+      momSide.down && momSource.price && momCurve.priceSg ? ('downMomSg' as const) : null,
+      // EMA′ and SG(EMA′)
+      momSide.up && momSource.ema && momCurve.emaRaw ? ('upEmaMom' as const) : null,
+      momSide.down && momSource.ema && momCurve.emaRaw ? ('downEmaMom' as const) : null,
+      momSide.up && momSource.ema && momCurve.emaSg ? ('upEmaMomSg' as const) : null,
+      momSide.down && momSource.ema && momCurve.emaSg ? ('downEmaMomSg' as const) : null,
+      // SG′ = mom(SG price) and SG(SG′)
+      momSide.up && momSource.sg && momCurve.sgRaw ? ('upSavgolMom' as const) : null,
+      momSide.down && momSource.sg && momCurve.sgRaw ? ('downSavgolMom' as const) : null,
+      momSide.up && momSource.sg && momCurve.sgSg ? ('upSavgolMomSg' as const) : null,
+      momSide.down && momSource.sg && momCurve.sgSg ? ('downSavgolMomSg' as const) : null,
+    ].filter(Boolean) as Array<keyof ChartPoint>
+  }, [
+    showMomentum,
+    showBtc,
+    plotVisible.twap,
+    plotVisible.chainlink,
+    plotVisible.binance,
+    momSource,
+    momSide,
+    momCurve,
+  ])
+
+  const momYDomain = useMemo((): [number, number] => {
+    if (!showMomentum) return [-1, 1]
+    const values: number[] = []
+    for (const d of chartData) {
+      const t = Number(d.t)
+      if (!Number.isFinite(t) || t < xDomain[0] || t > xDomain[1]) continue
+      for (const k of momSeriesKeys) {
+        const v = d[k]
+        if (typeof v === 'number' && Number.isFinite(v)) values.push(v)
+      }
+    }
+    if (!values.length) return [-1, 1]
+    const peak = Math.max(...values.map(Math.abs), 1e-9)
+    const pad = peak * 0.15
+    return [-(peak + pad), peak + pad]
+  }, [showMomentum, chartData, xDomain, momSeriesKeys])
+
+  /** Split momentum into +/− for green/red area fills under the curves. */
+  const momChartData = useMemo(() => {
+    if (!showMomentum || !momSeriesKeys.length) return chartData
+    return chartData.map((d) => {
+      const row: Record<string, unknown> = { ...d }
+      for (const k of momSeriesKeys) {
+        const v = d[k]
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          row[`${String(k)}_pos`] = v > 0 ? v : 0
+          row[`${String(k)}_neg`] = v < 0 ? v : 0
+        } else {
+          row[`${String(k)}_pos`] = undefined
+          row[`${String(k)}_neg`] = undefined
+        }
+      }
+      return row
+    })
+  }, [showMomentum, chartData, momSeriesKeys])
+
   // null = follow autoY; set when user zooms/pans vertically
   const [yZoom, setYZoom] = useState<[number, number] | null>(null)
   const yDomain = yZoom ?? autoY
+  const chartMargin = CHART_MARGIN
 
   const lastTwap =
     [...chartData].reverse().find((d) => d.twap != null)?.twap ??
@@ -993,12 +1541,32 @@ export default function PriceChart(props: Props) {
     onSeriesVisibleChange(next)
   }
 
+  const toggleMomSource = (key: MomSourceKey) => {
+    setMomSource((prev) => {
+      const next = { ...prev, [key]: !prev[key] }
+      if (!next.price && !next.ema && !next.sg) return prev
+      return next
+    })
+  }
+
+  const toggleMomSide = (key: MomSideKey) => {
+    setMomSide((prev) => {
+      const next = { ...prev, [key]: !prev[key] }
+      if (!next.up && !next.down) return prev
+      return next
+    })
+  }
+
+  const toggleMomCurve = (key: MomCurveKey) => {
+    setMomCurve((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
   const hitZone = (clientX: number, clientY: number): 'price' | 'time' | 'plot' => {
     const el = wrapRef.current
     if (!el) return 'plot'
     const rect = el.getBoundingClientRect()
-    const plotRight = rect.right - CHART_MARGIN.right - Y_AXIS_WIDTH
-    const plotBottom = rect.bottom - CHART_MARGIN.bottom
+    const plotRight = rect.right - chartMargin.right - Y_AXIS_WIDTH
+    const plotBottom = rect.bottom - chartMargin.bottom
     // Bottom-right corner is the reset control — treat as plot for cursor.
     if (clientX >= plotRight && clientY >= plotBottom) return 'plot'
     if (clientX >= plotRight) return 'price'
@@ -1031,8 +1599,8 @@ export default function PriceChart(props: Props) {
     const el = wrapRef.current
     if (!drag || !el) return
     const rect = el.getBoundingClientRect()
-    const plotW = Math.max(1, rect.width - CHART_MARGIN.left - CHART_MARGIN.right - Y_AXIS_WIDTH)
-    const plotH = Math.max(1, rect.height - CHART_MARGIN.top - CHART_MARGIN.bottom)
+    const plotW = Math.max(1, rect.width - chartMargin.left - chartMargin.right - Y_AXIS_WIDTH)
+    const plotH = Math.max(1, rect.height - chartMargin.top - chartMargin.bottom)
     const dx = ev.clientX - drag.x
     const dy = ev.clientY - drag.y
     const dragZone = drag.zone
@@ -1115,6 +1683,107 @@ export default function PriceChart(props: Props) {
         lightbox ? ' chart-block-lightbox' : ''
       }`}
     >
+      {lightbox && !showBtc ? (
+        <div className="chart-lightbox-filters">
+          <div className="chart-series-toggles" role="group" aria-label="Series source">
+            {(
+              [
+                { key: 'price' as const, label: 'Price', color: '#10b981' },
+                { key: 'ema' as const, label: 'EMA', color: '#059669' },
+                { key: 'sg' as const, label: 'SG', color: '#0f766e' },
+              ] as const
+            ).map((s) => (
+              <label
+                key={s.key}
+                className={`chart-series-toggle ${momSource[s.key] ? 'on' : ''}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={momSource[s.key]}
+                  onChange={() => toggleMomSource(s.key)}
+                />
+                <span className="chart-series-swatch" style={{ background: s.color }} />
+                {s.label}
+              </label>
+            ))}
+          </div>
+          <div className="chart-series-toggles" role="group" aria-label="Outcome side">
+            <label className={`chart-series-toggle ${momSide.up ? 'on' : ''}`}>
+              <input
+                type="checkbox"
+                checked={momSide.up}
+                onChange={() => toggleMomSide('up')}
+              />
+              <span className="chart-series-swatch" style={{ background: '#10b981' }} />
+              Up
+            </label>
+            <label className={`chart-series-toggle ${momSide.down ? 'on' : ''}`}>
+              <input
+                type="checkbox"
+                checked={momSide.down}
+                onChange={() => toggleMomSide('down')}
+              />
+              <span className="chart-series-swatch" style={{ background: '#ef4444' }} />
+              Down
+            </label>
+          </div>
+          <div className="chart-filter-params" role="group" aria-label="Filter parameters">
+            <label
+              className={`chart-filter-param${momSource.ema ? ' on' : ''}`}
+              title="EMA period (samples)"
+            >
+              <span>EMA</span>
+              <input
+                type="number"
+                min={1}
+                max={120}
+                step={1}
+                value={emaPeriod}
+                disabled={!momSource.ema}
+                onChange={(ev) => setEmaPeriod(clampEmaPeriod(Number(ev.target.value)))}
+              />
+            </label>
+            <label
+              className={`chart-filter-param${momSource.sg ? ' on' : ''}`}
+              title="Savitzky–Golay window (odd samples)"
+            >
+              <span>SG win</span>
+              <input
+                type="number"
+                min={3}
+                max={101}
+                step={2}
+                value={savgolWindow}
+                disabled={!momSource.sg}
+                onChange={(ev) => {
+                  const w = clampSavgolWindow(Number(ev.target.value), savgolPoly)
+                  setSavgolWindow(w)
+                  setSavgolPoly((p) => clampSavgolPoly(p, w))
+                }}
+              />
+            </label>
+            <label
+              className={`chart-filter-param${momSource.sg ? ' on' : ''}`}
+              title="Savitzky–Golay polynomial order"
+            >
+              <span>SG poly</span>
+              <input
+                type="number"
+                min={0}
+                max={Math.max(0, savgolWindow - 1)}
+                step={1}
+                value={savgolPoly}
+                disabled={!momSource.sg}
+                onChange={(ev) => {
+                  const p = clampSavgolPoly(Number(ev.target.value), savgolWindow)
+                  setSavgolPoly(p)
+                  setSavgolWindow((w) => clampSavgolWindow(w, p))
+                }}
+              />
+            </label>
+          </div>
+        </div>
+      ) : null}
       <div className="chart-header">
         <div className="chart-header-left">
           <div className="chart-title-row">
@@ -1158,7 +1827,10 @@ export default function PriceChart(props: Props) {
               ))}
             </div>
           ) : null}
-          {(!collapsed || lightbox) && !showBtc && (onShowEmaChange || onShowSavgolChange) ? (
+          {!lightbox &&
+          !collapsed &&
+          !showBtc &&
+          (onShowEmaChange || onShowSavgolChange) ? (
             <div className="chart-series-toggles" role="group" aria-label="Outcomes series visibility">
               {onShowEmaChange ? (
                 <label className={`chart-series-toggle ${showEma ? 'on' : ''}`}>
@@ -1193,10 +1865,11 @@ export default function PriceChart(props: Props) {
         </div>
       </div>
       {(!collapsed || lightbox) && (
+      <>
       <div
         className={`chart-wrap chart-wrap-zoom chart-cursor-${hoverZone}${
           lightbox ? ' chart-wrap-lightbox' : ''
-        }`}
+        }${showMomentum ? ' chart-wrap-main-with-mom' : ''}`}
         ref={wrapRef}
         tabIndex={-1}
         onPointerDown={onPointerDown}
@@ -1215,7 +1888,7 @@ export default function PriceChart(props: Props) {
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
             data={chartData}
-            margin={CHART_MARGIN}
+            margin={chartMargin}
             syncId="market-price-charts"
             syncMethod="value"
             onMouseMove={onChartMouseMove}
@@ -1245,6 +1918,7 @@ export default function PriceChart(props: Props) {
                   </linearGradient>
                 </defs>
                 <YAxis
+                  yAxisId="price"
                   orientation="right"
                   domain={yDomain}
                   allowDataOverflow
@@ -1264,6 +1938,7 @@ export default function PriceChart(props: Props) {
                 />
                 {highlightTime != null && (
                   <ReferenceLine
+                    yAxisId="price"
                     x={highlightTime}
                     stroke="#3b82f6"
                     strokeWidth={1.75}
@@ -1273,6 +1948,7 @@ export default function PriceChart(props: Props) {
                 )}
                 {priceToBeat != null && (
                   <ReferenceLine
+                    yAxisId="price"
                     y={priceToBeat}
                     stroke="#9ca3af"
                     strokeDasharray="5 5"
@@ -1284,6 +1960,7 @@ export default function PriceChart(props: Props) {
                 {plotVisible.twap && (
                   <>
                     <Area
+                      yAxisId="price"
                       type="monotone"
                       dataKey="twap"
                       name="Current Price"
@@ -1299,6 +1976,7 @@ export default function PriceChart(props: Props) {
                       tooltipType="none"
                     />
                     <Line
+                      yAxisId="price"
                       type="monotone"
                       dataKey="twap"
                       name="Current Price"
@@ -1317,6 +1995,7 @@ export default function PriceChart(props: Props) {
                   plotVisible[s.key] ? (
                     <Line
                       key={s.key}
+                      yAxisId="price"
                       type="monotone"
                       dataKey={s.dataKey}
                       name={s.label}
@@ -1335,6 +2014,7 @@ export default function PriceChart(props: Props) {
             ) : (
               <>
                 <YAxis
+                  yAxisId="price"
                   orientation="right"
                   domain={yDomain}
                   allowDataOverflow
@@ -1352,6 +2032,7 @@ export default function PriceChart(props: Props) {
                 />
                 {highlightTime != null && (
                   <ReferenceLine
+                    yAxisId="price"
                     x={highlightTime}
                     stroke="#3b82f6"
                     strokeWidth={1.75}
@@ -1359,100 +2040,119 @@ export default function PriceChart(props: Props) {
                     ifOverflow="hidden"
                   />
                 )}
-                <Line
-                  type="monotone"
-                  dataKey="upPct"
-                  name="Up"
-                  stroke="#10b981"
-                  strokeOpacity={showSmooth ? 0.45 : 1}
-                  strokeDasharray={showSmooth ? '4 3' : undefined}
-                  dot={false}
-                  activeDot={(dotProps) => (
-                    <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#10b981" />
-                  )}
-                  strokeWidth={showSmooth ? 1.5 : 2}
-                  isAnimationActive={false}
-                  connectNulls={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="downPct"
-                  name="Down"
-                  stroke="#ef4444"
-                  strokeOpacity={showSmooth ? 0.45 : 1}
-                  strokeDasharray={showSmooth ? '4 3' : undefined}
-                  dot={false}
-                  activeDot={(dotProps) => (
-                    <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#ef4444" />
-                  )}
-                  strokeWidth={showSmooth ? 1.5 : 2}
-                  isAnimationActive={false}
-                  connectNulls={false}
-                />
-                {showEma ? (
+                {plotUp && plotPrice ? (
+                  <Line
+                    yAxisId="price"
+                    type="monotone"
+                    dataKey="upPct"
+                    name="Up"
+                    stroke="#10b981"
+                    strokeOpacity={showSmooth ? 0.45 : 1}
+                    strokeDasharray={showSmooth ? '4 3' : undefined}
+                    dot={false}
+                    activeDot={(dotProps) => (
+                      <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#10b981" />
+                    )}
+                    strokeWidth={showSmooth ? 1.5 : 2}
+                    isAnimationActive={false}
+                    connectNulls={false}
+                  />
+                ) : null}
+                {plotDown && plotPrice ? (
+                  <Line
+                    yAxisId="price"
+                    type="monotone"
+                    dataKey="downPct"
+                    name="Down"
+                    stroke="#ef4444"
+                    strokeOpacity={showSmooth ? 0.45 : 1}
+                    strokeDasharray={showSmooth ? '4 3' : undefined}
+                    dot={false}
+                    activeDot={(dotProps) => (
+                      <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#ef4444" />
+                    )}
+                    strokeWidth={showSmooth ? 1.5 : 2}
+                    isAnimationActive={false}
+                    connectNulls={false}
+                  />
+                ) : null}
+                {plotEma ? (
                   <>
-                    <Line
-                      type="monotone"
-                      dataKey="upEma"
-                      name="Up EMA"
-                      stroke="#059669"
-                      strokeOpacity={1}
-                      dot={false}
-                      activeDot={false}
-                      strokeWidth={2.35}
-                      isAnimationActive={false}
-                      connectNulls
-                      legendType="none"
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="downEma"
-                      name="Down EMA"
-                      stroke="#dc2626"
-                      strokeOpacity={1}
-                      dot={false}
-                      activeDot={false}
-                      strokeWidth={2.35}
-                      isAnimationActive={false}
-                      connectNulls
-                      legendType="none"
-                    />
+                    {plotUp ? (
+                      <Line
+                        yAxisId="price"
+                        type="monotone"
+                        dataKey="upEma"
+                        name="Up EMA"
+                        stroke="#059669"
+                        strokeOpacity={1}
+                        dot={false}
+                        activeDot={false}
+                        strokeWidth={2.35}
+                        isAnimationActive={false}
+                        connectNulls
+                        legendType="none"
+                      />
+                    ) : null}
+                    {plotDown ? (
+                      <Line
+                        yAxisId="price"
+                        type="monotone"
+                        dataKey="downEma"
+                        name="Down EMA"
+                        stroke="#dc2626"
+                        strokeOpacity={1}
+                        dot={false}
+                        activeDot={false}
+                        strokeWidth={2.35}
+                        isAnimationActive={false}
+                        connectNulls
+                        legendType="none"
+                      />
+                    ) : null}
                   </>
                 ) : null}
-                {showSavgol ? (
+                {plotSg ? (
                   <>
-                    <Line
-                      type="monotone"
-                      dataKey="upSavgol"
-                      name="Up SG"
-                      stroke="#0f766e"
-                      strokeOpacity={1}
-                      strokeDasharray="6 3"
-                      dot={false}
-                      activeDot={false}
-                      strokeWidth={2.15}
-                      isAnimationActive={false}
-                      connectNulls
-                      legendType="none"
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="downSavgol"
-                      name="Down SG"
-                      stroke="#be123c"
-                      strokeOpacity={1}
-                      strokeDasharray="6 3"
-                      dot={false}
-                      activeDot={false}
-                      strokeWidth={2.15}
-                      isAnimationActive={false}
-                      connectNulls
-                      legendType="none"
-                    />
+                    {plotUp ? (
+                      <Line
+                        yAxisId="price"
+                        type="monotone"
+                        dataKey="upSavgol"
+                        name="Up SG"
+                        stroke="#0f766e"
+                        strokeOpacity={1}
+                        strokeDasharray="6 3"
+                        dot={false}
+                        activeDot={false}
+                        strokeWidth={2.15}
+                        isAnimationActive={false}
+                        connectNulls
+                        legendType="none"
+                      />
+                    ) : null}
+                    {plotDown ? (
+                      <Line
+                        yAxisId="price"
+                        type="monotone"
+                        dataKey="downSavgol"
+                        name="Down SG"
+                        stroke="#be123c"
+                        strokeOpacity={1}
+                        strokeDasharray="6 3"
+                        dot={false}
+                        activeDot={false}
+                        strokeWidth={2.15}
+                        isAnimationActive={false}
+                        connectNulls
+                        legendType="none"
+                      />
+                    ) : null}
                   </>
                 ) : null}
                 {traderMarks.length > 0 ? (
                   <Scatter
+                    yAxisId="price"
                     name="Trader fills"
                     data={traderMarks.map((m) => ({
                       t: m.t,
@@ -1510,6 +2210,420 @@ export default function PriceChart(props: Props) {
           </button>
         )}
       </div>
+      {showMomentum ? (
+        <div className="chart-momentum-panel">
+          <div className="chart-momentum-head">
+            <div className="chart-title">Momentum</div>
+            {!showBtc ? (
+              <div className="chart-series-toggles" role="group" aria-label="Momentum series">
+                {momSource.price ? (
+                  <>
+                    <label
+                      className={`chart-series-toggle ${momCurve.priceRaw ? 'on' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={momCurve.priceRaw}
+                        onChange={() => toggleMomCurve('priceRaw')}
+                      />
+                      <span className="chart-series-swatch" style={{ background: '#10b981' }} />
+                      Price′
+                    </label>
+                    <label
+                      className={`chart-series-toggle ${momCurve.priceSg ? 'on' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={momCurve.priceSg}
+                        onChange={() => toggleMomCurve('priceSg')}
+                      />
+                      <span className="chart-series-swatch" style={{ background: '#0f766e' }} />
+                      SG(Price′)
+                    </label>
+                  </>
+                ) : null}
+                {momSource.ema ? (
+                  <>
+                    <label className={`chart-series-toggle ${momCurve.emaRaw ? 'on' : ''}`}>
+                      <input
+                        type="checkbox"
+                        checked={momCurve.emaRaw}
+                        onChange={() => toggleMomCurve('emaRaw')}
+                      />
+                      <span className="chart-series-swatch" style={{ background: '#059669' }} />
+                      EMA′
+                    </label>
+                    <label className={`chart-series-toggle ${momCurve.emaSg ? 'on' : ''}`}>
+                      <input
+                        type="checkbox"
+                        checked={momCurve.emaSg}
+                        onChange={() => toggleMomCurve('emaSg')}
+                      />
+                      <span className="chart-series-swatch" style={{ background: '#0f766e' }} />
+                      SG(EMA′)
+                    </label>
+                  </>
+                ) : null}
+                {momSource.sg ? (
+                  <>
+                    <label className={`chart-series-toggle ${momCurve.sgRaw ? 'on' : ''}`}>
+                      <input
+                        type="checkbox"
+                        checked={momCurve.sgRaw}
+                        onChange={() => toggleMomCurve('sgRaw')}
+                      />
+                      <span className="chart-series-swatch" style={{ background: '#0f766e' }} />
+                      SG′
+                    </label>
+                    <label className={`chart-series-toggle ${momCurve.sgSg ? 'on' : ''}`}>
+                      <input
+                        type="checkbox"
+                        checked={momCurve.sgSg}
+                        onChange={() => toggleMomCurve('sgSg')}
+                      />
+                      <span className="chart-series-swatch" style={{ background: '#115e59' }} />
+                      SG(SG′)
+                    </label>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="chart-momentum-sign-legend" aria-hidden>
+              <span className="chart-momentum-sign pos">+ positive</span>
+              <span className="chart-momentum-sign neg">− negative</span>
+            </div>
+          </div>
+          <div className="chart-wrap chart-wrap-momentum">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart
+                data={momChartData}
+                margin={CHART_MARGIN}
+                syncId="market-price-charts"
+                syncMethod="value"
+                onMouseMove={onChartMouseMove}
+                onMouseLeave={clearHover}
+              >
+                <CartesianGrid stroke="#eef0f4" strokeDasharray="0" horizontal vertical />
+                <XAxis
+                  type="number"
+                  dataKey="t"
+                  domain={[xDomain[0], xDomain[1]]}
+                  ticks={timeTicks}
+                  interval={0}
+                  allowDataOverflow
+                  stroke="#9ca3af"
+                  tick={{ fontSize: 11, fill: '#9ca3af' }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(v) => formatTimeTick(Number(v))}
+                />
+                <YAxis
+                  orientation="right"
+                  domain={momYDomain}
+                  allowDataOverflow
+                  stroke={MOMENTUM_COLOR}
+                  tick={{ fontSize: 10, fill: MOMENTUM_COLOR }}
+                  width={Y_AXIS_WIDTH}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(v) => {
+                    const n = Number(v)
+                    if (showBtc) {
+                      const abs = Math.abs(n)
+                      const t =
+                        abs >= 10 ? n.toFixed(0) : abs >= 1 ? n.toFixed(1) : n.toFixed(2)
+                      return `${t}/s`
+                    }
+                    return `${n.toFixed(2)}¢/s`
+                  }}
+                />
+                <Tooltip
+                  content={() => null}
+                  cursor={<ChartCrosshair />}
+                  isAnimationActive={false}
+                />
+                <ReferenceArea
+                  y1={0}
+                  y2={momYDomain[1]}
+                  fill="#10b981"
+                  fillOpacity={0.07}
+                  ifOverflow="hidden"
+                />
+                <ReferenceArea
+                  y1={momYDomain[0]}
+                  y2={0}
+                  fill="#ef4444"
+                  fillOpacity={0.07}
+                  ifOverflow="hidden"
+                />
+                <ReferenceLine
+                  y={0}
+                  stroke="#64748b"
+                  strokeOpacity={0.85}
+                  strokeWidth={1.5}
+                />
+                {highlightTime != null && (
+                  <ReferenceLine
+                    x={highlightTime}
+                    stroke="#3b82f6"
+                    strokeWidth={1.75}
+                    strokeDasharray="4 3"
+                    ifOverflow="hidden"
+                  />
+                )}
+                {momSeriesKeys.map((key) => (
+                  <Area
+                    key={`${String(key)}_pos`}
+                    type="monotone"
+                    dataKey={`${String(key)}_pos`}
+                    stroke="none"
+                    fill="#10b981"
+                    fillOpacity={0.22}
+                    baseValue={0}
+                    isAnimationActive={false}
+                    connectNulls
+                    legendType="none"
+                    tooltipType="none"
+                  />
+                ))}
+                {momSeriesKeys.map((key) => (
+                  <Area
+                    key={`${String(key)}_neg`}
+                    type="monotone"
+                    dataKey={`${String(key)}_neg`}
+                    stroke="none"
+                    fill="#ef4444"
+                    fillOpacity={0.22}
+                    baseValue={0}
+                    isAnimationActive={false}
+                    connectNulls
+                    legendType="none"
+                    tooltipType="none"
+                  />
+                ))}
+                {showBtc ? (
+                  (
+                    [
+                      {
+                        key: 'twap' as const,
+                        dataKey: 'twapMom',
+                        color: TWAP_COLOR,
+                        label: 'Current′',
+                      },
+                      {
+                        key: 'chainlink' as const,
+                        dataKey: 'chainlinkMom',
+                        color: '#22c55e',
+                        label: 'Chainlink′',
+                      },
+                      {
+                        key: 'binance' as const,
+                        dataKey: 'btcMom',
+                        color: '#2563eb',
+                        label: 'Binance′',
+                      },
+                    ] as const
+                  ).map((s) =>
+                    plotVisible[s.key] ? (
+                      <Line
+                        key={s.dataKey}
+                        type="monotone"
+                        dataKey={s.dataKey}
+                        name={s.label}
+                        stroke={s.color}
+                        strokeWidth={1.85}
+                        strokeDasharray="5 3"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null,
+                  )
+                ) : (
+                  <>
+                    {momSide.up && momSource.price && momCurve.priceRaw ? (
+                      <Line
+                        type="monotone"
+                        dataKey="upMom"
+                        name="Up′"
+                        stroke="#10b981"
+                        strokeWidth={1.5}
+                        strokeOpacity={0.45}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                    {momSide.down && momSource.price && momCurve.priceRaw ? (
+                      <Line
+                        type="monotone"
+                        dataKey="downMom"
+                        name="Down′"
+                        stroke="#ef4444"
+                        strokeWidth={1.5}
+                        strokeOpacity={0.45}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                    {momSide.up && momSource.price && momCurve.priceSg ? (
+                      <Line
+                        type="monotone"
+                        dataKey="upMomSg"
+                        name="SG(Up′)"
+                        stroke="#0f766e"
+                        strokeWidth={2.35}
+                        strokeDasharray="6 3"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                    {momSide.down && momSource.price && momCurve.priceSg ? (
+                      <Line
+                        type="monotone"
+                        dataKey="downMomSg"
+                        name="SG(Down′)"
+                        stroke="#be123c"
+                        strokeWidth={2.35}
+                        strokeDasharray="6 3"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                    {momSide.up && momSource.ema && momCurve.emaRaw ? (
+                      <Line
+                        type="monotone"
+                        dataKey="upEmaMom"
+                        name="Up EMA′"
+                        stroke="#059669"
+                        strokeWidth={1.5}
+                        strokeOpacity={0.45}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                    {momSide.down && momSource.ema && momCurve.emaRaw ? (
+                      <Line
+                        type="monotone"
+                        dataKey="downEmaMom"
+                        name="Down EMA′"
+                        stroke="#dc2626"
+                        strokeWidth={1.5}
+                        strokeOpacity={0.45}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                    {momSide.up && momSource.ema && momCurve.emaSg ? (
+                      <Line
+                        type="monotone"
+                        dataKey="upEmaMomSg"
+                        name="SG(Up EMA′)"
+                        stroke="#0f766e"
+                        strokeWidth={2.2}
+                        strokeDasharray="4 2"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                    {momSide.down && momSource.ema && momCurve.emaSg ? (
+                      <Line
+                        type="monotone"
+                        dataKey="downEmaMomSg"
+                        name="SG(Down EMA′)"
+                        stroke="#be123c"
+                        strokeWidth={2.2}
+                        strokeDasharray="4 2"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                    {momSide.up && momSource.sg && momCurve.sgRaw ? (
+                      <Line
+                        type="monotone"
+                        dataKey="upSavgolMom"
+                        name="Up SG′"
+                        stroke="#0f766e"
+                        strokeWidth={1.5}
+                        strokeOpacity={0.45}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                    {momSide.down && momSource.sg && momCurve.sgRaw ? (
+                      <Line
+                        type="monotone"
+                        dataKey="downSavgolMom"
+                        name="Down SG′"
+                        stroke="#be123c"
+                        strokeWidth={1.5}
+                        strokeOpacity={0.45}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                    {momSide.up && momSource.sg && momCurve.sgSg ? (
+                      <Line
+                        type="monotone"
+                        dataKey="upSavgolMomSg"
+                        name="SG(Up SG′)"
+                        stroke="#115e59"
+                        strokeWidth={2.35}
+                        strokeDasharray="2 3"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                    {momSide.down && momSource.sg && momCurve.sgSg ? (
+                      <Line
+                        type="monotone"
+                        dataKey="downSavgolMomSg"
+                        name="SG(Down SG′)"
+                        stroke="#9f1239"
+                        strokeWidth={2.35}
+                        strokeDasharray="2 3"
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    ) : null}
+                  </>
+                )}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      ) : null}
+      </>
       )}
     </div>
     {!lightbox && enlarged

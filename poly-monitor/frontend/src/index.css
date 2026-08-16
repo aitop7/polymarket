@@ -3353,8 +3353,73 @@ select {
   margin: 0;
 }
 
+.chart-lightbox-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.45rem 1.1rem;
+  margin-bottom: 0.55rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.chart-filter-params {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.55rem;
+  margin-left: auto;
+}
+
+.chart-filter-param {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.2rem 0.4rem 0.2rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+}
+
+.chart-filter-param.on {
+  color: var(--text);
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.chart-filter-param input {
+  width: 3.1rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 5px;
+  padding: 0.12rem 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--text);
+  background: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-filter-param input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: #f3f4f6;
+}
+
+.chart-filter-param input:focus {
+  outline: none;
+  border-color: #94a3b8;
+}
+
 .chart-block-lightbox .chart-wrap-lightbox {
-  height: min(70vh, 36rem);
+  height: min(48vh, 28rem);
+}
+
+.chart-block-lightbox .chart-wrap-lightbox.chart-wrap-main-with-mom {
+  height: min(36vh, 22rem);
 }
 
 .chart-block-lightbox .chart-wrap-volume.chart-wrap-lightbox {
@@ -3363,6 +3428,56 @@ select {
 
 .chart-block-lightbox .chart-wrap-volume-outcomes.chart-wrap-lightbox {
   height: min(55vh, 28rem);
+}
+
+.chart-momentum-panel {
+  margin-top: 0.55rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border);
+}
+
+.chart-momentum-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.85rem;
+  margin-bottom: 0.25rem;
+}
+
+.chart-momentum-head .chart-title {
+  margin-bottom: 0;
+}
+
+.chart-momentum-sign-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.chart-momentum-sign.pos {
+  color: #059669;
+}
+
+.chart-momentum-sign.neg {
+  color: #dc2626;
+}
+
+.chart-momentum-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 1rem;
+}
+
+.chart-wrap.chart-wrap-momentum {
+  height: 160px;
+}
+
+.chart-block-lightbox .chart-wrap-momentum {
+  height: min(28vh, 16rem);
 }
 
 .chart-block-collapsed .chart-header,
