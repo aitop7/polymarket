@@ -3298,6 +3298,73 @@ select {
   background: #eef1f6;
 }
 
+.chart-enlarge {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.chart-enlarge:hover {
+  color: var(--text);
+  background: #eef1f6;
+}
+
+.chart-enlarge-close:hover {
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.chart-lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+  background: rgba(15, 23, 42, 0.5);
+  backdrop-filter: blur(2px);
+}
+
+.chart-lightbox {
+  position: relative;
+  z-index: 10001;
+  width: min(96vw, 72rem);
+  max-height: min(92vh, 52rem);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.28);
+  padding: 0.85rem 1rem 1rem;
+  overflow: auto;
+}
+
+.chart-block-lightbox {
+  margin: 0;
+}
+
+.chart-block-lightbox .chart-wrap-lightbox {
+  height: min(70vh, 36rem);
+}
+
+.chart-block-lightbox .chart-wrap-volume.chart-wrap-lightbox {
+  height: min(42vh, 22rem);
+}
+
+.chart-block-lightbox .chart-wrap-volume-outcomes.chart-wrap-lightbox {
+  height: min(55vh, 28rem);
+}
+
 .chart-block-collapsed .chart-header,
 .chart-block-collapsed .chart-header-volume {
   min-height: 0;

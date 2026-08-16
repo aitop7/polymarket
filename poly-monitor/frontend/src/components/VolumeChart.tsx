@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import ChartCollapseButton from './ChartCollapseButton'
+import ChartEnlargeButton from './ChartEnlargeButton'
 import {
   Bar,
   CartesianGrid,
@@ -33,6 +35,9 @@ type Props = {
   live?: boolean
   /** Wall clock (ms) — pins the forming live volume bar to "now". */
   nowMs?: number
+  /** Rendered inside the large-chart lightbox (taller plot, close control). */
+  lightbox?: boolean
+  onLightboxClose?: () => void
 }
 
 const Y_AXIS_WIDTH = 72
@@ -204,16 +209,31 @@ function OutcomesBuySellShape(props: {
   )
 }
 
-export default function VolumeChart({
-  data,
-  mode,
-  title,
-  xDomain,
-  hoverTime,
-  onHoverTimeChange,
-  live = false,
-}: Props) {
+export default function VolumeChart(props: Props) {
+  const {
+    data,
+    mode,
+    title,
+    xDomain,
+    hoverTime,
+    onHoverTimeChange,
+    live = false,
+    lightbox = false,
+    onLightboxClose,
+  } = props
   const [collapsed, setCollapsed] = useState(false)
+  const [enlarged, setEnlarged] = useState(false)
+
+  useEffect(() => {
+    if (!lightbox && !enlarged) return
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return
+      if (lightbox) onLightboxClose?.()
+      else setEnlarged(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [lightbox, enlarged, onLightboxClose])
 
   // Wider when zoomed in (fewer 5s slots visible); thinner when zoomed out.
   // ~92% of slot width so neighboring 5s bars sit close with a thin gap.
@@ -417,22 +437,35 @@ export default function VolumeChart({
     title || (mode === 'binance' ? 'Binance BTC volume' : 'Up / Down volume')
 
   return (
+    <>
     <div
       className={`chart-block chart-block-volume${
-        collapsed ? ' chart-block-collapsed' : ''
-      }`}
+        collapsed && !lightbox ? ' chart-block-collapsed' : ''
+      }${lightbox ? ' chart-block-lightbox' : ''}`}
     >
       <div className="chart-header chart-header-volume">
         <div className="chart-header-left">
           <div className="chart-title-row">
-            <ChartCollapseButton
-              collapsed={collapsed}
-              onToggle={() => setCollapsed((v) => !v)}
-              label={chartLabel}
-            />
+            {!lightbox ? (
+              <ChartCollapseButton
+                collapsed={collapsed}
+                onToggle={() => setCollapsed((v) => !v)}
+                label={chartLabel}
+              />
+            ) : null}
             {title && <div className="chart-title">{title}</div>}
+            {!collapsed || lightbox ? (
+              <ChartEnlargeButton
+                label={chartLabel}
+                mode={lightbox ? 'close' : 'enlarge'}
+                onClick={() => {
+                  if (lightbox) onLightboxClose?.()
+                  else setEnlarged(true)
+                }}
+              />
+            ) : null}
           </div>
-          {!collapsed && (
+          {(!collapsed || lightbox) && (
             <div className="chart-header-tip chart-volume-tip">
               {tip ? (
                 mode === 'binance' ? (
@@ -478,7 +511,7 @@ export default function VolumeChart({
             </div>
           )}
         </div>
-        {!collapsed && (
+        {(!collapsed || lightbox) && (
           <div className="chart-volume-legend" aria-hidden>
             {mode === 'binance' ? (
               <>
@@ -503,11 +536,11 @@ export default function VolumeChart({
           </div>
         )}
       </div>
-      {!collapsed && (
+      {(!collapsed || lightbox) && (
       <div
         className={`chart-wrap chart-wrap-volume${
           mode === 'outcomes' ? ' chart-wrap-volume-outcomes' : ''
-        }`}
+        }${lightbox ? ' chart-wrap-lightbox' : ''}`}
         tabIndex={-1}
         onMouseDown={(e) => {
           // Keep click from focusing the SVG (browser black focus rect).
@@ -570,5 +603,30 @@ export default function VolumeChart({
       </div>
       )}
     </div>
+    {!lightbox && enlarged
+      ? createPortal(
+          <div
+            className="chart-lightbox-backdrop"
+            role="presentation"
+            onClick={() => setEnlarged(false)}
+          >
+            <div
+              className="chart-lightbox"
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Large ${chartLabel}`}
+              onClick={(ev) => ev.stopPropagation()}
+            >
+              <VolumeChart
+                {...props}
+                lightbox
+                onLightboxClose={() => setEnlarged(false)}
+              />
+            </div>
+          </div>,
+          document.body,
+        )
+      : null}
+    </>
   )
 }

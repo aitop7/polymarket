@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Area,
   CartesianGrid,
@@ -13,6 +14,7 @@ import {
 } from 'recharts'
 import { formatCents } from '../api'
 import ChartCollapseButton from './ChartCollapseButton'
+import ChartEnlargeButton from './ChartEnlargeButton'
 
 export type BtcSeriesKey = 'twap' | 'chainlink' | 'binance'
 
@@ -83,6 +85,9 @@ type Props = {
   savgolWindow?: number
   /** Savitzky–Golay polynomial order (default 2) */
   savgolPoly?: number
+  /** Rendered inside the large-chart lightbox (taller plot, close control). */
+  lightbox?: boolean
+  onLightboxClose?: () => void
 }
 
 const SERIES_META: {
@@ -782,33 +787,36 @@ function domainEqual(a: TimeDomain, b: TimeDomain): boolean {
   return Math.abs(a[0] - b[0]) < 1 && Math.abs(a[1] - b[1]) < 1
 }
 
-export default function PriceChart({
-  data,
-  priceToBeat,
-  mode = 'btc',
-  title,
-  xDomain,
-  onXDomainChange,
-  onXDomainReset,
-  xFullDomain,
-  xDefaultDomain,
-  seriesVisible = DEFAULT_VISIBLE,
-  onSeriesVisibleChange,
-  hoverTime: hoverTimeProp,
-  onHoverTimeChange,
-  traderMarks = [],
-  highlightTime = null,
-  showEma = false,
-  onShowEmaChange,
-  showSavgol = false,
-  onShowSavgolChange,
-  emaPeriod = DEFAULT_EMA_PERIOD,
-  savgolWindow = DEFAULT_SAVGOL_WINDOW,
-  savgolPoly = DEFAULT_SAVGOL_POLY,
-}: Props) {
+export default function PriceChart(props: Props) {
+  const {
+    data,
+    priceToBeat,
+    mode = 'btc',
+    title,
+    xDomain,
+    onXDomainChange,
+    onXDomainReset,
+    xFullDomain,
+    xDefaultDomain,
+    seriesVisible = DEFAULT_VISIBLE,
+    onSeriesVisibleChange,
+    hoverTime: hoverTimeProp,
+    onHoverTimeChange,
+    traderMarks = [],
+    highlightTime = null,
+    showEma = false,
+    onShowEmaChange,
+    showSavgol = false,
+    onShowSavgolChange,
+    emaPeriod = DEFAULT_EMA_PERIOD,
+    savgolWindow = DEFAULT_SAVGOL_WINDOW,
+    savgolPoly = DEFAULT_SAVGOL_POLY,
+    lightbox = false,
+    onLightboxClose,
+  } = props
   const showBtc = mode === 'btc'
   const showSmooth = showEma || showSavgol
-  const twapFillId = `twapAreaFill-${mode}`
+  const twapFillId = `twapAreaFill-${mode}${lightbox ? '-lb' : ''}`
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const dragRef = useRef<{
     x: number
@@ -820,6 +828,8 @@ export default function PriceChart({
   const [hoverZone, setHoverZone] = useState<'price' | 'time' | 'plot'>('plot')
   const [localHoverTime, setLocalHoverTime] = useState<number | null>(null)
   const [collapsed, setCollapsed] = useState(false)
+  const [enlarged, setEnlarged] = useState(false)
+  const chartTitle = title || (showBtc ? 'BTC price' : 'Up / Down price')
   const hoverTime = onHoverTimeChange
     ? (highlightTime ?? hoverTimeProp ?? null)
     : (highlightTime ?? localHoverTime)
@@ -1087,22 +1097,50 @@ export default function PriceChart({
     }
   }
 
+  useEffect(() => {
+    if (!lightbox && !enlarged) return
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return
+      if (lightbox) onLightboxClose?.()
+      else setEnlarged(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [lightbox, enlarged, onLightboxClose])
+
   return (
-    <div className={`chart-block${collapsed ? ' chart-block-collapsed' : ''}`}>
+    <>
+    <div
+      className={`chart-block${collapsed && !lightbox ? ' chart-block-collapsed' : ''}${
+        lightbox ? ' chart-block-lightbox' : ''
+      }`}
+    >
       <div className="chart-header">
         <div className="chart-header-left">
           <div className="chart-title-row">
-            <ChartCollapseButton
-              collapsed={collapsed}
-              onToggle={() => setCollapsed((v) => !v)}
-              label={title || (showBtc ? 'BTC price' : 'Up / Down price')}
-            />
+            {!lightbox ? (
+              <ChartCollapseButton
+                collapsed={collapsed}
+                onToggle={() => setCollapsed((v) => !v)}
+                label={chartTitle}
+              />
+            ) : null}
             {title && <div className="chart-title">{title}</div>}
+            {!collapsed || lightbox ? (
+              <ChartEnlargeButton
+                label={chartTitle}
+                mode={lightbox ? 'close' : 'enlarge'}
+                onClick={() => {
+                  if (lightbox) onLightboxClose?.()
+                  else setEnlarged(true)
+                }}
+              />
+            ) : null}
           </div>
-          {!collapsed && <ChartHeaderTip tip={hoverTip} />}
+          {(!collapsed || lightbox) && <ChartHeaderTip tip={hoverTip} />}
         </div>
         <div className="chart-header-right">
-          {!collapsed && showBtc && onSeriesVisibleChange ? (
+          {(!collapsed || lightbox) && showBtc && onSeriesVisibleChange ? (
             <div className="chart-series-toggles" role="group" aria-label="BTC series visibility">
               {SERIES_META.map((s) => (
                 <label
@@ -1120,7 +1158,7 @@ export default function PriceChart({
               ))}
             </div>
           ) : null}
-          {!collapsed && !showBtc && (onShowEmaChange || onShowSavgolChange) ? (
+          {(!collapsed || lightbox) && !showBtc && (onShowEmaChange || onShowSavgolChange) ? (
             <div className="chart-series-toggles" role="group" aria-label="Outcomes series visibility">
               {onShowEmaChange ? (
                 <label className={`chart-series-toggle ${showEma ? 'on' : ''}`}>
@@ -1154,9 +1192,11 @@ export default function PriceChart({
           ) : null}
         </div>
       </div>
-      {!collapsed && (
+      {(!collapsed || lightbox) && (
       <div
-        className={`chart-wrap chart-wrap-zoom chart-cursor-${hoverZone}`}
+        className={`chart-wrap chart-wrap-zoom chart-cursor-${hoverZone}${
+          lightbox ? ' chart-wrap-lightbox' : ''
+        }`}
         ref={wrapRef}
         tabIndex={-1}
         onPointerDown={onPointerDown}
@@ -1472,5 +1512,30 @@ export default function PriceChart({
       </div>
       )}
     </div>
+    {!lightbox && enlarged
+      ? createPortal(
+          <div
+            className="chart-lightbox-backdrop"
+            role="presentation"
+            onClick={() => setEnlarged(false)}
+          >
+            <div
+              className="chart-lightbox"
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Large ${chartTitle}`}
+              onClick={(ev) => ev.stopPropagation()}
+            >
+              <PriceChart
+                {...props}
+                lightbox
+                onLightboxClose={() => setEnlarged(false)}
+              />
+            </div>
+          </div>,
+          document.body,
+        )
+      : null}
+    </>
   )
 }
