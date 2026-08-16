@@ -358,11 +358,15 @@ export default function VolumeChart({
   }, [xDomain])
 
   const tip = useMemo(() => {
-    if (hoverTime == null || !visibleData.length) return null
+    if (!visibleData.length) return null
+    const target =
+      hoverTime ??
+      [...visibleData].reverse().find((d) => d._has)?.t ??
+      visibleData[visibleData.length - 1].t
     let best = visibleData[0]
-    let bestDist = Math.abs(best.t - hoverTime)
+    let bestDist = Math.abs(best.t - target)
     for (const p of visibleData) {
-      const dist = Math.abs(p.t - hoverTime)
+      const dist = Math.abs(p.t - target)
       if (dist < bestDist) {
         best = p
         bestDist = dist
@@ -468,9 +472,7 @@ export default function VolumeChart({
                 <span className="chart-header-tip-empty">
                   {live && !hasAny
                     ? 'Waiting for volume bars…'
-                    : hasAny
-                      ? 'Hover chart for volume'
-                      : 'No trade volume in window'}
+                    : 'No trade volume in window'}
                 </span>
               )}
             </div>

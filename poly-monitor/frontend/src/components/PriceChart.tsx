@@ -444,10 +444,48 @@ function tipFromDataAtTime(
   }
 }
 
+/** Last sample in (or at) the visible domain — live "now" / history final price. */
+function defaultTipTime(
+  data: ChartDatum[],
+  domain: TimeDomain | null | undefined,
+  mode: 'btc' | 'outcomes',
+  seriesVisible: BtcSeriesVisibility,
+  showEma = false,
+): number | null {
+  if (!data.length) return null
+  const t1 = domain?.[1]
+
+  const hasValues = (p: ChartDatum): boolean => {
+    if (mode === 'btc') {
+      for (const s of SERIES_META) {
+        if (!seriesVisible[s.key]) continue
+        const v = p[s.dataKey]
+        if (v != null && Number.isFinite(Number(v))) return true
+      }
+      return false
+    }
+    if (p.upPct != null && Number.isFinite(p.upPct)) return true
+    if (p.downPct != null && Number.isFinite(p.downPct)) return true
+    if (showEma && p.upEma != null && Number.isFinite(p.upEma)) return true
+    if (showEma && p.downEma != null && Number.isFinite(p.downEma)) return true
+    return false
+  }
+
+  for (let i = data.length - 1; i >= 0; i--) {
+    const t = Number(data[i].t)
+    if (!Number.isFinite(t)) continue
+    if (t1 != null && Number.isFinite(t1) && t > t1) continue
+    if (!hasValues(data[i])) continue
+    return t
+  }
+  const last = Number(data[data.length - 1].t)
+  return Number.isFinite(last) ? last : null
+}
+
 /** Fixed header tip (above plot) — prices + timestamp. */
 function ChartHeaderTip({ tip }: { tip: HoverTip | null }) {
   if (!tip?.rows.length) {
-    return <div className="chart-header-tip chart-header-tip-empty">Hover chart for values</div>
+    return <div className="chart-header-tip chart-header-tip-empty">No price samples yet</div>
   }
 
   return (
@@ -629,22 +667,23 @@ export default function PriceChart({
     return { ...seriesVisible, twap: false, binance: true }
   }, [showBtc, seriesVisible, chartData])
 
-  const hoverTip = useMemo(
-    () =>
-      hoverTime == null
-        ? null
-        : tipFromDataAtTime(mode, chartData, hoverTime, plotVisible, showEma, xDomain),
-    [
-      hoverTime,
-      mode,
-      chartData,
-      plotVisible.twap,
-      plotVisible.chainlink,
-      plotVisible.binance,
-      showEma,
-      xDomain,
-    ],
-  )
+  const hoverTip = useMemo(() => {
+    // Default: live current / history last price. Hover overrides without
+    // sticking a crosshair when the pointer leaves.
+    const tipTime =
+      hoverTime ?? defaultTipTime(chartData, xDomain, mode, plotVisible, showEma)
+    if (tipTime == null) return null
+    return tipFromDataAtTime(mode, chartData, tipTime, plotVisible, showEma, xDomain)
+  }, [
+    hoverTime,
+    mode,
+    chartData,
+    plotVisible.twap,
+    plotVisible.chainlink,
+    plotVisible.binance,
+    showEma,
+    xDomain,
+  ])
 
   const onChartMouseMove = (state: {
     activeLabel?: string | number
@@ -669,9 +708,22 @@ export default function PriceChart({
     )
     const lo = values.length ? Math.min(...values) : 0
     const hi = values.length ? Math.max(...values) : 1
-    const pad = Math.max((hi - lo) * 0.15, 5)
-    const y0 = priceToBeat != null ? Math.min(lo - pad, priceToBeat - pad * 0.35) : lo - pad
-    const y1 = priceToBeat != null ? Math.max(hi + pad, priceToBeat + pad * 0.35) : hi + pad
+    const span = Math.max(0, hi - lo)
+    // Quiet tapes move by cents; a hard $5 pad made Binance look frozen.
+    const rel = Math.max(Math.abs(lo), Math.abs(hi), 1) * 0.00002
+    const pad = Math.max(span * 0.15, Math.min(5, Math.max(0.25, rel)))
+    let y0 = lo - pad
+    let y1 = hi + pad
+    // Keep Price-to-Beat in view only when it's near the series; a distant
+    // strike (Binance vs Chainlink divergence) used to flatten the line.
+    if (priceToBeat != null && Number.isFinite(priceToBeat) && values.length) {
+      const mid = (lo + hi) / 2
+      const near = Math.abs(priceToBeat - mid) <= Math.max(40, Math.abs(mid) * 0.0015)
+      if (near) {
+        y0 = Math.min(y0, priceToBeat - pad * 0.35)
+        y1 = Math.max(y1, priceToBeat + pad * 0.35)
+      }
+    }
     return [y0, y1]
   }, [
     chartData,

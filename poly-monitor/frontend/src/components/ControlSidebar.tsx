@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { type DataHealth, type MarketSummary } from '../api'
+import { api, type DataHealth, type MarketSummary } from '../api'
 import { healthThresholdHeadline } from '../dataHealth'
 
 function outcomeTone(m: MarketSummary): 'up' | 'down' | 'pending' {
@@ -178,6 +178,8 @@ type Props = {
     comment: string | null,
     opts?: { reload?: boolean },
   ) => void
+  /** After day-slot Fix — rebuild catalog for the selected date */
+  onDaySlotsFixed?: () => void | Promise<void>
 }
 
 export default function ControlSidebar(props: Props) {
@@ -220,6 +222,7 @@ export default function ControlSidebar(props: Props) {
     marketEndMs,
     playheadMs,
     onSeek,
+    onDaySlotsFixed,
   } = props
 
   const histDisabled = liveActive || indexing
@@ -232,6 +235,70 @@ export default function ControlSidebar(props: Props) {
   const [dragTs, setDragTs] = useState<number | null>(null)
   const dragging = useRef(false)
   const [healthDialog, setHealthDialog] = useState<MarketSummary | null>(null)
+  const [daySlots, setDaySlots] = useState<{
+    expected: number
+    present: number
+    n_missing: number
+  } | null>(null)
+  const [fixingSlots, setFixingSlots] = useState(false)
+  const [fixSlotsError, setFixSlotsError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (liveActive || beforeTwap || !selectedDate) {
+      setDaySlots(null)
+      setFixSlotsError(null)
+      return
+    }
+    let cancelled = false
+    void api
+      .daySlots(selectedDate, { split: 'twap' })
+      .then((res) => {
+        if (cancelled) return
+        setDaySlots({
+          expected: Number(res.expected) || 0,
+          present: Number(res.present) || markets.length,
+          n_missing: Number(res.n_missing) || 0,
+        })
+      })
+      .catch(() => {
+        if (!cancelled) setDaySlots(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [liveActive, beforeTwap, selectedDate, markets.length])
+
+  const fixMissingSlots = async () => {
+    if (!selectedDate || fixingSlots || beforeTwap) return
+    setFixingSlots(true)
+    setFixSlotsError(null)
+    try {
+      const res = await api.fixDaySlots(selectedDate)
+      if (res.n_missing != null) {
+        setDaySlots({
+          expected: Number(res.expected) || daySlots?.expected || 0,
+          present: Number(res.present) || 0,
+          n_missing: Number(res.n_missing) || 0,
+        })
+      }
+      if (!res.ok && res.error) {
+        setFixSlotsError(String(res.error))
+      } else if ((res.n_missing || 0) > 0 && (res.still_missing?.length || 0) > 0) {
+        const left = res.still_missing
+          .slice(0, 3)
+          .map((m) => m.time_et || m.slug || '?')
+          .join(', ')
+        setFixSlotsError(
+          `Pulled ${res.pulled}, still missing ${res.n_missing}${left ? ` (${left})` : ''}`,
+        )
+      }
+      await onDaySlotsFixed?.()
+    } catch (e) {
+      setFixSlotsError(String(e))
+    } finally {
+      setFixingSlots(false)
+    }
+  }
 
   const dialogHealth = healthTone(healthDialog?.data_health)
   const dialogGroups = useMemo(
@@ -381,14 +448,49 @@ export default function ControlSidebar(props: Props) {
       <div className="sidebar-section data-section">
         <div className="sidebar-heading data-heading">
           <span>Data</span>
-          {indexing ? (
-            <span className="data-status indexing">Indexing…</span>
-          ) : (
-            dateMin &&
-            dateMax &&
-            !liveActive && <span className="data-status">{markets.length} slots</span>
-          )}
+          <div className="data-heading-actions">
+            {indexing ? (
+              <span className="data-status indexing">Indexing…</span>
+            ) : (
+              dateMin &&
+              dateMax &&
+              !liveActive && (
+                <span
+                  className={`data-status${
+                    daySlots && daySlots.n_missing > 0 ? ' incomplete' : ''
+                  }`}
+                  title={
+                    daySlots && daySlots.n_missing > 0
+                      ? `${daySlots.n_missing} missing of ${daySlots.expected} expected 5m slots`
+                      : undefined
+                  }
+                >
+                  {daySlots && daySlots.expected > 0
+                    ? `${daySlots.present}/${daySlots.expected} slots`
+                    : `${markets.length} slots`}
+                </span>
+              )
+            )}
+            {!liveActive && !beforeTwap && daySlots && daySlots.n_missing > 0 ? (
+              <button
+                type="button"
+                className="data-slots-fix"
+                disabled={histDisabled || fixingSlots}
+                onClick={() => void fixMissingSlots()}
+                title={`Pull ${daySlots.n_missing} missing market slot${
+                  daySlots.n_missing === 1 ? '' : 's'
+                } from VPS`}
+              >
+                {fixingSlots ? <span className="pmq-spinner" aria-label="Fixing" /> : 'Fix'}
+              </button>
+            ) : null}
+          </div>
         </div>
+        {fixSlotsError ? (
+          <div className="data-slots-fix-error" title={fixSlotsError}>
+            {fixSlotsError}
+          </div>
+        ) : null}
 
         <div className="data-segment" role="group" aria-label="Collection">
           <button

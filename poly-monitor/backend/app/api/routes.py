@@ -29,6 +29,7 @@ from app.core.market_index import (
     find_market_at,
     find_market_by_date_time,
     list_dates,
+    list_day_slot_gaps,
     list_markets_for_date,
 )
 from app.backtest.runner import run_backtest
@@ -300,6 +301,33 @@ def get_markets(
         except Exception:
             markets = list_markets(split, limit=limit)
     return {"split": split, "date": date, "count": len(markets), "markets": markets}
+
+
+@router.get("/markets/day-slots")
+def get_day_slots(
+    date: str = Query(..., description="ET date YYYY-MM-DD"),
+    split: str = Query("twap", pattern="^(train|validation|test|twap)$"),
+) -> dict[str, Any]:
+    """Expected vs present 5m slots for one history day (TWAP local catalog)."""
+    if split != TWAP_SPLIT:
+        raise HTTPException(400, "day-slots is only available for the TWAP collection")
+    return list_day_slot_gaps(date, split=split)
+
+
+@router.post("/markets/day-slots/fix")
+async def fix_day_slots(
+    date: str = Query(..., description="ET date YYYY-MM-DD"),
+) -> dict[str, Any]:
+    """Pull missing finished 5m markets for an ET day from the VPS fetch_live archive."""
+    from app.live.vps_sync import get_vps_sync
+
+    result = await get_vps_sync().fix_missing_day_slots(date)
+    if not result.get("ok") and result.get("error"):
+        # Still return body so the UI can show which slots remain; only hard-fail
+        # when VPS is unusable and nothing was attempted.
+        if int(result.get("pulled") or 0) == 0 and not result.get("still_missing"):
+            raise HTTPException(400, str(result.get("error")))
+    return result
 
 
 @router.get("/markets/pm-orderbooks/missing")

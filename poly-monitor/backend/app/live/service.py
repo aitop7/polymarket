@@ -134,6 +134,7 @@ class LiveMarketService:
         self._last_discover_s = 0.0
         self._series: deque[dict[str, Any]] = deque(maxlen=_SERIES_MAX)
         self._series_market_id: str | None = None
+        self._last_btc_price: float | None = None
         self._holders_cache: dict[str, Any] | None = None
         self._holders_cache_at = 0.0
         self._ptb_refine_task: asyncio.Task[None] | None = None
@@ -728,8 +729,11 @@ class LiveMarketService:
         down = snap.get("down_price")
         if up is None and down is None and snap.get("btc_price") is None:
             return
+        # 1s buckets match fetch_live parquet so live ticks overlay seed points
+        # instead of interleaving ms samples with flat 1s Binance rows.
+        raw_t = int(snap.get("timestamp") or time.time() * 1000)
         point = {
-            "t": int(snap.get("timestamp") or time.time() * 1000),
+            "t": (raw_t // 1000) * 1000,
             "up": float(up) if up is not None else None,
             "down": float(down) if down is not None else None,
             "btc": float(snap["btc_price"]) if snap.get("btc_price") is not None else None,
@@ -741,6 +745,10 @@ class LiveMarketService:
             else None,
         }
         if self._series and int(self._series[-1]["t"]) == point["t"]:
+            prev = self._series[-1]
+            for key in ("up", "down", "btc", "twap", "chainlink"):
+                if point[key] is None and prev.get(key) is not None:
+                    point[key] = prev[key]
             self._series[-1] = point
         else:
             self._series.append(point)
@@ -804,8 +812,15 @@ class LiveMarketService:
         now_ms = int(time.time() * 1000)
         self.twap.ensure_started()
 
-        async def _btc() -> float:
-            return await self.clients.get_btc_price()
+        async def _btc() -> float | None:
+            try:
+                px = await self.clients.get_btc_price()
+                self._last_btc_price = float(px)
+                return self._last_btc_price
+            except Exception:
+                # Keep ticks flowing (TWAP/book) when Binance REST is saturated
+                # by bulk repair; reuse last good mid so the chart doesn't freeze.
+                return self._last_btc_price
 
         async def _book(token: str | None) -> dict[str, Any]:
             if not token:
@@ -815,24 +830,24 @@ class LiveMarketService:
             except Exception:
                 return {"bids": [], "asks": []}
 
-        try:
-            if market is None or not self._token_up:
-                btc = await _btc()
-            else:
-                btc, up_book, down_book = await asyncio.gather(
-                    _btc(),
-                    _book(self._token_up),
-                    _book(self._token_down),
-                )
-        except Exception as exc:
+        up_book: dict[str, Any] = {"bids": [], "asks": []}
+        down_book: dict[str, Any] = {"bids": [], "asks": []}
+        if market is None or not self._token_up:
+            btc = await _btc()
+        else:
+            btc, up_book, down_book = await asyncio.gather(
+                _btc(),
+                _book(self._token_up),
+                _book(self._token_down),
+            )
+        if btc is None:
             return self._with_twap(
                 {
                     "type": "error",
-                    "message": f"BTC price unavailable: {exc}",
+                    "message": "BTC price unavailable",
                     "timestamp": now_ms,
                 }
             )
-
         await self._lock_price_to_beat(btc=btc)
 
         if market is None or not self._token_up:

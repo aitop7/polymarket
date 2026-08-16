@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -22,6 +23,7 @@ from app.core.live_dataset import (
 SPLITS = ("train", "validation", "test")
 ALL_SPLITS = (*SPLITS, TWAP_SPLIT)
 ET = ZoneInfo("America/New_York")
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 _CACHE: dict[str, list[dict[str, Any]]] = {}
 
@@ -229,6 +231,68 @@ def filter_history_markets(split: str, rows: list[dict[str, Any]]) -> list[dict[
 def list_dates(split: str) -> list[str]:
     idx = filter_history_markets(split, build_market_index(split))
     return sorted({r["date_et"] for r in idx})
+
+
+MARKET_SLOT_S = 300
+FULL_DAY_SLOTS = 24 * 60 // (MARKET_SLOT_S // 60)  # 288
+
+
+def expected_slot_starts_s(
+    date_et: str, *, now_ms: int | None = None
+) -> list[int]:
+    """Unix-second starts for every 5m BTC window on an ET calendar day.
+
+    When ``now_ms`` is set, omit windows that have not finished yet (today).
+    """
+    if not _DAY_RE.match(str(date_et or "")):
+        return []
+    d0 = datetime.strptime(date_et, "%Y-%m-%d").replace(tzinfo=ET)
+    d1 = d0 + timedelta(days=1)
+    t0 = int(d0.timestamp())
+    t1 = int(d1.timestamp())
+    starts = list(range(t0, t1, MARKET_SLOT_S))
+    if now_ms is not None:
+        starts = [s for s in starts if (s + MARKET_SLOT_S) * 1000 <= int(now_ms)]
+    return starts
+
+
+def list_day_slot_gaps(
+    date_et: str,
+    *,
+    split: str = TWAP_SPLIT,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    """Compare local history index vs expected 5m slots for one ET day."""
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    expected = expected_slot_starts_s(date_et, now_ms=now)
+    day = list_markets_for_date(split, date_et) if expected else []
+    have = {int(r.get("start_time") or 0) // 1000 for r in day}
+    missing: list[dict[str, Any]] = []
+    for start_s in expected:
+        if start_s in have:
+            continue
+        missing.append(
+            {
+                "start_s": start_s,
+                "start_time": start_s * 1000,
+                "end_time": (start_s + MARKET_SLOT_S) * 1000,
+                "slug": f"btc-updown-5m-{start_s}",
+                "time_et": ms_to_et_time(start_s * 1000),
+            }
+        )
+    day_start_ms = expected[0] * 1000 if expected else 0
+    day_end_ms = (expected[-1] + MARKET_SLOT_S) * 1000 if expected else 0
+    return {
+        "date_et": date_et,
+        "split": split,
+        "expected": len(expected),
+        "present": len(day),
+        "n_missing": len(missing),
+        "missing": missing,
+        "day_start_ms": day_start_ms,
+        "day_end_ms": day_end_ms,
+        "full_day_slots": FULL_DAY_SLOTS,
+    }
 
 
 def list_markets_for_date(split: str, date_et: str) -> list[dict[str, Any]]:

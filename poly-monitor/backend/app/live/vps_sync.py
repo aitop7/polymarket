@@ -2137,6 +2137,109 @@ class VpsSyncClient:
             date = str(stub.get("date") or "")
             return self._local_dir(date, mid) if date else None
 
+    async def fix_missing_day_slots(self, date_et: str) -> dict[str, Any]:
+        """Pull finished markets missing from the local ET-day history catalog."""
+        from app.core.market_index import (
+            TWAP_SPLIT,
+            build_market_index,
+            list_day_slot_gaps,
+        )
+
+        day = str(date_et or "").strip()
+        if not _DAY_RE.match(day):
+            return {"ok": False, "error": "date must be YYYY-MM-DD"}
+
+        gaps = list_day_slot_gaps(day, split=TWAP_SPLIT)
+        missing = list(gaps.get("missing") or [])
+        if not missing:
+            return {
+                "ok": True,
+                "date_et": day,
+                "pulled": 0,
+                "market_ids": [],
+                "still_missing": [],
+                "errors": [],
+                **{k: gaps[k] for k in ("expected", "present", "n_missing")},
+            }
+
+        if not self.enabled or not self._base():
+            return {
+                "ok": False,
+                "date_et": day,
+                "error": "VPS sync is disabled or VPS_SYNC_URL is unset",
+                "pulled": 0,
+                "market_ids": [],
+                "still_missing": missing,
+                "errors": [],
+                **{k: gaps[k] for k in ("expected", "present", "n_missing")},
+            }
+
+        pulled: list[str] = []
+        errors: list[str] = []
+        still: list[dict[str, Any]] = []
+        now_ms = int(time.time() * 1000)
+        after = max(0, int(gaps.get("day_start_ms") or 0) - 60_000)
+
+        try:
+            async with self._http(read_s=120.0) as client:
+                remotes = await self.list_markets(client, after_start_ms=after)
+                self._unreachable = False
+                by_start: dict[int, dict[str, Any]] = {}
+                for remote in remotes:
+                    try:
+                        st = int(remote.get("start_time") or 0) // 1000
+                    except (TypeError, ValueError):
+                        continue
+                    if st > 0:
+                        by_start[st] = remote
+
+                for miss in missing:
+                    start_s = int(miss.get("start_s") or 0)
+                    remote = by_start.get(start_s)
+                    if remote is None:
+                        still.append({**miss, "reason": "not on VPS"})
+                        continue
+                    if not self._is_finished(remote, now_ms=now_ms):
+                        still.append({**miss, "reason": "still live"})
+                        continue
+                    mid = str(remote.get("market_id") or "")
+                    try:
+                        path = await self.download_market(client, remote)
+                        await self._post_pull_health(client, remote, path)
+                        if mid:
+                            pulled.append(mid)
+                    except Exception as exc:
+                        msg = f"{miss.get('slug') or start_s}: {exc}"
+                        errors.append(msg)
+                        still.append({**miss, "reason": str(exc)})
+                        self._log_net_error(f"day-slot fix {mid or start_s}", exc)
+        except Exception as exc:
+            self._log_net_error(f"day-slot fix list {day}", exc)
+            return {
+                "ok": False,
+                "date_et": day,
+                "error": str(exc),
+                "pulled": len(pulled),
+                "market_ids": pulled,
+                "still_missing": missing,
+                "errors": errors,
+                **{k: gaps[k] for k in ("expected", "present", "n_missing")},
+            }
+
+        build_market_index(TWAP_SPLIT, force=True)
+        after_gaps = list_day_slot_gaps(day, split=TWAP_SPLIT)
+        return {
+            "ok": True,
+            "date_et": day,
+            "pulled": len(pulled),
+            "market_ids": pulled,
+            "still_missing": after_gaps.get("missing") or still,
+            "errors": errors,
+            "expected": after_gaps.get("expected"),
+            "present": after_gaps.get("present"),
+            "n_missing": after_gaps.get("n_missing"),
+        }
+
 
 _client: VpsSyncClient | None = None
 

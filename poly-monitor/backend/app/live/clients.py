@@ -57,11 +57,30 @@ class LiveClients:
         await self._binance.aclose()
 
     async def get_btc_price(self) -> float:
+        """Best bid/ask mid (bookTicker), falling back to last trade price.
+
+        bookTicker updates with the top of book; ticker/price can look sticky
+        during quiet tapes and under REST pressure from bulk repair jobs.
+        """
         last_exc: Exception | None = None
         for base in (BINANCE_URL, *BINANCE_FALLBACKS):
+            root = base.rstrip("/")
             try:
                 resp = await self._binance.get(
-                    f"{base.rstrip('/')}/api/v3/ticker/price",
+                    f"{root}/api/v3/ticker/bookTicker",
+                    params={"symbol": "BTCUSDT"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                bid = float(data["bidPrice"])
+                ask = float(data["askPrice"])
+                if bid > 0 and ask > 0:
+                    return (bid + ask) / 2.0
+            except Exception as exc:
+                last_exc = exc
+            try:
+                resp = await self._binance.get(
+                    f"{root}/api/v3/ticker/price",
                     params={"symbol": "BTCUSDT"},
                 )
                 resp.raise_for_status()

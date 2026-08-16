@@ -1262,6 +1262,13 @@ select {
   text-overflow: ellipsis;
 }
 
+.data-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
 .data-status {
   font-size: 0.65rem;
   font-weight: 700;
@@ -1273,9 +1280,59 @@ select {
   padding: 0.12rem 0.4rem;
 }
 
+.data-status.incomplete {
+  color: #9a3412;
+  background: #ffedd5;
+}
+
 .data-status.indexing {
   color: #b45309;
   background: #fffbeb;
+}
+
+.data-slots-fix {
+  appearance: none;
+  border: 1px solid #fdba74;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 0.65rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 0.14rem 0.55rem;
+  cursor: pointer;
+  line-height: 1.2;
+  min-height: 1.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.data-slots-fix:hover:not(:disabled) {
+  background: #ffedd5;
+}
+
+.data-slots-fix:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.data-slots-fix .pmq-spinner {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-width: 1.5px;
+}
+
+.data-slots-fix-error {
+  margin: 0.25rem 0 0.15rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #b91c1c;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .data-path {

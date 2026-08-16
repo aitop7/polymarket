@@ -218,6 +218,44 @@ export const api = {
       `/api/markets/dates?${q}`,
     )
   },
+  daySlots: (date: string, opts?: { split?: string }) => {
+    const q = new URLSearchParams({ date, split: opts?.split || 'twap' })
+    return json<{
+      date_et: string
+      split: string
+      expected: number
+      present: number
+      n_missing: number
+      missing: Array<{
+        start_s: number
+        start_time: number
+        end_time: number
+        slug: string
+        time_et: string
+      }>
+      day_start_ms: number
+      day_end_ms: number
+      full_day_slots: number
+    }>(`/api/markets/day-slots?${q}`)
+  },
+  fixDaySlots: (date: string) =>
+    json<{
+      ok: boolean
+      date_et: string
+      pulled: number
+      market_ids: string[]
+      still_missing: Array<{
+        start_s?: number
+        slug?: string
+        time_et?: string
+        reason?: string
+      }>
+      errors: string[]
+      expected?: number
+      present?: number
+      n_missing?: number
+      error?: string
+    }>(`/api/markets/day-slots/fix?date=${encodeURIComponent(date)}`, { method: 'POST' }),
   marketAt: (split: string, opts: { date?: string; time?: string; t?: number }) => {
     const q = new URLSearchParams({ split })
     if (opts.date) q.set('date', opts.date)

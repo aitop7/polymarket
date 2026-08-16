@@ -987,6 +987,7 @@ export default function MarketPage({ mode }: Props) {
           if (seeded) {
             byT.set(p.t, {
               ...seeded,
+              // Live ticks win over parquet seed (seed can be flat float32 mids).
               up: p.up ?? seeded.up,
               down: p.down ?? seeded.down,
               btc: p.btc ?? seeded.btc,
@@ -1121,8 +1122,10 @@ export default function MarketPage({ mode }: Props) {
               up = null
               down = null
             }
+            // Align with 1s parquet seed so live Binance overlays instead of
+            // interleaving flat seed seconds with ms tick samples.
             const point: LiveSeriesPoint = {
-              t: msg.timestamp,
+              t: Math.floor(Number(msg.timestamp) / 1000) * 1000,
               up,
               down,
               btc: msg.btc_price ?? null,
@@ -1585,6 +1588,9 @@ export default function MarketPage({ mode }: Props) {
           marketEndMs={detail?.end_time}
           playheadMs={playheadTs}
           onSeek={seekReplay}
+          onDaySlotsFixed={async () => {
+            await refreshMarketCatalog({ rebuild: true })
+          }}
           onHealthUpdated={(mid, health, comment, opts) => {
             setMarkets((prev) =>
               prev.map((m) =>
