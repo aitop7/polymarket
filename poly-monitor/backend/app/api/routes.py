@@ -1135,6 +1135,40 @@ async def live_state() -> dict[str, Any]:
     return await get_live_service().snapshot()
 
 
+@router.get("/live/direction-prediction")
+async def live_direction_prediction() -> dict[str, Any]:
+    """Latest 3s/5s Up-vs-Down direction probabilities for the active market."""
+    from app.live import get_live_service
+    from app.live.vps_sync import get_vps_sync
+    from app.ml.predict_direction import predict_direction
+
+    svc = get_live_service()
+    await svc.market_meta()
+    market_id = str(svc._market_id or "")
+    if not market_id:
+        raise HTTPException(503, "No active market is available")
+
+    # Best-effort: pull in-progress parquet from VPS when configured.
+    try:
+        await get_vps_sync().ensure_active_market(market_id, force=True)
+    except Exception:
+        pass
+
+    snapshot = await svc.snapshot()
+    series_payload = svc.series(market_id, lookback_ms=300_000)
+    series = series_payload.get("series") if isinstance(series_payload, dict) else []
+    try:
+        return predict_direction(
+            market_id,
+            series=list(series or []),
+            snapshot=snapshot if isinstance(snapshot, dict) else None,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 @router.get("/live/series")
 async def live_series(
     market_id: str | None = None,

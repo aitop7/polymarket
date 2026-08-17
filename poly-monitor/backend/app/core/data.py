@@ -75,6 +75,31 @@ FEATURE_COLUMNS = [
     "market_progress",
 ]
 
+# Compact, causal feature set for short-horizon Up direction models.  Keep this
+# separate from FEATURE_COLUMNS so existing level-model artifacts remain usable.
+DIRECTION_FEATURE_COLUMNS = [
+    "btc_ret_1s",
+    "btc_ret_3s",
+    "btc_ret_5s",
+    "btc_trade_imbalance_1s",
+    "btc_trade_imbalance_3s",
+    "btc_obi_0_1pct",
+    "btc_obi_change_1s",
+    "binance_chainlink_spread_change_1s",
+    "up_return_1s",
+    "up_return_3s",
+    "up_obi_0_1",
+    "up_obi_change_1s",
+    "up_microprice_minus_mid",
+    "down_return_1s",
+    "down_return_3s",
+    "down_obi_0_1",
+    "down_obi_change_1s",
+    "down_microprice_minus_mid",
+    "up_down_ask_sum",
+    "remaining_seconds",
+]
+
 
 def find_split(market_id: str) -> str | None:
     mid = str(market_id)

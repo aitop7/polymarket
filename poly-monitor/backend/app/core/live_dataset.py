@@ -562,11 +562,9 @@ def load_live_market_frame(market_id: str) -> pd.DataFrame:
         try:
             df = pd.read_parquet(bn)
             if "timestamp" in df.columns and "Binance_BTC" in df.columns:
-                frames.append(
-                    df[["timestamp", "Binance_BTC"]].rename(
-                        columns={"Binance_BTC": "btc_price"}
-                    )
-                )
+                # Retain depth bands as well as the mid; short-horizon models
+                # derive Binance order-book imbalance from these columns.
+                frames.append(df.rename(columns={"Binance_BTC": "btc_price"}))
         except Exception:
             pass
 

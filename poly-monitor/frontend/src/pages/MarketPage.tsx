@@ -1677,6 +1677,9 @@ export default function MarketPage({ mode }: Props) {
             onXDomainReset={onChartXDomainReset}
             xFullDomain={xFullDomain}
             xDefaultDomain={xDefaultDomain}
+            followLive={followLiveX}
+            showFollowLive={liveActive && !followLiveX}
+            onFollowLive={onChartXDomainReset}
             hoverTime={sharedHoverTime}
             onHoverTimeChange={setSharedHoverTime}
           />
@@ -1685,6 +1688,13 @@ export default function MarketPage({ mode }: Props) {
             mode="binance"
             title="Binance BTC volume"
             xDomain={sharedXDomain}
+            onXDomainChange={onChartXDomainChange}
+            onXDomainReset={onChartXDomainReset}
+            xFullDomain={xFullDomain}
+            xDefaultDomain={xDefaultDomain}
+            followLive={followLiveX}
+            showFollowLive={liveActive && !followLiveX}
+            onFollowLive={onChartXDomainReset}
             hoverTime={sharedHoverTime}
             onHoverTimeChange={setSharedHoverTime}
             live={liveActive}
@@ -1700,6 +1710,9 @@ export default function MarketPage({ mode }: Props) {
             onXDomainReset={onChartXDomainReset}
             xFullDomain={xFullDomain}
             xDefaultDomain={xDefaultDomain}
+            followLive={followLiveX}
+            showFollowLive={liveActive && !followLiveX}
+            onFollowLive={onChartXDomainReset}
             hoverTime={sharedHoverTime}
             onHoverTimeChange={setSharedHoverTime}
             traderMarks={traderMarks}
@@ -1713,6 +1726,13 @@ export default function MarketPage({ mode }: Props) {
             mode="outcomes"
             title="Up / Down volume"
             xDomain={sharedXDomain}
+            onXDomainChange={onChartXDomainChange}
+            onXDomainReset={onChartXDomainReset}
+            xFullDomain={xFullDomain}
+            xDefaultDomain={xDefaultDomain}
+            followLive={followLiveX}
+            showFollowLive={liveActive && !followLiveX}
+            onFollowLive={onChartXDomainReset}
             hoverTime={sharedHoverTime}
             onHoverTimeChange={setSharedHoverTime}
             live={liveActive}

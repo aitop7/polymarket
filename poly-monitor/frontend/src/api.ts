@@ -533,6 +533,8 @@ export const api = {
     json<{ ok: boolean }>('/api/paper/order', { method: 'POST', body: JSON.stringify(body) }),
   paperStatus: (sessionId: string) => json<Record<string, unknown>>(`/api/paper/${sessionId}`),
   liveState: () => json<LiveTick>('/api/live/state'),
+  liveDirectionPrediction: () =>
+    json<LiveDirectionPrediction>('/api/live/direction-prediction', { cache: 'no-store' }),
   liveSeries: (marketId?: string | null, lookbackMs = 300_000) => {
     const q = new URLSearchParams()
     if (marketId) q.set('market_id', marketId)
@@ -1068,6 +1070,24 @@ export type LiveTick = {
   book?: Record<string, unknown>
   error?: string
   message?: string
+}
+
+export type DirectionPrediction = {
+  horizon_seconds: number
+  probability_up: number
+  probability_down: number
+  direction: 'UP' | 'DOWN'
+  /** Zero is a 50/50 prediction; one is a 100/0 split. */
+  confidence: number
+}
+
+export type LiveDirectionPrediction = {
+  market_id: string
+  timestamp: number
+  age_ms: number
+  feature_coverage: number
+  source?: 'parquet' | 'live_buffer' | string
+  predictions: DirectionPrediction[]
 }
 
 export function wsUrl(path: string): string {

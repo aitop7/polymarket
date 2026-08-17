@@ -16,6 +16,7 @@ export default function App() {
           <NavLink to="/wallet">Wallet</NavLink>
           <NavLink to="/pmdata">Data Health</NavLink>
           <NavLink to="/strategy">Strategy</NavLink>
+          <NavLink to="/prediction">Prediction</NavLink>
         </nav>
       </header>
       <main className="main">

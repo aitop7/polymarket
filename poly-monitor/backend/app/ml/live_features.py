@@ -8,8 +8,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from app.core.data import FEATURE_COLUMNS
+from app.core.data import DIRECTION_FEATURE_COLUMNS, FEATURE_COLUMNS
 from app.core.live_dataset import find_live_market_dir, load_live_market_frame
+from app.live.binance_bands import BINANCE_BAND_META
 
 _DEPTH_BANDS = ("0_1", "1_3", "3_7", "7_15", "15_30", "30_plus")
 _NEAR_BANDS = ("0_1", "1_3")
@@ -163,16 +164,90 @@ def _rolling_trade_stats(
     return out
 
 
+def _rolling_binance_trade_imbalance(
+    frame_ts: np.ndarray, trades: pd.DataFrame | None, window_ms: int
+) -> np.ndarray:
+    """Quantity-weighted aggressor imbalance from Binance public trades."""
+    out = np.full(len(frame_ts), np.nan, dtype=np.float64)
+    if trades is None or trades.empty or "timestamp" not in trades.columns:
+        return out
+    tdf = trades.sort_values("timestamp", kind="mergesort").reset_index(drop=True)
+    tts = pd.to_numeric(tdf["timestamp"], errors="coerce").to_numpy(dtype=np.int64)
+    qty = _num(tdf["quantity"] if "quantity" in tdf.columns else None, len(tdf))
+    maker = (
+        tdf["buyer_is_maker"].fillna(False).astype(bool).to_numpy()
+        if "buyer_is_maker" in tdf.columns
+        else np.zeros(len(tdf), dtype=bool)
+    )
+    valid = np.isfinite(tts) & np.isfinite(qty) & (qty >= 0)
+    tts, qty, maker = tts[valid], qty[valid], maker[valid]
+    if not len(tts):
+        return out
+    # buyer_is_maker means the taker sold into a resting bid.
+    buy = np.where(~maker, qty, 0.0)
+    sell = np.where(maker, qty, 0.0)
+    p_buy = np.concatenate([[0.0], np.cumsum(buy)])
+    p_sell = np.concatenate([[0.0], np.cumsum(sell)])
+    hi = np.searchsorted(tts, frame_ts, side="right")
+    lo = np.searchsorted(tts, frame_ts - window_ms, side="left")
+    buy_v, sell_v = p_buy[hi] - p_buy[lo], p_sell[hi] - p_sell[lo]
+    denom = buy_v + sell_v
+    ok = denom > 0
+    out[ok] = (buy_v[ok] - sell_v[ok]) / denom[ok]
+    return out
+
+
+def _btc_depth_within_pct(df: pd.DataFrame, side: str, mid: np.ndarray, pct: float) -> np.ndarray:
+    """Sum Binance USD-distance band quantity within `pct` of mid (e.g. 0.001 = 0.1%)."""
+    n = len(df)
+    total = np.zeros(n, dtype=np.float64)
+    found = np.zeros(n, dtype=bool)
+    threshold = np.where(np.isfinite(mid) & (mid > 0), mid * float(pct), np.nan)
+    for meta in BINANCE_BAND_META:
+        lo = float(meta["lo_usd"])
+        col = f"{side}_{meta['suffix']}"
+        if col not in df.columns:
+            continue
+        vals = _num(df[col], n)
+        ok = np.isfinite(vals) & np.isfinite(threshold) & (lo < threshold)
+        total = np.where(ok, total + np.nan_to_num(vals, nan=0.0), total)
+        found |= ok
+    return np.where(found, total, np.nan)
+
+
+def _microprice_minus_mid(
+    bid: np.ndarray, ask: np.ndarray, bid_size: np.ndarray, ask_size: np.ndarray
+) -> np.ndarray:
+    """Best-level size-weighted microprice, centered on the quoted midpoint."""
+    out = np.full(len(bid), np.nan, dtype=np.float64)
+    denom = bid_size + ask_size
+    ok = (
+        np.isfinite(bid)
+        & np.isfinite(ask)
+        & np.isfinite(bid_size)
+        & np.isfinite(ask_size)
+        & (denom > 0)
+    )
+    mid = (bid + ask) / 2.0
+    out[ok] = (ask[ok] * bid_size[ok] + bid[ok] * ask_size[ok]) / denom[ok] - mid[ok]
+    return out
+
+
 def engineer_features(
     frame: pd.DataFrame,
     *,
     trades: pd.DataFrame | None = None,
+    binance_trades: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Return a copy of `frame` with FEATURE_COLUMNS filled from live raw columns."""
     if frame is None or frame.empty or "timestamp" not in frame.columns:
         return frame
 
-    df = frame.sort_values("timestamp", kind="mergesort").reset_index(drop=True)
+    # The raw frame is an outer join of independently sampled feeds.  Carry the
+    # most recent observation forward to align a Binance/Chainlink tick with a
+    # PM-book tick; this is causal and avoids treating sparse join rows as
+    # missing market data.
+    df = frame.sort_values("timestamp", kind="mergesort").reset_index(drop=True).ffill()
     n = len(df)
     ts = pd.to_numeric(df["timestamp"], errors="coerce").to_numpy(dtype=np.int64)
 
@@ -212,10 +287,39 @@ def engineer_features(
     up_near_ask = _depth_sum(df, "up", "ask", _NEAR_BANDS)
     down_near_bid = _depth_sum(df, "down", "bid", _NEAR_BANDS)
     down_near_ask = _depth_sum(df, "down", "ask", _NEAR_BANDS)
+    up_obi_0_1 = _imbalance(
+        _depth_sum(df, "up", "bid", ("0_1",)),
+        _depth_sum(df, "up", "ask", ("0_1",)),
+    )
+    down_obi_0_1 = _imbalance(
+        _depth_sum(df, "down", "bid", ("0_1",)),
+        _depth_sum(df, "down", "ask", ("0_1",)),
+    )
+    # True 0.1%-of-mid OBI (USD bands summed where lo < 0.001 * mid), not the
+    # raw `bid_0_1`/`ask_0_1` $0–$0.1 bucket.
+    btc_obi_0_1pct = _imbalance(
+        _btc_depth_within_pct(df, "bid", btc, 0.001),
+        _btc_depth_within_pct(df, "ask", btc, 0.001),
+    )
 
     feats: dict[str, Any] = {}
     for lag_s in (1, 5, 10, 30, 60):
         feats[f"btc_return_{lag_s}s"] = _lagged_return(ts, btc, lag_s * 1000)
+    for lag_s in (1, 3, 5):
+        feats[f"btc_ret_{lag_s}s"] = _lagged_return(ts, btc, lag_s * 1000)
+    for window_s in (1, 3):
+        feats[f"btc_trade_imbalance_{window_s}s"] = _rolling_binance_trade_imbalance(
+            ts, binance_trades, window_s * 1000
+        )
+    feats["btc_obi_0_1pct"] = btc_obi_0_1pct
+    feats["btc_obi_change_1s"] = btc_obi_0_1pct - _asof_value(ts, btc_obi_0_1pct, ts - 1000)
+    chainlink = _num(df["btc_chainlink"] if "btc_chainlink" in df.columns else None, n)
+    spread = np.where(
+        np.isfinite(btc) & np.isfinite(chainlink) & (chainlink != 0),
+        btc / chainlink - 1.0,
+        np.nan,
+    )
+    feats["binance_chainlink_spread_change_1s"] = spread - _asof_value(ts, spread, ts - 1000)
 
     feats["btc_momentum_10s"] = feats["btc_return_10s"]
     feats["btc_momentum_30s"] = feats["btc_return_30s"]
@@ -265,6 +369,27 @@ def engineer_features(
     feats["up_near_ask_ratio"] = _ratio(up_near_ask, up_ask_depth)
     feats["down_near_bid_ratio"] = _ratio(down_near_bid, down_bid_depth)
     feats["down_near_ask_ratio"] = _ratio(down_near_ask, down_ask_depth)
+    feats["up_return_1s"] = _lagged_return(ts, up_mid, 1000)
+    feats["up_return_3s"] = _lagged_return(ts, up_mid, 3000)
+    feats["down_return_1s"] = _lagged_return(ts, down_mid, 1000)
+    feats["down_return_3s"] = _lagged_return(ts, down_mid, 3000)
+    feats["up_obi_0_1"] = up_obi_0_1
+    feats["down_obi_0_1"] = down_obi_0_1
+    feats["up_obi_change_1s"] = up_obi_0_1 - _asof_value(ts, up_obi_0_1, ts - 1000)
+    feats["down_obi_change_1s"] = down_obi_0_1 - _asof_value(ts, down_obi_0_1, ts - 1000)
+    feats["up_microprice_minus_mid"] = _microprice_minus_mid(
+        up_bid,
+        up_ask,
+        _num(df["up_bid_shares"] if "up_bid_shares" in df.columns else None, n),
+        _num(df["up_ask_shares"] if "up_ask_shares" in df.columns else None, n),
+    )
+    feats["down_microprice_minus_mid"] = _microprice_minus_mid(
+        down_bid,
+        down_ask,
+        _num(df["down_bid_shares"] if "down_bid_shares" in df.columns else None, n),
+        _num(df["down_ask_shares"] if "down_ask_shares" in df.columns else None, n),
+    )
+    feats["up_down_ask_sum"] = up_ask + down_ask
 
     for w in (5, 10, 30):
         stats = _rolling_trade_stats(ts, trades if trades is not None else pd.DataFrame(), w * 1000)
@@ -315,7 +440,7 @@ def engineer_features(
     feats["market_progress"] = elapsed / duration
 
     out = df.copy()
-    for col in FEATURE_COLUMNS:
+    for col in (*FEATURE_COLUMNS, *DIRECTION_FEATURE_COLUMNS):
         out[col] = feats[col]
     return out
 
@@ -334,4 +459,11 @@ def load_live_feature_frame(market_id: str, *, market_dir: str | Path | None = N
             trades = pd.read_parquet(trades_path)
         except Exception:
             trades = None
-    return engineer_features(frame, trades=trades)
+    binance_trades = None
+    binance_trades_path = d / "binance_trades.parquet"
+    if binance_trades_path.is_file():
+        try:
+            binance_trades = pd.read_parquet(binance_trades_path)
+        except Exception:
+            binance_trades = None
+    return engineer_features(frame, trades=trades, binance_trades=binance_trades)

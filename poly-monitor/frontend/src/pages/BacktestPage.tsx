@@ -860,7 +860,22 @@ export default function BacktestPage() {
                   seriesVisible={btcVisible}
                   onSeriesVisibleChange={setBtcVisible}
                 />
-                <VolumeChart data={chartData} mode="binance" title="BINANCE BTC VOLUME" xDomain={activeXDomain} />
+                <VolumeChart
+                  data={chartData}
+                  mode="binance"
+                  title="BINANCE BTC VOLUME"
+                  xDomain={activeXDomain}
+                  onXDomainChange={(next) => {
+                    setFollowLiveX(false)
+                    setSharedXDomain(next)
+                  }}
+                  onXDomainReset={() => {
+                    setFollowLiveX(true)
+                    setSharedXDomain(null)
+                  }}
+                  xFullDomain={xFullDomain}
+                  xDefaultDomain={xDefaultDomain}
+                />
                 <PriceChart
                   data={chartData}
                   mode="outcomes"
@@ -881,7 +896,22 @@ export default function BacktestPage() {
                   onShowEmaChange={setShowOutcomeEma}
                   emaPeriod={emaPeriod}
                 />
-                <VolumeChart data={chartData} mode="outcomes" title="UP / DOWN VOLUME" xDomain={activeXDomain} />
+                <VolumeChart
+                  data={chartData}
+                  mode="outcomes"
+                  title="UP / DOWN VOLUME"
+                  xDomain={activeXDomain}
+                  onXDomainChange={(next) => {
+                    setFollowLiveX(false)
+                    setSharedXDomain(next)
+                  }}
+                  onXDomainReset={() => {
+                    setFollowLiveX(true)
+                    setSharedXDomain(null)
+                  }}
+                  xFullDomain={xFullDomain}
+                  xDefaultDomain={xDefaultDomain}
+                />
               </>
             ) : (
               !detailLoading && (

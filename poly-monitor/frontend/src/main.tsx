@@ -8,6 +8,7 @@ import PaperPage from './pages/PaperPage'
 import WalletPage from './pages/WalletPage'
 import StrategyPage from './pages/StrategyPage'
 import PmDataPage from './pages/PmDataPage'
+import PredictionPage from './pages/PredictionPage'
 import './index.css'
 
 createRoot(document.getElementById('root')!).render(
@@ -22,6 +23,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="wallet/:walletAddress" element={<WalletPage />} />
           <Route path="pmdata" element={<PmDataPage />} />
           <Route path="strategy" element={<StrategyPage />} />
+          <Route path="prediction" element={<PredictionPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

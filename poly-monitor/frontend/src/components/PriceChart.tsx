@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Area,
@@ -16,12 +16,16 @@ import {
 import { formatCents } from '../api'
 import ChartCollapseButton from './ChartCollapseButton'
 import ChartEnlargeButton from './ChartEnlargeButton'
+import {
+  useChartViewport,
+  type TimeDomain,
+  type YDomain,
+} from './useChartViewport'
 
+export type { TimeDomain }
 export type BtcSeriesKey = 'twap' | 'chainlink' | 'binance'
 
 export type BtcSeriesVisibility = Record<BtcSeriesKey, boolean>
-
-export type TimeDomain = [number, number]
 
 /** Selected trader fills plotted on the outcomes chart. */
 export type TraderMark = {
@@ -82,6 +86,11 @@ type Props = {
   xFullDomain: TimeDomain
   /** Default view (trailing window) — used for reset */
   xDefaultDomain: TimeDomain
+  /** Live mode: whether the shared X domain is following the trailing window */
+  followLive?: boolean
+  /** Show Follow live control (typically when live and not following) */
+  showFollowLive?: boolean
+  onFollowLive?: () => void
   /** Which BTC series to draw (mode=btc) */
   seriesVisible?: BtcSeriesVisibility
   onSeriesVisibleChange?: (next: BtcSeriesVisibility) => void
@@ -1204,22 +1213,6 @@ const DEFAULT_VISIBLE: BtcSeriesVisibility = {
   binance: false,
 }
 
-function clampDomain(domain: TimeDomain, full: TimeDomain): TimeDomain {
-  const [f0, f1] = full
-  const span = Math.max(1, f1 - f0)
-  let [a, b] = domain
-  if (b < a) [a, b] = [b, a]
-  const width = Math.max(span * 0.02, b - a)
-  let mid = (a + b) / 2
-  if (mid - width / 2 < f0) mid = f0 + width / 2
-  if (mid + width / 2 > f1) mid = f1 - width / 2
-  return [mid - width / 2, mid + width / 2]
-}
-
-function domainEqual(a: TimeDomain, b: TimeDomain): boolean {
-  return Math.abs(a[0] - b[0]) < 1 && Math.abs(a[1] - b[1]) < 1
-}
-
 export default function PriceChart(props: Props) {
   const {
     data,
@@ -1231,6 +1224,9 @@ export default function PriceChart(props: Props) {
     onXDomainReset,
     xFullDomain,
     xDefaultDomain,
+    followLive = true,
+    showFollowLive = false,
+    onFollowLive,
     seriesVisible = DEFAULT_VISIBLE,
     onSeriesVisibleChange,
     hoverTime: hoverTimeProp,
@@ -1276,15 +1272,6 @@ export default function PriceChart(props: Props) {
   const plotDown = lightbox ? momSide.down : true
   const showSmooth = plotEma || plotSg
   const twapFillId = `twapAreaFill-${mode}${lightbox ? '-lb' : ''}`
-  const wrapRef = useRef<HTMLDivElement | null>(null)
-  const dragRef = useRef<{
-    x: number
-    y: number
-    xDomain: TimeDomain
-    yDomain: [number, number]
-    zone: 'price' | 'time' | 'plot'
-  } | null>(null)
-  const [hoverZone, setHoverZone] = useState<'price' | 'time' | 'plot'>('plot')
   const [localHoverTime, setLocalHoverTime] = useState<number | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [enlarged, setEnlarged] = useState(false)
@@ -1399,13 +1386,16 @@ export default function PriceChart(props: Props) {
 
   const timeTicks = useMemo(() => buildTimeTicks(xDomain), [xDomain])
 
-  const autoY = useMemo((): [number, number] => {
+  const autoY = useMemo((): YDomain => {
     if (!showBtc) return [0, 100]
-    const values = chartData.flatMap((d) =>
-      SERIES_META.filter((s) => plotVisible[s.key])
+    const [x0, x1] = xDomain
+    const values = chartData.flatMap((d) => {
+      const t = Number(d.t)
+      if (!Number.isFinite(t) || t < x0 || t > x1) return []
+      return SERIES_META.filter((s) => plotVisible[s.key])
         .map((s) => d[s.dataKey])
-        .filter((v): v is number => v != null && Number.isFinite(v)),
-    )
+        .filter((v): v is number => v != null && Number.isFinite(v))
+    })
     const lo = values.length ? Math.min(...values) : 0
     const hi = values.length ? Math.max(...values) : 1
     const span = Math.max(0, hi - lo)
@@ -1429,6 +1419,7 @@ export default function PriceChart(props: Props) {
     chartData,
     priceToBeat,
     showBtc,
+    xDomain,
     plotVisible.twap,
     plotVisible.chainlink,
     plotVisible.binance,
@@ -1508,9 +1499,33 @@ export default function PriceChart(props: Props) {
   }, [showMomentum, chartData, momSeriesKeys])
 
   // null = follow autoY; set when user zooms/pans vertically
-  const [yZoom, setYZoom] = useState<[number, number] | null>(null)
+  const [yZoom, setYZoom] = useState<YDomain | null>(null)
   const yDomain = yZoom ?? autoY
   const chartMargin = CHART_MARGIN
+
+  const clampY = useCallback(
+    (d: YDomain): YDomain => {
+      if (showBtc) return d
+      return [Math.max(0, d[0]), Math.min(100, d[1])]
+    },
+    [showBtc],
+  )
+
+  const { hoverZone, canReset, resetZoom, bind: viewportBind } = useChartViewport({
+    xDomain,
+    xFullDomain,
+    xDefaultDomain,
+    onXDomainChange,
+    onXDomainReset,
+    yDomain,
+    setYDomain: setYZoom,
+    clampY,
+    minYSpan: showBtc ? 1 : 0.5,
+    margin: chartMargin,
+    yAxisWidth: Y_AXIS_WIDTH,
+    enableY: true,
+    yManual: yZoom != null,
+  })
 
   const lastTwap =
     [...chartData].reverse().find((d) => d.twap != null)?.twap ??
@@ -1519,19 +1534,15 @@ export default function PriceChart(props: Props) {
   const aboveTarget =
     lastTwap != null && priceToBeat != null ? lastTwap >= priceToBeat : null
 
-  const xZoomed = !domainEqual(xDomain, xDefaultDomain)
-  const yZoomed = yZoom != null
-  const canReset = xZoomed || yZoomed
-
-  const dataKey = `${data[0]?.t ?? 0}-${data[data.length - 1]?.t ?? 0}-${data.length}`
+  // Keep manual Y zoom across live ticks; only reset when the market window changes.
+  const yResetKey = `${mode}:${xDefaultDomain[0]}:${xDefaultDomain[1]}`
   useEffect(() => {
     setYZoom(null)
-  }, [dataKey])
+  }, [yResetKey])
 
-  const resetZoom = () => {
-    if (onXDomainReset) onXDomainReset()
-    else onXDomainChange(xDefaultDomain)
-    setYZoom(null)
+  const followLiveAction = () => {
+    if (onFollowLive) onFollowLive()
+    else resetZoom()
   }
 
   const toggle = (key: BtcSeriesKey) => {
@@ -1559,110 +1570,6 @@ export default function PriceChart(props: Props) {
 
   const toggleMomCurve = (key: MomCurveKey) => {
     setMomCurve((prev) => ({ ...prev, [key]: !prev[key] }))
-  }
-
-  const hitZone = (clientX: number, clientY: number): 'price' | 'time' | 'plot' => {
-    const el = wrapRef.current
-    if (!el) return 'plot'
-    const rect = el.getBoundingClientRect()
-    const plotRight = rect.right - chartMargin.right - Y_AXIS_WIDTH
-    const plotBottom = rect.bottom - chartMargin.bottom
-    // Bottom-right corner is the reset control — treat as plot for cursor.
-    if (clientX >= plotRight && clientY >= plotBottom) return 'plot'
-    if (clientX >= plotRight) return 'price'
-    if (clientY >= plotBottom) return 'time'
-    return 'plot'
-  }
-
-  const onPointerDown = (ev: React.PointerEvent) => {
-    if (ev.button !== 0) return
-    // Prevent browser focus ring on the chart SVG / wrapper.
-    ev.preventDefault()
-    const zone = hitZone(ev.clientX, ev.clientY)
-    setHoverZone(zone)
-    ;(ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId)
-    dragRef.current = {
-      x: ev.clientX,
-      y: ev.clientY,
-      xDomain: [...xDomain] as TimeDomain,
-      yDomain: [...yDomain] as [number, number],
-      zone,
-    }
-  }
-
-  const onPointerMove = (ev: React.PointerEvent) => {
-    const zone = hitZone(ev.clientX, ev.clientY)
-    if (!dragRef.current) {
-      setHoverZone((z) => (z === zone ? z : zone))
-    }
-    const drag = dragRef.current
-    const el = wrapRef.current
-    if (!drag || !el) return
-    const rect = el.getBoundingClientRect()
-    const plotW = Math.max(1, rect.width - chartMargin.left - chartMargin.right - Y_AXIS_WIDTH)
-    const plotH = Math.max(1, rect.height - chartMargin.top - chartMargin.bottom)
-    const dx = ev.clientX - drag.x
-    const dy = ev.clientY - drag.y
-    const dragZone = drag.zone
-    const fullXSpan = Math.max(1, xFullDomain[1] - xFullDomain[0])
-    const minXSpan = fullXSpan * 0.02
-    const minYSpan = showBtc ? 1 : 0.5
-
-    // X-axis strip: drag left/right to scale time (right = zoom in, left = zoom out).
-    if (dragZone === 'time') {
-      const [x0, x1] = drag.xDomain
-      const xSpan = Math.max(1, x1 - x0)
-      const factor = Math.exp((-dx / plotW) * 2.2)
-      const nextSpan = Math.min(fullXSpan, Math.max(minXSpan, xSpan * factor))
-      const mid = (x0 + x1) / 2
-      onXDomainChange(
-        clampDomain([mid - nextSpan / 2, mid + nextSpan / 2], xFullDomain),
-      )
-      return
-    }
-
-    // Y-axis strip: drag up/down to scale price (up = zoom in, down = zoom out).
-    if (dragZone === 'price') {
-      const [y0, y1] = drag.yDomain
-      const ySpan = Math.max(minYSpan, y1 - y0)
-      const factor = Math.exp((dy / plotH) * 2.2)
-      const nextSpan = Math.max(minYSpan, ySpan * factor)
-      const mid = (y0 + y1) / 2
-      const next0 = mid - nextSpan / 2
-      const next1 = mid + nextSpan / 2
-      if (showBtc) {
-        setYZoom([next0, next1])
-      } else {
-        setYZoom([Math.max(0, next0), Math.min(100, next1)])
-      }
-      return
-    }
-
-    // Plot: drag to pan.
-    if (dragZone === 'plot') {
-      const [x0, x1] = drag.xDomain
-      const xSpan = x1 - x0
-      const xShift = (-dx / plotW) * xSpan
-      onXDomainChange(clampDomain([x0 + xShift, x1 + xShift], xFullDomain))
-
-      const [y0, y1] = drag.yDomain
-      const ySpan = y1 - y0
-      const yShift = (dy / plotH) * ySpan
-      if (showBtc) {
-        setYZoom([y0 + yShift, y1 + yShift])
-      } else {
-        setYZoom([Math.max(0, y0 + yShift), Math.min(100, y1 + yShift)])
-      }
-    }
-  }
-
-  const onPointerUp = (ev: React.PointerEvent) => {
-    dragRef.current = null
-    try {
-      ;(ev.currentTarget as HTMLElement).releasePointerCapture(ev.pointerId)
-    } catch {
-      /* ignore */
-    }
   }
 
   useEffect(() => {
@@ -1870,18 +1777,11 @@ export default function PriceChart(props: Props) {
         className={`chart-wrap chart-wrap-zoom chart-cursor-${hoverZone}${
           lightbox ? ' chart-wrap-lightbox' : ''
         }${showMomentum ? ' chart-wrap-main-with-mom' : ''}`}
-        ref={wrapRef}
-        tabIndex={-1}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        {...viewportBind}
         onPointerLeave={() => {
-          if (!dragRef.current) setHoverZone('plot')
+          viewportBind.onPointerLeave()
           clearHover()
         }}
-        onDoubleClick={resetZoom}
-        title="Drag left/right on time axis to zoom time · drag up/down on price axis to zoom price · drag plot to pan · double-click / Reset to restore"
       >
         <div className="chart-zoom-zone chart-zoom-zone-time" aria-hidden />
         <div className="chart-zoom-zone chart-zoom-zone-price" aria-hidden />
@@ -2178,36 +2078,55 @@ export default function PriceChart(props: Props) {
             )}
           </ComposedChart>
         </ResponsiveContainer>
-        {canReset && (
-          <button
-            type="button"
-            className="chart-reset-corner"
-            onClick={(e) => {
-              e.stopPropagation()
-              resetZoom()
-            }}
-            onPointerDown={(e) => e.stopPropagation()}
-            aria-label="Reset zoom"
-            title="Reset zoom"
-          >
-            <svg
-              className="chart-reset-icon"
-              viewBox="0 0 24 24"
-              width="15"
-              height="15"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M8 3H5a2 2 0 0 0-2 2v3" />
-              <path d="M16 3h3a2 2 0 0 1 2 2v3" />
-              <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
-              <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
-            </svg>
-          </button>
+        {(canReset || showFollowLive) && (
+          <div className="chart-viewport-controls">
+            {showFollowLive && (
+              <button
+                type="button"
+                className={`chart-follow-btn${!followLive ? ' active' : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  followLiveAction()
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+                aria-label="Follow live"
+                title="Follow live"
+              >
+                Follow live
+              </button>
+            )}
+            {canReset && (
+              <button
+                type="button"
+                className="chart-reset-corner"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  resetZoom()
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+                aria-label="Reset zoom"
+                title="Reset zoom"
+              >
+                <svg
+                  className="chart-reset-icon"
+                  viewBox="0 0 24 24"
+                  width="15"
+                  height="15"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+                  <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+                  <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+                  <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+                </svg>
+              </button>
+            )}
+          </div>
         )}
       </div>
       {showMomentum ? (

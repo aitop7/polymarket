@@ -13,6 +13,7 @@ import {
   YAxis,
 } from 'recharts'
 import type { TimeDomain } from './PriceChart'
+import { useChartViewport } from './useChartViewport'
 
 export type VolumePoint = {
   t: number
@@ -29,6 +30,13 @@ type Props = {
   mode: 'binance' | 'outcomes'
   title?: string
   xDomain: TimeDomain
+  onXDomainChange?: (next: TimeDomain) => void
+  onXDomainReset?: () => void
+  xFullDomain?: TimeDomain
+  xDefaultDomain?: TimeDomain
+  followLive?: boolean
+  showFollowLive?: boolean
+  onFollowLive?: () => void
   hoverTime?: number | null
   onHoverTimeChange?: (t: number | null) => void
   /** Live market: wait for several real bars; forming 5s bar grows in height as trades land. */
@@ -215,6 +223,13 @@ export default function VolumeChart(props: Props) {
     mode,
     title,
     xDomain,
+    onXDomainChange,
+    onXDomainReset,
+    xFullDomain,
+    xDefaultDomain,
+    followLive = true,
+    showFollowLive = false,
+    onFollowLive,
     hoverTime,
     onHoverTimeChange,
     live = false,
@@ -223,6 +238,28 @@ export default function VolumeChart(props: Props) {
   } = props
   const [collapsed, setCollapsed] = useState(false)
   const [enlarged, setEnlarged] = useState(false)
+
+  const interactive = Boolean(onXDomainChange && xFullDomain && xDefaultDomain)
+  const fullDomain = xFullDomain ?? xDomain
+  const defaultDomain = xDefaultDomain ?? xDomain
+
+  const { hoverZone, canReset, resetZoom, bind: viewportBind } = useChartViewport({
+    xDomain,
+    xFullDomain: fullDomain,
+    xDefaultDomain: defaultDomain,
+    onXDomainChange: onXDomainChange ?? (() => undefined),
+    onXDomainReset,
+    yDomain: [0, 1],
+    enableY: false,
+    margin: CHART_MARGIN,
+    yAxisWidth: Y_AXIS_WIDTH,
+    enabled: interactive,
+  })
+
+  const followLiveAction = () => {
+    if (onFollowLive) onFollowLive()
+    else resetZoom()
+  }
 
   useEffect(() => {
     if (!lightbox && !enlarged) return
@@ -538,15 +575,27 @@ export default function VolumeChart(props: Props) {
       </div>
       {(!collapsed || lightbox) && (
       <div
-        className={`chart-wrap chart-wrap-volume${
-          mode === 'outcomes' ? ' chart-wrap-volume-outcomes' : ''
-        }${lightbox ? ' chart-wrap-lightbox' : ''}`}
-        tabIndex={-1}
-        onMouseDown={(e) => {
-          // Keep click from focusing the SVG (browser black focus rect).
-          e.preventDefault()
+        className={`chart-wrap chart-wrap-volume chart-wrap-zoom chart-cursor-${
+          interactive ? hoverZone : 'plot'
+        }${mode === 'outcomes' ? ' chart-wrap-volume-outcomes' : ''}${
+          lightbox ? ' chart-wrap-lightbox' : ''
+        }`}
+        {...(interactive
+          ? viewportBind
+          : {
+              tabIndex: -1 as const,
+              onMouseDown: (e: { preventDefault: () => void }) => {
+                e.preventDefault()
+              },
+            })}
+        onPointerLeave={() => {
+          if (interactive) viewportBind.onPointerLeave()
+          onHoverTimeChange?.(null)
         }}
       >
+        {interactive ? (
+          <div className="chart-zoom-zone chart-zoom-zone-time" aria-hidden />
+        ) : null}
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
             data={visibleData}
@@ -600,6 +649,56 @@ export default function VolumeChart(props: Props) {
             />
           </ComposedChart>
         </ResponsiveContainer>
+        {interactive && (canReset || showFollowLive) ? (
+          <div className="chart-viewport-controls">
+            {showFollowLive && (
+              <button
+                type="button"
+                className={`chart-follow-btn${!followLive ? ' active' : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  followLiveAction()
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+                aria-label="Follow live"
+                title="Follow live"
+              >
+                Follow live
+              </button>
+            )}
+            {canReset && (
+              <button
+                type="button"
+                className="chart-reset-corner"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  resetZoom()
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+                aria-label="Reset zoom"
+                title="Reset zoom"
+              >
+                <svg
+                  className="chart-reset-icon"
+                  viewBox="0 0 24 24"
+                  width="15"
+                  height="15"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+                  <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+                  <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+                  <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+                </svg>
+              </button>
+            )}
+          </div>
+        ) : null}
       </div>
       )}
     </div>
