@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 import threading
 import time
 from typing import Any
@@ -11,12 +13,27 @@ import numpy as np
 import pandas as pd
 
 from app.core.config import settings
-from app.core.data import DIRECTION_FEATURE_COLUMNS
+from app.core.data import DIRECTION_FEATURE_COLUMNS, FEATURE_COLUMNS
 from app.core.live_dataset import find_live_market_dir
 from app.ml.live_features import engineer_features, load_live_feature_frame
-from app.ml.train_predict_up import direction_model_filename
+from app.ml.train_predict_up import (
+    direction_model_filename,
+    metrics_filename,
+    model_filename,
+)
+from app.ml.train_predict_up_beta import (
+    _moments_to_beta,
+    beta_logvar_filename,
+    beta_mean_filename,
+    beta_metrics_filename,
+)
 
 _MODELS: dict[float, tuple[float, lgb.Booster]] = {}
+_LEVEL_MODELS: dict[float, tuple[float, lgb.Booster]] = {}
+_LEVEL_STD: dict[float, float] = {}
+_BETA_MEAN_MODELS: dict[float, tuple[float, lgb.Booster]] = {}
+_BETA_VAR_MODELS: dict[float, tuple[float, lgb.Booster]] = {}
+_BETA_RESIDUAL_VAR: dict[float, float] = {}
 
 # Hot-path caches. LightGBM on a single row / small batch is already <<50ms on CPU;
 # GPU would add PCIe transfer overhead and is not used for this workload.
@@ -42,6 +59,303 @@ def _load_model(horizon_seconds: float) -> lgb.Booster:
         raise RuntimeError("Direction model feature schema does not match the running application")
     _MODELS[float(horizon_seconds)] = (stamp, model)
     return model
+
+
+def _load_level_model(horizon_seconds: float) -> lgb.Booster:
+    path = settings.models_dir / model_filename(horizon_seconds)
+    if not path.is_file():
+        raise FileNotFoundError(f"Level model not found: {path.name}")
+    stamp = path.stat().st_mtime
+    cached = _LEVEL_MODELS.get(float(horizon_seconds))
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    model = lgb.Booster(model_file=str(path))
+    _LEVEL_MODELS[float(horizon_seconds)] = (stamp, model)
+    return model
+
+
+def _level_residual_std(horizon_seconds: float) -> float:
+    """Use held-out RMSE as the predictive σ for a Normal density around the mean."""
+    h = float(horizon_seconds)
+    cached = _LEVEL_STD.get(h)
+    if cached is not None:
+        return cached
+    path = settings.models_dir / metrics_filename(h)
+    std = 0.04
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        rmse = payload.get("test", {}).get("rmse")
+        if rmse is not None and float(rmse) > 0:
+            std = float(rmse)
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    _LEVEL_STD[h] = std
+    return std
+
+
+def _normal_pdf(xs: np.ndarray, mean: float, std: float) -> np.ndarray:
+    if std <= 1e-9:
+        out = np.zeros_like(xs, dtype=np.float64)
+        idx = int(np.argmin(np.abs(xs - mean)))
+        out[idx] = 1.0
+        return out
+    z = (xs - mean) / std
+    return (1.0 / (std * np.sqrt(2.0 * np.pi))) * np.exp(-0.5 * z * z)
+
+
+def _load_beta_heads(horizon_seconds: float) -> tuple[lgb.Booster, lgb.Booster]:
+    h = float(horizon_seconds)
+    mean_path = settings.models_dir / beta_mean_filename(h)
+    var_path = settings.models_dir / beta_logvar_filename(h)
+    if not mean_path.is_file() or not var_path.is_file():
+        raise FileNotFoundError(f"Beta model not found for h={h:g}s")
+    mean_stamp = mean_path.stat().st_mtime
+    var_stamp = var_path.stat().st_mtime
+    mean_cached = _BETA_MEAN_MODELS.get(h)
+    var_cached = _BETA_VAR_MODELS.get(h)
+    if mean_cached is None or mean_cached[0] != mean_stamp:
+        _BETA_MEAN_MODELS[h] = (mean_stamp, lgb.Booster(model_file=str(mean_path)))
+    if var_cached is None or var_cached[0] != var_stamp:
+        _BETA_VAR_MODELS[h] = (var_stamp, lgb.Booster(model_file=str(var_path)))
+    return _BETA_MEAN_MODELS[h][1], _BETA_VAR_MODELS[h][1]
+
+
+def _beta_residual_var(horizon_seconds: float) -> float:
+    """Held-out MSE floor so live Beta widths match calibration, not under-dispersed heads."""
+    h = float(horizon_seconds)
+    cached = _BETA_RESIDUAL_VAR.get(h)
+    if cached is not None:
+        return cached
+    floor = 0.04 ** 2
+    path = settings.models_dir / beta_metrics_filename(h)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        test = payload.get("test") or {}
+        rmse = test.get("rmse")
+        mse = test.get("mean_realized_squared_error")
+        if mse is not None and float(mse) > 0:
+            floor = float(mse)
+        elif rmse is not None and float(rmse) > 0:
+            floor = float(rmse) ** 2
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    _BETA_RESIDUAL_VAR[h] = floor
+    return floor
+
+
+def _beta_pdf(xs: np.ndarray, alpha: float, beta: float) -> np.ndarray:
+    a = max(1e-3, float(alpha))
+    b = max(1e-3, float(beta))
+    log_norm = math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
+    x = np.clip(xs, 1e-6, 1.0 - 1e-6)
+    return np.exp((a - 1.0) * np.log(x) + (b - 1.0) * np.log1p(-x) - log_norm)
+
+
+def _beta_pdf_curve(alpha: float, beta: float, *, mean: float, std: float) -> tuple[np.ndarray, np.ndarray]:
+    """Sample Beta density on [0, 1] with extra resolution near the mode (not a Normal zoom)."""
+    a = max(1e-3, float(alpha))
+    b = max(1e-3, float(beta))
+    if a > 1.0 and b > 1.0:
+        mode = (a - 1.0) / (a + b - 2.0)
+    elif a > 1.0:
+        mode = 1.0 - 1e-4
+    elif b > 1.0:
+        mode = 1e-4
+    else:
+        mode = float(mean)
+
+    support = np.linspace(1e-4, 1.0 - 1e-4, 121)
+    half = max(0.04, min(0.35, 8.0 * max(float(std), 0.01)))
+    local = np.linspace(max(1e-4, mode - half), min(1.0 - 1e-4, mode + half), 81)
+    xs = np.unique(np.sort(np.concatenate([support, local, [float(mean), mode]])))
+    dens = _beta_pdf(xs, a, b)
+    return xs, dens
+
+
+def _calibrate_beta_moments(
+    mu: float, raw_var: float, *, horizon_seconds: float
+) -> tuple[float, float, float, float, float]:
+    """Return mean, variance, std, alpha, beta with a held-out variance floor."""
+    mean = float(np.clip(mu, 1e-4, 1.0 - 1e-4))
+    max_var = mean * (1.0 - mean) * 0.995
+    floor = _beta_residual_var(horizon_seconds)
+    # Blend keeps some state-dependence while preventing Normal-looking ultra-peaks.
+    var = float(min(max(float(raw_var), floor), max_var))
+    alpha_arr, beta_arr = _moments_to_beta(np.array([mean]), np.array([var]))
+    alpha = float(alpha_arr[0])
+    beta = float(beta_arr[0])
+    return mean, var, float(math.sqrt(var)), alpha, beta
+
+
+def _score_beta_row(row: pd.Series, *, horizons: tuple[float, ...]) -> dict[str, Any]:
+    """Score Beta mean/variance heads and return chip-compatible predictions."""
+    values = pd.to_numeric(row.reindex(FEATURE_COLUMNS), errors="coerce").to_numpy(dtype=np.float32)
+    feature_coverage = float(np.mean(np.isfinite(values)))
+    if feature_coverage < 0.25:
+        raise RuntimeError(
+            f"Insufficient live feature coverage ({feature_coverage:.0%}); wait for market data to accumulate"
+        )
+    current = _finite(row.get("up_mid"))
+    if current is None:
+        current = _finite(row.get("up_price"))
+    if current is None:
+        current = 0.5
+
+    predictions: list[dict[str, Any]] = []
+    for horizon in horizons:
+        mean_model, var_model = _load_beta_heads(float(horizon))
+        mu = float(np.clip(mean_model.predict(values.reshape(1, -1))[0], 1e-4, 1.0 - 1e-4))
+        raw_var = float(np.exp(np.clip(var_model.predict(values.reshape(1, -1))[0], math.log(1e-6), math.log(0.25))))
+        mean, var, std, alpha, beta = _calibrate_beta_moments(mu, raw_var, horizon_seconds=float(horizon))
+        xs = np.linspace(1e-4, 1.0 - 1e-4, 401)
+        dens = _beta_pdf(xs, alpha, beta)
+        trapz = getattr(np, "trapezoid", None) or np.trapz
+        rise_mask = xs > float(current)
+        p_up = float(trapz(dens[rise_mask], xs[rise_mask]) / max(1e-12, trapz(dens, xs)))
+        p_up = float(np.clip(p_up, 0.0, 1.0))
+        predictions.append(
+            {
+                "horizon_seconds": float(horizon),
+                "probability_up": p_up,
+                "probability_down": 1.0 - p_up,
+                "direction": "UP" if p_up >= 0.5 else "DOWN",
+                "confidence": abs(p_up - 0.5) * 2.0,
+                "mean": mean,
+                "variance": var,
+                "std": std,
+                "alpha": alpha,
+                "beta": beta,
+            }
+        )
+
+    timestamp = int(pd.to_numeric(row.get("timestamp"), errors="coerce"))
+    now_ms = int(pd.Timestamp.utcnow().timestamp() * 1000)
+    return {
+        "timestamp": timestamp,
+        "age_ms": max(0, now_ms - timestamp),
+        "feature_coverage": feature_coverage,
+        "predictions": predictions,
+        "model_kind": "beta",
+    }
+
+
+def _predict_distribution_for_horizon(
+    row: pd.Series,
+    *,
+    horizon: float,
+    direction_predictions: list[dict[str, Any]] | None = None,
+    family: str = "level",
+) -> dict[str, Any] | None:
+    """Build a predictive Up-price density for one horizon."""
+    current = _finite(row.get("up_mid"))
+    if current is None:
+        current = _finite(row.get("up_price"))
+    if current is None:
+        current = 0.5
+
+    if family == "beta":
+        for pred in direction_predictions or []:
+            if abs(float(pred.get("horizon_seconds", -1)) - float(horizon)) < 1e-9 and pred.get("alpha") is not None:
+                mean = float(pred["mean"])
+                variance = float(pred["variance"])
+                std = float(pred["std"])
+                alpha = float(pred["alpha"])
+                beta = float(pred["beta"])
+                xs, dens = _beta_pdf_curve(alpha, beta, mean=mean, std=std)
+                return {
+                    "horizon_seconds": float(horizon),
+                    "mean": mean,
+                    "variance": variance,
+                    "std": std,
+                    "alpha": alpha,
+                    "beta": beta,
+                    "current_up": float(current),
+                    "source": "beta",
+                    "family": "beta",
+                    "pdf": [{"x": float(x), "density": float(y)} for x, y in zip(xs, dens)],
+                }
+        return None
+
+    mean: float | None = None
+    std: float | None = None
+    source = "level"
+    try:
+        values = pd.to_numeric(row.reindex(FEATURE_COLUMNS), errors="coerce").to_numpy(dtype=np.float32)
+        coverage = float(np.mean(np.isfinite(values)))
+        if coverage < 0.25:
+            raise RuntimeError("level coverage too low")
+        raw = float(_load_level_model(float(horizon)).predict(values.reshape(1, -1))[0])
+        mean = float(np.clip(raw, 0.0, 1.0))
+        std = max(0.005, _level_residual_std(float(horizon)))
+    except Exception:
+        source = "direction_approx"
+        p_up = 0.5
+        for pred in direction_predictions or []:
+            if abs(float(pred.get("horizon_seconds", -1)) - float(horizon)) < 1e-9:
+                p_up = float(pred.get("probability_up", 0.5))
+                break
+        expected_move = 0.02 * abs(2.0 * p_up - 1.0)
+        sign = 1.0 if p_up >= 0.5 else -1.0
+        mean = float(np.clip(current + sign * expected_move, 0.0, 1.0))
+        std = 0.04
+
+    variance = float(std * std)
+    xs = np.linspace(1e-4, 1.0 - 1e-4, 161, dtype=np.float64)
+    dens = _normal_pdf(xs, mean, std)
+    trapz = getattr(np, "trapezoid", None) or np.trapz
+    area = float(trapz(dens, xs)) if len(xs) > 1 else 1.0
+    if area > 0:
+        dens = dens / area
+
+    return {
+        "horizon_seconds": float(horizon),
+        "mean": mean,
+        "variance": variance,
+        "std": float(std),
+        "current_up": float(current),
+        "source": source,
+        "family": "normal",
+        "pdf": [{"x": float(x), "density": float(y)} for x, y in zip(xs, dens)],
+    }
+
+
+def _predict_distribution(
+    row: pd.Series,
+    *,
+    horizons: tuple[float, ...],
+    direction_predictions: list[dict[str, Any]] | None = None,
+    family: str = "level",
+) -> dict[str, Any] | None:
+    """Primary (shortest) horizon density — kept for backward-compatible clients."""
+    ordered = tuple(sorted({float(h) for h in horizons})) or (3.0,)
+    return _predict_distribution_for_horizon(
+        row,
+        horizon=ordered[0],
+        direction_predictions=direction_predictions,
+        family=family,
+    )
+
+
+def _predict_distributions(
+    row: pd.Series,
+    *,
+    horizons: tuple[float, ...],
+    direction_predictions: list[dict[str, Any]] | None = None,
+    family: str = "level",
+) -> list[dict[str, Any]]:
+    """Densities for every active horizon (e.g. 3s and 5s overlays)."""
+    ordered = tuple(sorted({float(h) for h in horizons})) or (3.0,)
+    out: list[dict[str, Any]] = []
+    for horizon in ordered:
+        dist = _predict_distribution_for_horizon(
+            row,
+            horizon=horizon,
+            direction_predictions=direction_predictions,
+            family=family,
+        )
+        if dist is not None:
+            out.append(dist)
+    return out
 
 
 def _finite(value: Any) -> float | None:
@@ -269,15 +583,36 @@ def _maybe_seed_parquet(market_id: str, *, horizons: tuple[float, ...]) -> list[
     return _score_history(df, horizons=horizons, max_points=240)
 
 
-def get_cached_prediction(market_id: str) -> dict[str, Any] | None:
+def get_cached_prediction(
+    market_id: str,
+    *,
+    horizons: tuple[float, ...] | None = None,
+    model_kind: str | None = None,
+) -> dict[str, Any] | None:
     """Return a still-fresh cached score without recomputing."""
     mid = str(market_id)
     now_mono = time.monotonic()
     with _LOCK:
         cached = _RESULT_CACHE.get(mid)
         if cached is not None and (now_mono - cached[0]) < _RESULT_TTL_S:
-            return dict(cached[1])
+            result = cached[1]
+            cached_horizons = tuple(
+                float(p["horizon_seconds"]) for p in result.get("predictions") or []
+            )
+            cached_kind = str(result.get("model_kind") or "direction")
+            if model_kind is not None and cached_kind != model_kind:
+                return None
+            if horizons is None or cached_horizons == tuple(float(h) for h in horizons):
+                return dict(result)
     return None
+
+
+def clear_prediction_cache() -> None:
+    """Drop live prediction caches after the active model family changes."""
+    with _LOCK:
+        _RESULT_CACHE.clear()
+        _LIVE_HISTORY.clear()
+        _PARQUET_SEED_AT.clear()
 
 
 def predict_direction(
@@ -288,24 +623,40 @@ def predict_direction(
     snapshot: dict[str, Any] | None = None,
     history_points: int = 300,
     prefer_live: bool = True,
+    model_kind: str = "direction",
 ) -> dict[str, Any]:
-    """Score the latest live tip and maintain a rolling probability curve.
+    """Score the latest live tip for the active model family.
 
     Prefers the in-memory live monitor (realtime clock). Falls back to parquet
     only when live feature coverage is insufficient. Chart history is a rolling
     append of live scores (optionally seeded once from parquet).
     """
     del history_points  # retained for API compatibility; rolling cache owns length
+    kind = "beta" if model_kind == "beta" else "direction"
     mid = str(market_id)
     now_mono = time.monotonic()
     with _LOCK:
         cached_result = _RESULT_CACHE.get(mid)
         if cached_result is not None and (now_mono - cached_result[0]) < _RESULT_TTL_S:
-            return dict(cached_result[1])
+            cached = cached_result[1]
+            cached_kind = str(cached.get("model_kind") or "direction")
+            cached_horizons = tuple(
+                float(p["horizon_seconds"]) for p in cached.get("predictions") or []
+            )
+            if cached_kind == kind and cached_horizons == tuple(float(h) for h in horizons):
+                return dict(cached)
 
     source = "live_buffer"
     scored: dict[str, Any] | None = None
+    feature_row: pd.Series | None = None
     live_error: Exception | None = None
+
+    def _score_row(row: pd.Series, *, min_coverage: float) -> dict[str, Any]:
+        if kind == "beta":
+            return _score_beta_row(row, horizons=horizons)
+        out = _score_feature_row(row, horizons=horizons, min_coverage=min_coverage)
+        out["model_kind"] = "direction"
+        return out
 
     if prefer_live and snapshot is not None:
         try:
@@ -315,15 +666,16 @@ def predict_direction(
                 snapshot=snapshot,
             )
             if not live_df.empty:
-                scored = _score_feature_row(live_df.iloc[-1], horizons=horizons, min_coverage=0.30)
+                feature_row = live_df.iloc[-1]
+                scored = _score_row(feature_row, min_coverage=0.30)
                 source = "live_buffer"
-                # Stamp tip to wall clock so chips/chart track realtime, not REST snapshot lag.
                 now_ms = int(time.time() * 1000)
                 scored["timestamp"] = now_ms
                 scored["age_ms"] = 0
         except Exception as exc:  # coverage / empty — try parquet
             live_error = exc
             scored = None
+            feature_row = None
 
     if scored is None:
         try:
@@ -332,9 +684,9 @@ def predict_direction(
             df = load_live_feature_frame(mid)
             if df.empty:
                 raise RuntimeError("No live data for this market yet")
-            scored = _score_feature_row(df.iloc[-1], horizons=horizons)
+            feature_row = df.iloc[-1]
+            scored = _score_row(feature_row, min_coverage=0.35)
             source = "parquet"
-            # Align age to live series tip when available so the UI doesn't look frozen.
             if series:
                 tip = _finite((series[-1] or {}).get("t"))
                 if tip is not None:
@@ -354,13 +706,31 @@ def predict_direction(
                 raise live_error from None
             raise
 
-    seed = _maybe_seed_parquet(mid, horizons=horizons) if source == "live_buffer" else None
+    seed = (
+        _maybe_seed_parquet(mid, horizons=horizons)
+        if source == "live_buffer" and kind == "direction"
+        else None
+    )
     history = _merge_history(mid, scored, seed=seed)
+    distributions = (
+        _predict_distributions(
+            feature_row,
+            horizons=horizons,
+            direction_predictions=list(scored.get("predictions") or []),
+            family="beta" if kind == "beta" else "level",
+        )
+        if feature_row is not None
+        else []
+    )
+    distribution = distributions[0] if distributions else None
 
     result = {
         "market_id": mid,
         "source": source,
+        "model_kind": kind,
         "history": history,
+        "distribution": distribution,
+        "distributions": distributions,
         **scored,
     }
     with _LOCK:

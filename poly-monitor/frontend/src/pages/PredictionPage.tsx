@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  api,
   formatCentsTrade,
   formatPct,
   wsUrl,
   type DirectionPrediction,
+  type DirectionModelsResponse,
   type LiveDirectionPrediction,
   type LiveSeriesPoint,
 } from '../api'
-import PredictionProbChart, { type PredictionPoint } from '../components/PredictionProbChart'
+import PredictionDistChart from '../components/PredictionDistChart'
 import PriceChart, { type TimeDomain } from '../components/PriceChart'
 
 const MARKET_WINDOW_MS = 300_000
-const MAX_PRED_POINTS = 900
 const MAX_SERIES_POINTS = 1200
 const WS_RECONNECT_MS = 1_500
 
@@ -116,36 +117,26 @@ function appendTickPoint(
   return next.length > MAX_SERIES_POINTS ? next.slice(-MAX_SERIES_POINTS) : next
 }
 
-function predictionPointsFromResult(result: LiveDirectionPrediction): PredictionPoint[] {
-  const points: PredictionPoint[] = []
-  for (const row of result.history ?? []) {
-    const t = num(row.timestamp)
-    if (t == null) continue
-    const p3 = num(row.p_up_3s)
-    const p5 = num(row.p_up_5s)
-    if (p3 == null && p5 == null) continue
-    points.push({ t, p_up_3s: p3, p_up_5s: p5 })
-  }
-  if (points.length) return points.sort((a, b) => a.t - b.t)
-
-  const byHorizon = new Map(
-    result.predictions.map((p) => [Number(p.horizon_seconds), Number(p.probability_up)] as const),
-  )
-  const t = num(result.timestamp)
-  if (t == null) return []
-  return [{ t, p_up_3s: num(byHorizon.get(3)), p_up_5s: num(byHorizon.get(5)) }]
-}
-
-function PredictionChip({ prediction }: { prediction: DirectionPrediction }) {
+function PredictionChip({
+  prediction,
+  kind,
+}: {
+  prediction: DirectionPrediction
+  kind: 'direction' | 'beta'
+}) {
   const isUp = prediction.direction === 'UP'
   const probability = isUp ? prediction.probability_up : prediction.probability_down
   return (
     <article className={`prediction-chip ${isUp ? 'prediction-up' : 'prediction-down'}`}>
       <div className="prediction-chip-header">
-        <span>{prediction.horizon_seconds}s</span>
-        <strong>{prediction.direction}</strong>
+        <span className="prediction-chip-horizon">{prediction.horizon_seconds}s horizon</span>
+        <span className={`prediction-chip-dir ${isUp ? 'up' : 'down'}`}>{prediction.direction}</span>
       </div>
-      <div className="prediction-chip-value">{formatPct(probability)}</div>
+      <div className="prediction-chip-value">
+        {kind === 'beta' && prediction.mean != null
+          ? formatCentsTrade(prediction.mean)
+          : formatPct(probability)}
+      </div>
       <div
         className="prediction-bar"
         aria-label={`Up ${formatPct(prediction.probability_up)}, Down ${formatPct(prediction.probability_down)}`}
@@ -153,7 +144,19 @@ function PredictionChip({ prediction }: { prediction: DirectionPrediction }) {
         <span className="prediction-bar-up" style={{ width: `${prediction.probability_up * 100}%` }} />
         <span className="prediction-bar-down" style={{ width: `${prediction.probability_down * 100}%` }} />
       </div>
-      <p className="muted">Conf {formatPct(prediction.confidence)}</p>
+      <div className="prediction-chip-foot">
+        {kind === 'beta' ? (
+          <>
+            <span>P(rise)</span>
+            <strong>{formatPct(prediction.probability_up)}</strong>
+          </>
+        ) : (
+          <>
+            <span>Confidence</span>
+            <strong>{formatPct(prediction.confidence)}</strong>
+          </>
+        )}
+      </div>
     </article>
   )
 }
@@ -161,14 +164,63 @@ function PredictionChip({ prediction }: { prediction: DirectionPrediction }) {
 export default function PredictionPage() {
   const [result, setResult] = useState<LiveDirectionPrediction | null>(null)
   const [series, setSeries] = useState<LiveSeriesPoint[]>([])
-  const [predSeries, setPredSeries] = useState<PredictionPoint[]>([])
   const [error, setError] = useState<string | null>(null)
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
   const [chartXDomain, setChartXDomain] = useState<TimeDomain | null>(null)
   const [followLiveX, setFollowLiveX] = useState(true)
   const [hoverTime, setHoverTime] = useState<number | null>(null)
+  const [models, setModels] = useState<DirectionModelsResponse | null>(null)
+  const [selectedHorizons, setSelectedHorizons] = useState<number[]>([])
+  const [modelAction, setModelAction] = useState<'train' | 'evaluate'>('evaluate')
+  const [modelKind, setModelKind] = useState<'direction' | 'beta'>('direction')
+  const [modelHorizon, setModelHorizon] = useState('3')
+  const [modelBusy, setModelBusy] = useState(false)
+  const [modelError, setModelError] = useState<string | null>(null)
+  const [liveKind, setLiveKind] = useState<'direction' | 'beta'>('direction')
   const marketIdRef = useRef<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const kindBootstrapped = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const next = await api.directionModels(modelKind)
+        if (cancelled) return
+        if (!kindBootstrapped.current) {
+          kindBootstrapped.current = true
+          const live = next.active_kind ?? 'direction'
+          setLiveKind(live)
+          if (live !== modelKind) {
+            setModelKind(live)
+            return
+          }
+        }
+        setModels(next)
+        setLiveKind(next.active_kind ?? 'direction')
+        setSelectedHorizons((current) => {
+          if (next.active_kind === modelKind && next.active_horizons.length) {
+            return next.active_horizons
+          }
+          if (current.length && current.every((h) => next.models.some((m) => m.horizon_seconds === h))) {
+            return current
+          }
+          return next.models.map((m) => m.horizon_seconds)
+        })
+        setModelError(null)
+      } catch (err) {
+        if (!cancelled) setModelError(err instanceof Error ? err.message : String(err))
+      }
+    }
+    void load()
+    const id = window.setInterval(() => {
+      if (models?.job?.status === 'running') void load()
+    }, 2_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [models?.job?.status, modelKind])
 
   useEffect(() => {
     let cancelled = false
@@ -182,17 +234,8 @@ export default function PredictionPage() {
     }
 
     const applyPrediction = (prediction: LiveDirectionPrediction) => {
-      if (marketIdRef.current && marketIdRef.current !== prediction.market_id) {
-        setPredSeries([])
-      }
       marketIdRef.current = prediction.market_id
       setResult(prediction)
-      const nextPoints = predictionPointsFromResult(prediction)
-      if (nextPoints.length) {
-        setPredSeries(
-          nextPoints.length > MAX_PRED_POINTS ? nextPoints.slice(-MAX_PRED_POINTS) : nextPoints,
-        )
-      }
       setUpdatedAt(Date.now())
       setError(null)
     }
@@ -228,7 +271,11 @@ export default function PredictionPage() {
           return
         }
         if (type === 'direction_prediction') {
-          applyPrediction(msg as unknown as LiveDirectionPrediction)
+          const prediction = msg as unknown as LiveDirectionPrediction
+          if (prediction.model_kind === 'beta' || prediction.model_kind === 'direction') {
+            setLiveKind(prediction.model_kind)
+          }
+          applyPrediction(prediction)
           return
         }
         if (type === 'series') {
@@ -240,7 +287,6 @@ export default function PredictionPage() {
           const mid = msg.market_id != null ? String(msg.market_id) : null
           if (mid && marketIdRef.current && marketIdRef.current !== mid) {
             setSeries([])
-            setPredSeries([])
             setResult(null)
           }
           if (mid) marketIdRef.current = mid
@@ -303,14 +349,11 @@ export default function PredictionPage() {
 
   const nowMs = updatedAt ?? Date.now()
   const xFullDomain = useMemo((): TimeDomain => {
-    const times = [
-      ...chartData.map((p) => p.t),
-      ...predSeries.map((p) => p.t),
-    ].filter((t) => Number.isFinite(t))
+    const times = chartData.map((p) => p.t).filter((t) => Number.isFinite(t))
     if (times.length >= 2) return [Math.min(...times), Math.max(...times)]
     if (times.length === 1) return [times[0], times[0] + MARKET_WINDOW_MS]
     return [nowMs - MARKET_WINDOW_MS, nowMs]
-  }, [chartData, predSeries, nowMs])
+  }, [chartData, nowMs])
 
   const xDefaultDomain = useMemo((): TimeDomain => {
     const [, end] = xFullDomain
@@ -350,120 +393,343 @@ export default function PredictionPage() {
     setFollowLiveX(true)
     setChartXDomain(xDefaultDomain)
   }
+  const toggleHorizon = (horizon: number) => {
+    setSelectedHorizons((current) =>
+      current.includes(horizon) ? current.filter((h) => h !== horizon) : [...current, horizon].sort((a, b) => a - b),
+    )
+  }
+  const saveModelSelection = async () => {
+    if (!selectedHorizons.length) {
+      setModelError('Select at least one model for live scoring.')
+      return
+    }
+    setModelBusy(true)
+    try {
+      const selected = await api.setActiveDirectionModels(selectedHorizons, modelKind)
+      const nextKind = selected.kind ?? modelKind
+      setLiveKind(nextKind)
+      setResult(null)
+      setModels((current) =>
+        current
+          ? {
+              ...current,
+              active_horizons: selected.horizons ?? selected.active_horizons ?? selectedHorizons,
+              active_kind: nextKind,
+            }
+          : current,
+      )
+      setModelError(null)
+    } catch (err) {
+      setModelError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setModelBusy(false)
+    }
+  }
+  const runModelJob = async () => {
+    setModelBusy(true)
+    try {
+      const job = await api.startDirectionModelJob({
+        action: modelAction,
+        kind: modelKind,
+        horizon_seconds: Number(modelHorizon),
+      })
+      setModels((current) => (current ? { ...current, job } : current))
+      setModelError(null)
+    } catch (err) {
+      setModelError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setModelBusy(false)
+    }
+  }
 
   return (
-    <section className="prediction-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Live model</p>
-          <h1>Up / Down movement</h1>
-          <p className="muted">
-            Price ticks and model scores stream over WebSocket (~0.5s). No HTTP polling.
-          </p>
-        </div>
-        {result && (
-          <div className="prediction-meta">
-            <span>Market {result.market_id}</span>
-            <span>Data {ageLabel(result.age_ms)}</span>
-          </div>
-        )}
-      </div>
-
-      {error && <p className="error">{error}</p>}
-      {!result && !error && !series.length && (
-        <div className="panel muted">Loading latest model prediction…</div>
-      )}
-
-      {(result || series.length > 0) && (
-        <>
-          <div className="prediction-glance">
-            <div className="prediction-price-now">
-              <div className="prediction-price-now-label">Current</div>
-              <div className="prediction-price-now-row">
-                <div className="prediction-price-pill prediction-up">
-                  <span>Up</span>
-                  <strong>{formatCentsTrade(upPrice)}</strong>
-                </div>
-                <div className="prediction-price-pill prediction-down">
-                  <span>Down</span>
-                  <strong>{formatCentsTrade(downPrice)}</strong>
-                </div>
-              </div>
+    <div className="workspace prediction-workspace">
+      <aside className="workspace-rail workspace-rail-left">
+        <div className="control-sidebar control-sidebar-embedded prediction-model-sidebar">
+          <div className="sidebar-section">
+            <div className="sidebar-heading mode-heading">
+              <span>Models</span>
+              <span className="mode-current-pill">{liveKind === 'beta' ? 'Beta' : 'Direction'}</span>
             </div>
-
-            <div className="prediction-chips">
-              {result ? (
-                result.predictions.map((prediction) => (
-                  <PredictionChip key={prediction.horizon_seconds} prediction={prediction} />
-                ))
-              ) : (
-                <div className="panel muted" style={{ gridColumn: '1 / -1' }}>
-                  Waiting for model score…
-                </div>
+            <p className="sidebar-hint">Choose family, select horizons, then apply to the live feed.</p>
+            <label className="sidebar-label">Family</label>
+            <select
+              value={modelKind}
+              onChange={(e) => {
+                const next = e.target.value as 'direction' | 'beta'
+                setModelKind(next)
+                setSelectedHorizons([])
+                setModels(null)
+              }}
+            >
+              <option value="direction">Direction classifier</option>
+              <option value="beta">Beta distribution</option>
+            </select>
+            {modelError && <p className="error">{modelError}</p>}
+            <div className="prediction-model-list">
+              {models?.models.map((model) => {
+                const metrics = model.evaluation ?? model.metrics
+                const active = selectedHorizons.includes(model.horizon_seconds)
+                return (
+                  <label
+                    className={`prediction-model-card${active ? ' is-active' : ''}`}
+                    key={model.id}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={active}
+                      onChange={() => toggleHorizon(model.horizon_seconds)}
+                    />
+                    <div className="prediction-model-card-body">
+                      <div className="prediction-model-card-top">
+                        <strong>{model.horizon_seconds}s</strong>
+                        <span>{active ? 'On' : 'Off'}</span>
+                      </div>
+                      <div className="prediction-model-metrics">
+                        {modelKind === 'beta' ? (
+                          <>
+                            <span>
+                              MAE{' '}
+                              <b>
+                                {typeof metrics?.mae === 'number' ? metrics.mae.toFixed(4) : '—'}
+                              </b>
+                            </span>
+                            <span>
+                              NLL{' '}
+                              <b>
+                                {typeof metrics?.beta_nll === 'number'
+                                  ? metrics.beta_nll.toFixed(3)
+                                  : '—'}
+                              </b>
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span>
+                              AUC <b>{typeof metrics?.auc === 'number' ? metrics.auc.toFixed(3) : '—'}</b>
+                            </span>
+                            <span>
+                              Acc{' '}
+                              <b>
+                                {typeof metrics?.accuracy === 'number'
+                                  ? formatPct(metrics.accuracy)
+                                  : '—'}
+                              </b>
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </label>
+                )
+              })}
+              {!models?.models.length && (
+                <p className="muted">
+                  {modelKind === 'beta'
+                    ? 'No Beta models yet — train one below.'
+                    : 'No trained models found.'}
+                </p>
               )}
             </div>
+            <button
+              type="button"
+              className="sidebar-btn primary full"
+              disabled={modelBusy || !selectedHorizons.length}
+              onClick={() => void saveModelSelection()}
+            >
+              Apply to live feed
+            </button>
+          </div>
 
-            {primary ? (
-              <div className={`prediction-callout ${primary.direction === 'UP' ? 'prediction-up' : 'prediction-down'}`}>
-                <span>Next move</span>
-                <strong>
-                  {primary.direction} ·{' '}
-                  {formatPct(primary.direction === 'UP' ? primary.probability_up : primary.probability_down)}
-                </strong>
-                <em>{primary.horizon_seconds}s model</em>
-              </div>
-            ) : (
-              <div className="prediction-callout">
-                <span>Next move</span>
-                <strong>—</strong>
-                <em>warming up</em>
+          <div className="sidebar-section sidebar-section-last">
+            <div className="sidebar-heading">Train / test</div>
+            <label className="sidebar-label">Action</label>
+            <select value={modelAction} onChange={(e) => setModelAction(e.target.value as 'train' | 'evaluate')}>
+              <option value="evaluate">Test saved model</option>
+              <option value="train">Train model</option>
+            </select>
+            <label className="sidebar-label">Horizon</label>
+            <select value={modelHorizon} onChange={(e) => setModelHorizon(e.target.value)}>
+              {[...new Set([3, 5, ...(models?.models.map((m) => m.horizon_seconds) ?? [])])]
+                .sort((a, b) => a - b)
+                .map((h) => (
+                  <option key={h} value={h}>
+                    {h}s
+                  </option>
+                ))}
+            </select>
+            <button
+              type="button"
+              className="sidebar-btn primary full"
+              disabled={modelBusy || models?.job?.status === 'running'}
+              onClick={() => void runModelJob()}
+            >
+              {models?.job?.status === 'running'
+                ? 'Running…'
+                : modelAction === 'train'
+                  ? 'Start training'
+                  : 'Run test'}
+            </button>
+            {models?.job && (
+              <div className={`prediction-job-panel prediction-job-${models.job.status}`}>
+                <div className="prediction-job-top">
+                  <span>
+                    {models.job.kind ?? 'direction'} · {models.job.action} · {models.job.horizon_seconds}s
+                  </span>
+                  <strong>{models.job.status}</strong>
+                </div>
+                <div className="prediction-job-bar" aria-hidden>
+                  <span style={{ width: `${Math.max(4, Math.min(100, models.job.progress || 0))}%` }} />
+                </div>
+                <p>{models.job.message}</p>
               </div>
             )}
           </div>
+        </div>
+      </aside>
 
-          <div className="prediction-charts-row">
-            <div className="panel prediction-chart-panel">
-              <PriceChart
-                data={chartData}
-                mode="outcomes"
-                title="Up / Down price"
-                xDomain={sharedXDomain}
-                onXDomainChange={onXDomainChange}
-                onXDomainReset={onXDomainReset}
-                xFullDomain={xFullDomain}
-                xDefaultDomain={xDefaultDomain}
-                followLive={followLiveX}
-                showFollowLive={!followLiveX}
-                onFollowLive={onXDomainReset}
-                hoverTime={hoverTime}
-                onHoverTimeChange={setHoverTime}
-              />
-            </div>
-            <div className="panel prediction-chart-panel">
-              <PredictionProbChart
-                data={predSeries}
-                xDomain={sharedXDomain}
-                hoverTime={hoverTime}
-                onHoverTimeChange={setHoverTime}
-                title="Prediction · P(Up move)"
-              />
-            </div>
+      <main className="workspace-main prediction-page">
+        <header className="prediction-header">
+          <div>
+            <p className="eyebrow">Prediction desk</p>
+            <h1>Up / Down</h1>
           </div>
+          <div className="prediction-status-strip">
+            <span className="prediction-live-dot" aria-hidden />
+            <span>Live WS</span>
+            <span className="prediction-status-sep" />
+            <span>Market {result?.market_id ?? '—'}</span>
+            <span className="prediction-status-sep" />
+            <span>{result ? ageLabel(result.age_ms) : 'warming up'}</span>
+            <span className="prediction-status-sep" />
+            <span>Coverage {result ? formatPct(result.feature_coverage) : '—'}</span>
+            <span className="prediction-status-sep" />
+            <span>{liveKind === 'beta' ? 'Beta density' : 'Direction'}</span>
+          </div>
+        </header>
 
-          <div className="panel prediction-note">
-            <strong>How to read this</strong>
-            <p>
-              Left chart is live Up/Down mid. Right chart is model P(Up) for 3s (solid) and 5s (dashed).
-              Above 50% leans Up; below 50% leans Down.
-            </p>
-            <p className="muted">
-              Feature coverage: {result ? formatPct(result.feature_coverage) : '—'} · Prediction samples:{' '}
-              {predSeries.length} · Last WS update:{' '}
-              {updatedAt ? new Date(updatedAt).toLocaleTimeString() : '—'}
-            </p>
-          </div>
-        </>
-      )}
-    </section>
+        {error && <p className="error prediction-error">{error}</p>}
+        {!result && !error && !series.length && (
+          <div className="panel prediction-loading muted">Connecting to live model feed…</div>
+        )}
+
+        {(result || series.length > 0) && (
+          <>
+            <div className="prediction-glance">
+              <div className="prediction-price-now">
+                <div className="prediction-section-label">Spot</div>
+                <div className="prediction-price-now-row">
+                  <div className="prediction-price-pill prediction-up">
+                    <span>Up</span>
+                    <strong>{formatCentsTrade(upPrice)}</strong>
+                  </div>
+                  <div className="prediction-price-pill prediction-down">
+                    <span>Down</span>
+                    <strong>{formatCentsTrade(downPrice)}</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="prediction-chips">
+                {result ? (
+                  result.predictions.map((prediction) => (
+                    <PredictionChip
+                      key={prediction.horizon_seconds}
+                      prediction={prediction}
+                      kind={liveKind}
+                    />
+                  ))
+                ) : (
+                  <div className="prediction-chip prediction-chip-empty muted">Waiting for model score…</div>
+                )}
+              </div>
+
+              <div
+                className={`prediction-callout ${
+                  primary ? (primary.direction === 'UP' ? 'prediction-up' : 'prediction-down') : ''
+                }`}
+              >
+                <div className="prediction-section-label">Signal</div>
+                {primary ? (
+                  <>
+                    <strong>
+                      {liveKind === 'beta' && primary.mean != null
+                        ? `μ ${formatCentsTrade(primary.mean)}`
+                        : `${primary.direction} ${formatPct(
+                            primary.direction === 'UP' ? primary.probability_up : primary.probability_down,
+                          )}`}
+                    </strong>
+                    <em>
+                      {primary.horizon_seconds}s · {liveKind === 'beta' ? 'Beta' : 'Direction'}
+                    </em>
+                  </>
+                ) : (
+                  <>
+                    <strong>—</strong>
+                    <em>warming up</em>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="prediction-charts-row">
+              <div className="panel prediction-chart-panel">
+                <PriceChart
+                  data={chartData}
+                  mode="outcomes"
+                  title="Up / Down price"
+                  xDomain={sharedXDomain}
+                  onXDomainChange={onXDomainChange}
+                  onXDomainReset={onXDomainReset}
+                  xFullDomain={xFullDomain}
+                  xDefaultDomain={xDefaultDomain}
+                  followLive={followLiveX}
+                  showFollowLive={!followLiveX}
+                  onFollowLive={onXDomainReset}
+                  hoverTime={hoverTime}
+                  onHoverTimeChange={setHoverTime}
+                />
+              </div>
+              <div className="panel prediction-chart-panel">
+                <PredictionDistChart
+                  distribution={result?.distribution ?? null}
+                  distributions={result?.distributions ?? null}
+                  predictions={result?.predictions ?? null}
+                  title="Predicted Up density"
+                />
+              </div>
+            </div>
+
+            <footer className="prediction-footer">
+              <span>Model {result?.model_kind ?? liveKind}</span>
+              <span>
+                Dist{' '}
+                {(result?.distributions?.length
+                  ? result.distributions
+                  : result?.distribution
+                    ? [result.distribution]
+                    : []
+                )
+                  .map((d) => `${d.horizon_seconds}s`)
+                  .join('+') || '—'}
+              </span>
+              {(result?.distributions?.length
+                ? result.distributions
+                : result?.distribution
+                  ? [result.distribution]
+                  : []
+              ).map((d) => (
+                <span key={d.horizon_seconds}>
+                  {d.horizon_seconds}s μ {formatCentsTrade(d.mean)}
+                </span>
+              ))}
+              <span>
+                Updated {updatedAt ? new Date(updatedAt).toLocaleTimeString() : '—'}
+              </span>
+            </footer>
+          </>
+        )}
+      </main>
+    </div>
   )
 }

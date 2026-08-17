@@ -535,6 +535,18 @@ export const api = {
   liveState: () => json<LiveTick>('/api/live/state'),
   liveDirectionPrediction: () =>
     json<LiveDirectionPrediction>('/api/live/direction-prediction', { cache: 'no-store' }),
+  directionModels: (kind: 'direction' | 'beta' = 'direction') =>
+    json<DirectionModelsResponse>(`/api/models/direction?kind=${kind}`, { cache: 'no-store' }),
+  setActiveDirectionModels: (horizons: number[], kind: 'direction' | 'beta' = 'direction') =>
+    json<DirectionModelsSelection>('/api/models/direction/active', {
+      method: 'PUT',
+      body: JSON.stringify({ horizons, kind }),
+    }),
+  startDirectionModelJob: (body: DirectionModelJobRequest) =>
+    json<DirectionModelJob>('/api/models/direction/jobs', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   liveSeries: (marketId?: string | null, lookbackMs = 300_000) => {
     const q = new URLSearchParams()
     if (marketId) q.set('market_id', marketId)
@@ -1079,6 +1091,11 @@ export type DirectionPrediction = {
   direction: 'UP' | 'DOWN'
   /** Zero is a 50/50 prediction; one is a 100/0 split. */
   confidence: number
+  mean?: number
+  variance?: number
+  std?: number
+  alpha?: number
+  beta?: number
 }
 
 export type DirectionHistoryPoint = {
@@ -1087,15 +1104,86 @@ export type DirectionHistoryPoint = {
   p_up_5s?: number | null
 }
 
+export type PredictionPdfPoint = {
+  x: number
+  density: number
+}
+
+export type PredictionDistribution = {
+  horizon_seconds: number
+  mean: number
+  variance: number
+  std: number
+  current_up: number
+  source?: string
+  family?: 'beta' | 'normal' | string
+  alpha?: number
+  beta?: number
+  pdf: PredictionPdfPoint[]
+}
+
 export type LiveDirectionPrediction = {
   market_id: string
   timestamp: number
   age_ms: number
   feature_coverage: number
   source?: 'parquet' | 'live_buffer' | string
+  model_kind?: 'direction' | 'beta' | string
   predictions: DirectionPrediction[]
   /** Recent scored rows so the chart has a curve on first paint. */
   history?: DirectionHistoryPoint[]
+  /** Predictive Up-price density for the primary horizon. */
+  distribution?: PredictionDistribution | null
+  /** Densities for every active horizon (e.g. 3s + 5s overlays). */
+  distributions?: PredictionDistribution[]
+}
+
+export type DirectionModelMetrics = {
+  accuracy?: number
+  auc?: number | null
+  n?: number
+  [key: string]: unknown
+}
+
+export type DirectionModel = {
+  id: string
+  horizon_seconds: number
+  path: string
+  modified_at: number
+  metrics?: DirectionModelMetrics | null
+  evaluation?: DirectionModelMetrics | null
+}
+
+export type DirectionModelJob = {
+  id: string
+  action: 'train' | 'evaluate'
+  horizon_seconds: number
+  status: 'running' | 'completed' | 'failed'
+  progress: number
+  message: string
+  result?: DirectionModelMetrics | null
+  kind?: 'direction' | 'beta'
+}
+
+export type DirectionModelsResponse = {
+  models: DirectionModel[]
+  active_horizons: number[]
+  active_kind?: 'direction' | 'beta'
+  job?: DirectionModelJob | null
+}
+
+export type DirectionModelsSelection = {
+  horizons?: number[]
+  active_horizons?: number[]
+  kind?: 'direction' | 'beta'
+}
+
+export type DirectionModelJobRequest = {
+  action: 'train' | 'evaluate'
+  kind?: 'direction' | 'beta'
+  horizon_seconds: number
+  min_move?: number
+  max_markets?: number | null
 }
 
 export function wsUrl(path: string): string {

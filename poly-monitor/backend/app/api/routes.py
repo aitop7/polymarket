@@ -1135,6 +1135,62 @@ async def live_state() -> dict[str, Any]:
     return await get_live_service().snapshot()
 
 
+class DirectionModelSelection(BaseModel):
+    horizons: list[float] = Field(min_length=1, max_length=8)
+    kind: str = Field(default="direction", pattern="^(direction|beta)$")
+
+
+class DirectionModelJobRequest(BaseModel):
+    action: str = Field(pattern="^(train|evaluate)$")
+    kind: str = Field(default="direction", pattern="^(direction|beta)$")
+    horizon_seconds: float = Field(gt=0, le=60)
+    min_move: float = Field(default=0.001, ge=0, le=0.1)
+    max_markets: int | None = Field(default=None, ge=10, le=10_000)
+
+
+@router.get("/models/direction")
+async def direction_models(kind: str = Query(default="direction", pattern="^(direction|beta)$")) -> dict[str, Any]:
+    """Available direction/Beta artifacts and the currently live selection."""
+    from app.ml.model_control import active_horizons, active_kind, available_models, job_status
+
+    live_kind = active_kind()
+    return {
+        "models": available_models(kind=kind),
+        "active_kind": live_kind,
+        "active_horizons": list(active_horizons()) if kind == live_kind else [],
+        "job": job_status(),
+    }
+
+
+@router.put("/models/direction/active")
+async def set_active_direction_models(body: DirectionModelSelection) -> dict[str, Any]:
+    from app.ml.model_control import select_live_models
+    from app.ml.predict_direction import clear_prediction_cache
+
+    try:
+        selected = select_live_models(kind=body.kind, horizons=body.horizons)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    clear_prediction_cache()
+    return selected
+
+
+@router.post("/models/direction/jobs")
+async def start_direction_model_job(body: DirectionModelJobRequest) -> dict[str, Any]:
+    from app.ml.model_control import start_job
+
+    try:
+        return start_job(
+            action=body.action,
+            horizon_seconds=body.horizon_seconds,
+            min_move=body.min_move,
+            max_markets=body.max_markets,
+            kind=body.kind,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.get("/live/direction-prediction")
 async def live_direction_prediction() -> dict[str, Any]:
     """Latest 3s/5s Up-vs-Down direction probabilities for the active market.
@@ -1144,9 +1200,12 @@ async def live_direction_prediction() -> dict[str, Any]:
     """
     from app.live import get_live_service
     from app.live.vps_sync import get_vps_sync
+    from app.ml.model_control import active_horizons, active_kind
     from app.ml.predict_direction import get_cached_prediction, predict_direction
 
     svc = get_live_service()
+    live_kind = active_kind()
+    horizons = active_horizons(kind=live_kind)
     market_id = str(svc._market_id or "")
     if not market_id:
         await svc.market_meta()
@@ -1154,7 +1213,7 @@ async def live_direction_prediction() -> dict[str, Any]:
     if not market_id:
         raise HTTPException(503, "No active market is available")
 
-    cached = get_cached_prediction(market_id)
+    cached = get_cached_prediction(market_id, horizons=horizons, model_kind=live_kind)
     if cached is not None:
         async def _bg_warm() -> None:
             try:
@@ -1170,11 +1229,13 @@ async def live_direction_prediction() -> dict[str, Any]:
                 await asyncio.to_thread(
                     predict_direction,
                     market_id,
+                    horizons=horizons,
                     series=list(inputs.get("series") or []),
                     snapshot=inputs.get("snapshot")
                     if isinstance(inputs.get("snapshot"), dict)
                     else None,
                     prefer_live=True,
+                    model_kind=live_kind,
                 )
             except Exception:
                 pass
@@ -1207,9 +1268,11 @@ async def live_direction_prediction() -> dict[str, Any]:
         return await asyncio.to_thread(
             predict_direction,
             market_id,
+            horizons=horizons,
             series=series,
             snapshot=snapshot,
             prefer_live=True,
+            model_kind=live_kind,
         )
     except FileNotFoundError as exc:
         raise HTTPException(503, str(exc)) from exc
@@ -1349,6 +1412,7 @@ async def ws_live(websocket: WebSocket) -> None:
 
         async def direction_sender() -> None:
             """Push direction model scores only when the client opts in."""
+            from app.ml.model_control import active_horizons, active_kind
             from app.ml.predict_direction import predict_direction
 
             while True:
@@ -1361,15 +1425,18 @@ async def ws_live(websocket: WebSocket) -> None:
                                     await svc.ensure_snapshot(max_age_s=0.5)
                                 except Exception:
                                     pass
+                            live_kind = active_kind()
                             inputs = svc.prediction_inputs(lookback_ms=300_000)
                             payload = await asyncio.to_thread(
                                 predict_direction,
                                 mid,
+                                horizons=active_horizons(kind=live_kind),
                                 series=list(inputs.get("series") or []),
                                 snapshot=inputs.get("snapshot")
                                 if isinstance(inputs.get("snapshot"), dict)
                                 else None,
                                 prefer_live=True,
+                                model_kind=live_kind,
                             )
                             await send_json({"type": "direction_prediction", **payload})
                 except WebSocketDisconnect:
