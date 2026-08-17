@@ -1137,31 +1137,79 @@ async def live_state() -> dict[str, Any]:
 
 @router.get("/live/direction-prediction")
 async def live_direction_prediction() -> dict[str, Any]:
-    """Latest 3s/5s Up-vs-Down direction probabilities for the active market."""
+    """Latest 3s/5s Up-vs-Down direction probabilities for the active market.
+
+    Returns a warm cache immediately when possible. Book/VPS refresh stays in
+    the background so UI polling is not blocked by REST depth fetches.
+    """
     from app.live import get_live_service
     from app.live.vps_sync import get_vps_sync
-    from app.ml.predict_direction import predict_direction
+    from app.ml.predict_direction import get_cached_prediction, predict_direction
 
     svc = get_live_service()
-    await svc.market_meta()
     market_id = str(svc._market_id or "")
+    if not market_id:
+        await svc.market_meta()
+        market_id = str(svc._market_id or "")
     if not market_id:
         raise HTTPException(503, "No active market is available")
 
-    # Best-effort: pull in-progress parquet from VPS when configured.
-    try:
-        await get_vps_sync().ensure_active_market(market_id, force=True)
-    except Exception:
-        pass
+    cached = get_cached_prediction(market_id)
+    if cached is not None:
+        async def _bg_warm() -> None:
+            try:
+                await svc.ensure_snapshot(max_age_s=0.75)
+            except Exception:
+                pass
+            try:
+                await get_vps_sync().ensure_active_market(market_id, force=True)
+            except Exception:
+                pass
+            try:
+                inputs = svc.prediction_inputs(lookback_ms=300_000)
+                await asyncio.to_thread(
+                    predict_direction,
+                    market_id,
+                    series=list(inputs.get("series") or []),
+                    snapshot=inputs.get("snapshot")
+                    if isinstance(inputs.get("snapshot"), dict)
+                    else None,
+                    prefer_live=True,
+                )
+            except Exception:
+                pass
 
-    snapshot = await svc.snapshot()
-    series_payload = svc.series(market_id, lookback_ms=300_000)
-    series = series_payload.get("series") if isinstance(series_payload, dict) else []
+        asyncio.create_task(_bg_warm())
+        return cached
+
+    if svc._last_snapshot is None:
+        try:
+            await svc.ensure_snapshot(max_age_s=0.5)
+        except Exception:
+            pass
+
+    async def _bg_refresh() -> None:
+        try:
+            await svc.ensure_snapshot(max_age_s=0.75)
+        except Exception:
+            pass
+        try:
+            await get_vps_sync().ensure_active_market(market_id, force=True)
+        except Exception:
+            pass
+
+    asyncio.create_task(_bg_refresh())
+
+    inputs = svc.prediction_inputs(lookback_ms=300_000)
+    series = list(inputs.get("series") or [])
+    snapshot = inputs.get("snapshot") if isinstance(inputs.get("snapshot"), dict) else None
     try:
-        return predict_direction(
+        return await asyncio.to_thread(
+            predict_direction,
             market_id,
-            series=list(series or []),
-            snapshot=snapshot if isinstance(snapshot, dict) else None,
+            series=series,
+            snapshot=snapshot,
+            prefer_live=True,
         )
     except FileNotFoundError as exc:
         raise HTTPException(503, str(exc)) from exc
@@ -1200,8 +1248,9 @@ async def live_holders(limit: int = 20) -> dict[str, Any]:
 async def ws_live(websocket: WebSocket) -> None:
     """Stream live market state. View-only; no order placement.
 
-    Client may send `{interval_s: 0.5}` on connect and later
-    `{type: "interval", interval_s: 0.1..2}` to change poll rate.
+    Client may send on connect (or later):
+      `{interval_s: 0.5}` — tick cadence
+      `{want_direction: true}` — also stream `direction_prediction` messages (~0.5s)
     """
     from app.live import get_live_service
 
@@ -1209,6 +1258,7 @@ async def ws_live(websocket: WebSocket) -> None:
     svc = get_live_service()
     last_market_id: str | None = None
     interval_s = 0.5
+    want_direction = False
 
     def _clamp_interval(raw: Any) -> float:
         try:
@@ -1221,8 +1271,11 @@ async def ws_live(websocket: WebSocket) -> None:
         # First client message sets poll interval (default 0.5s).
         try:
             init = await asyncio.wait_for(websocket.receive_json(), timeout=2.0)
-            if isinstance(init, dict) and "interval_s" in init:
-                interval_s = _clamp_interval(init.get("interval_s"))
+            if isinstance(init, dict):
+                if "interval_s" in init:
+                    interval_s = _clamp_interval(init.get("interval_s"))
+                if init.get("want_direction"):
+                    want_direction = True
         except (asyncio.TimeoutError, WebSocketDisconnect):
             pass
 
@@ -1232,13 +1285,15 @@ async def ws_live(websocket: WebSocket) -> None:
             await websocket.send_json(meta)
 
         async def reader() -> None:
-            nonlocal interval_s
+            nonlocal interval_s, want_direction
             while True:
                 msg = await websocket.receive_json()
                 if not isinstance(msg, dict):
                     continue
                 if msg.get("type") == "interval" or "interval_s" in msg:
                     interval_s = _clamp_interval(msg.get("interval_s"))
+                if msg.get("type") == "direction" or "want_direction" in msg:
+                    want_direction = bool(msg.get("want_direction", msg.get("enabled", True)))
 
         reader_task = asyncio.create_task(reader())
         send_lock = asyncio.Lock()
@@ -1292,9 +1347,50 @@ async def ws_live(websocket: WebSocket) -> None:
                     pass
                 await asyncio.sleep(8.0)
 
+        async def direction_sender() -> None:
+            """Push direction model scores only when the client opts in."""
+            from app.ml.predict_direction import predict_direction
+
+            while True:
+                try:
+                    if want_direction:
+                        mid = str(svc._market_id or "")
+                        if mid:
+                            if svc._last_snapshot is None:
+                                try:
+                                    await svc.ensure_snapshot(max_age_s=0.5)
+                                except Exception:
+                                    pass
+                            inputs = svc.prediction_inputs(lookback_ms=300_000)
+                            payload = await asyncio.to_thread(
+                                predict_direction,
+                                mid,
+                                series=list(inputs.get("series") or []),
+                                snapshot=inputs.get("snapshot")
+                                if isinstance(inputs.get("snapshot"), dict)
+                                else None,
+                                prefer_live=True,
+                            )
+                            await send_json({"type": "direction_prediction", **payload})
+                except WebSocketDisconnect:
+                    raise
+                except Exception as exc:
+                    if want_direction:
+                        try:
+                            await send_json(
+                                {
+                                    "type": "direction_prediction_error",
+                                    "message": str(exc),
+                                }
+                            )
+                        except Exception:
+                            pass
+                await asyncio.sleep(0.5)
+
         holders_task = asyncio.create_task(holders_sender())
         activity_task = asyncio.create_task(activity_sender())
         series_task = asyncio.create_task(series_sender())
+        direction_task = asyncio.create_task(direction_sender())
         try:
             last_start: int | None = None
             while True:
@@ -1346,8 +1442,15 @@ async def ws_live(websocket: WebSocket) -> None:
             holders_task.cancel()
             activity_task.cancel()
             series_task.cancel()
+            direction_task.cancel()
             reader_task.cancel()
-            for task in (holders_task, activity_task, series_task, reader_task):
+            for task in (
+                holders_task,
+                activity_task,
+                series_task,
+                direction_task,
+                reader_task,
+            ):
                 try:
                     await task
                 except asyncio.CancelledError:

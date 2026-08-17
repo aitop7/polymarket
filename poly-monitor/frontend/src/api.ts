@@ -1081,6 +1081,12 @@ export type DirectionPrediction = {
   confidence: number
 }
 
+export type DirectionHistoryPoint = {
+  timestamp: number
+  p_up_3s?: number | null
+  p_up_5s?: number | null
+}
+
 export type LiveDirectionPrediction = {
   market_id: string
   timestamp: number
@@ -1088,6 +1094,8 @@ export type LiveDirectionPrediction = {
   feature_coverage: number
   source?: 'parquet' | 'live_buffer' | string
   predictions: DirectionPrediction[]
+  /** Recent scored rows so the chart has a curve on first paint. */
+  history?: DirectionHistoryPoint[]
 }
 
 export function wsUrl(path: string): string {

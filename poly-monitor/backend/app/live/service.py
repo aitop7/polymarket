@@ -136,6 +136,8 @@ class LiveMarketService:
         self._series_market_id: str | None = None
         self._last_btc_price: float | None = None
         self._last_binance_book: dict[str, Any] | None = None
+        self._last_snapshot: dict[str, Any] | None = None
+        self._last_snapshot_at = 0.0
         self._holders_cache: dict[str, Any] | None = None
         self._holders_cache_at = 0.0
         self._ptb_refine_task: asyncio.Task[None] | None = None
@@ -959,7 +961,71 @@ class LiveMarketService:
             }
         )
         self._record_series_point(snap)
+        self._last_snapshot = snap
+        self._last_snapshot_at = time.monotonic()
         return snap
+
+    async def ensure_snapshot(self, *, max_age_s: float = 0.75) -> dict[str, Any]:
+        """Return a recent snapshot, refreshing only when the cache is stale.
+
+        The direction-prediction endpoint polls sub-second; reusing a <1s-old
+        book avoids paying REST depth/CLOB latency on every request.
+        """
+        age = time.monotonic() - self._last_snapshot_at
+        if (
+            self._last_snapshot is not None
+            and age < max(0.05, float(max_age_s))
+            and str(self._last_snapshot.get("market_id") or "") == str(self._market_id or "")
+        ):
+            return self._last_snapshot
+        return await self.snapshot()
+
+    def prediction_inputs(self, *, lookback_ms: int = 300_000) -> dict[str, Any]:
+        """In-memory series + last snapshot only — no network / parquet I/O.
+
+        Used by the high-frequency direction-prediction endpoint so scoring stays
+        on the live clock instead of waiting for REST books or disk sync.
+        """
+        mid = str(self._market_id or "") or None
+        now_ms = int(time.time() * 1000)
+        lookback = max(30_000, min(int(lookback_ms), 600_000))
+        cutoff = now_ms - lookback
+        if self._window_start_ms is not None:
+            cutoff = max(int(self._window_start_ms) - 2_000, cutoff)
+
+        feed = self._twap_feed_series(cutoff)
+        buf = list(self._series) if (mid is None or mid == self._series_market_id) else []
+        merged = merge_series(feed, buf)
+        merged = [p for p in merged if int(p["t"]) >= cutoff]
+        merged = scrub_leading_outcome_extremes(merged)
+        merged = break_outcome_jumps(merged)
+
+        snap = self._last_snapshot
+        if isinstance(snap, dict) and mid and str(snap.get("market_id") or "") not in ("", mid):
+            snap = None
+        if snap is None and mid:
+            # Minimal stub so feature engineering still has window bounds / mids.
+            last = merged[-1] if merged else {}
+            snap = {
+                "timestamp": int(last.get("t") or now_ms),
+                "market_id": mid,
+                "start_time": self._window_start_ms,
+                "end_time": self._window_end_ms,
+                "btc_price": last.get("btc") if last else self._last_btc_price,
+                "up_price": last.get("up") if last else None,
+                "down_price": last.get("down") if last else None,
+                "btc_chainlink": last.get("chainlink") if last else None,
+                "btc_twap_30s": last.get("twap") if last else None,
+                "binance_book": self._last_binance_book,
+            }
+
+        return {
+            "market_id": mid,
+            "start_time": self._window_start_ms,
+            "end_time": self._window_end_ms,
+            "series": merged,
+            "snapshot": snap,
+        }
 
     async def holders(self, *, limit: int = 20) -> dict[str, Any]:
         """Top Up/Down holders for the active market (cached ~0.15s)."""
