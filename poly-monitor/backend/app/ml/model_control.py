@@ -24,6 +24,11 @@ from app.ml.train_predict_up_beta import (
     evaluate_beta_horizon,
     train_beta_horizon,
 )
+from app.ml.train_predict_up_beta_ct import (
+    continuous_model_ready,
+    evaluate_beta_continuous,
+    train_beta_continuous,
+)
 
 _LOCK = threading.Lock()
 _ACTIVE_FILE = settings.models_dir / "direction_active_horizons.json"
@@ -114,15 +119,34 @@ def active_horizons(*, kind: str | None = None) -> tuple[float, ...]:
 
 
 def select_live_models(*, kind: str, horizons: list[float]) -> dict[str, Any]:
-    """Persist which model family and horizons drive the live Prediction feed."""
+    """Persist which model family and horizons drive the live Prediction feed.
+
+    For Beta/level density families, any t in (0, 60] is allowed once at least one
+    artifact exists — missing horizons are interpolated by ``future_up_price_pdf``.
+    Direction classifiers still require an exact trained artifact per horizon.
+    """
     if kind not in {"direction", "beta"}:
         raise ValueError("kind must be direction or beta")
-    available = {float(row["horizon_seconds"]) for row in available_models(kind=kind)}
-    if not available:
-        raise ValueError(f"No trained {kind} models available yet")
-    selected = tuple(sorted({float(v) for v in horizons if float(v) in available}))
+    selected = tuple(sorted({float(v) for v in horizons if 0 < float(v) <= 60}))
     if not selected:
-        raise ValueError(f"Select at least one available {kind} model")
+        raise ValueError("Select at least one horizon in (0, 60] seconds")
+
+    if kind == "beta":
+        from app.ml.price_distribution import available_pdf_horizons
+        from app.ml.train_predict_up_beta_ct import continuous_model_ready
+
+        if not continuous_model_ready() and not available_pdf_horizons("beta"):
+            raise ValueError("No trained beta models available yet (train continuous-t or a fixed horizon)")
+    else:
+        available = {float(row["horizon_seconds"]) for row in available_models(kind=kind)}
+        if not available:
+            raise ValueError(f"No trained {kind} models available yet")
+        missing = [h for h in selected if h not in available]
+        if missing:
+            raise ValueError(
+                f"Direction models missing for horizons: {', '.join(f'{h:g}s' for h in missing)}"
+            )
+
     settings.models_dir.mkdir(parents=True, exist_ok=True)
     payload = {"kind": kind, "horizons": list(selected)}
     _ACTIVE_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -142,8 +166,8 @@ def start_job(
     *, action: str, horizon_seconds: float, min_move: float, max_markets: int | None, kind: str = "direction"
 ) -> dict[str, Any]:
     """Start one train/evaluate job; concurrent training corrupts shared artifacts."""
-    if action not in {"train", "evaluate"} or kind not in {"direction", "beta"}:
-        raise ValueError("action must be train or evaluate")
+    if action not in {"train", "evaluate"} or kind not in {"direction", "beta", "beta_ct"}:
+        raise ValueError("action must be train or evaluate; kind must be direction, beta, or beta_ct")
     with _LOCK:
         global _JOB
         if _JOB and _JOB.get("status") == "running":
@@ -169,7 +193,16 @@ def start_job(
 
     def run() -> None:
         try:
-            if kind == "beta" and action == "train":
+            if kind == "beta_ct" and action == "train":
+                result = train_beta_continuous(
+                    max_markets=max_markets,
+                    progress_cb=progress,
+                )
+                summary = result.get("metrics", {}).get("test")
+            elif kind == "beta_ct":
+                result = evaluate_beta_continuous(max_markets=max_markets)
+                summary = result.get("metrics")
+            elif kind == "beta" and action == "train":
                 result = train_beta_horizon(
                     horizon_seconds=float(horizon_seconds),
                     max_markets=max_markets,
@@ -205,5 +238,6 @@ def start_job(
                 if _JOB:
                     _JOB.update(status="failed", message=str(exc))
 
-    threading.Thread(target=run, name=f"{kind}-{action}-{_horizon_tag(horizon_seconds)}", daemon=True).start()
+    thread_name = f"{kind}-{action}-{_horizon_tag(horizon_seconds if kind != 'beta_ct' else 0)}"
+    threading.Thread(target=run, name=thread_name, daemon=True).start()
     return job_status() or {}

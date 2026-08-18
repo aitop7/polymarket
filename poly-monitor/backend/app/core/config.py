@@ -63,6 +63,11 @@ class Settings(BaseSettings):
         return self.fetch_real_root / "features"
 
     @property
+    def features_live_dir(self) -> Path:
+        """Engineered live features for predict_up / direction / beta training."""
+        return self.fetch_real_root / "features_live"
+
+    @property
     def models_dir(self) -> Path:
         return self.fetch_real_root / "models"
 

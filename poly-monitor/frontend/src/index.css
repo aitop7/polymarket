@@ -527,6 +527,16 @@ select {
   padding: 0.65rem 0.75rem 0.75rem;
 }
 
+.prediction-chart-panel .chart-wrap {
+  background: linear-gradient(180deg, #f1f5f9 0%, #ffffff 42%);
+  border-radius: 10px;
+}
+
+.prediction-chart-panel .recharts-cartesian-grid-horizontal line,
+.prediction-chart-panel .recharts-cartesian-grid-vertical line {
+  stroke: #e2e8f0;
+}
+
 .prediction-charts-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

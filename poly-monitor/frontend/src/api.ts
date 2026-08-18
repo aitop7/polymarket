@@ -535,6 +535,11 @@ export const api = {
   liveState: () => json<LiveTick>('/api/live/state'),
   liveDirectionPrediction: () =>
     json<LiveDirectionPrediction>('/api/live/direction-prediction', { cache: 'no-store' }),
+  livePriceDistribution: (tSeconds: number, family: 'beta' | 'level' = 'beta') =>
+    json<PredictionDistribution & { market_id?: string; t_seconds?: number; probability_up?: number }>(
+      `/api/live/price-distribution?t=${encodeURIComponent(String(tSeconds))}&family=${family}`,
+      { cache: 'no-store' },
+    ),
   directionModels: (kind: 'direction' | 'beta' = 'direction') =>
     json<DirectionModelsResponse>(`/api/models/direction?kind=${kind}`, { cache: 'no-store' }),
   setActiveDirectionModels: (horizons: number[], kind: 'direction' | 'beta' = 'direction') =>
@@ -1102,6 +1107,7 @@ export type DirectionHistoryPoint = {
   timestamp: number
   p_up_3s?: number | null
   p_up_5s?: number | null
+  [key: string]: number | null | undefined
 }
 
 export type PredictionPdfPoint = {
@@ -1162,13 +1168,14 @@ export type DirectionModelJob = {
   progress: number
   message: string
   result?: DirectionModelMetrics | null
-  kind?: 'direction' | 'beta'
+  kind?: 'direction' | 'beta' | 'beta_ct'
 }
 
 export type DirectionModelsResponse = {
   models: DirectionModel[]
   active_horizons: number[]
   active_kind?: 'direction' | 'beta'
+  continuous_t_ready?: boolean
   job?: DirectionModelJob | null
 }
 
@@ -1180,7 +1187,7 @@ export type DirectionModelsSelection = {
 
 export type DirectionModelJobRequest = {
   action: 'train' | 'evaluate'
-  kind?: 'direction' | 'beta'
+  kind?: 'direction' | 'beta' | 'beta_ct'
   horizon_seconds: number
   min_move?: number
   max_markets?: number | null

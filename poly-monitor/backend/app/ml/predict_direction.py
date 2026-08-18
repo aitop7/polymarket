@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import threading
 import time
 from typing import Any
@@ -21,19 +20,10 @@ from app.ml.train_predict_up import (
     metrics_filename,
     model_filename,
 )
-from app.ml.train_predict_up_beta import (
-    _moments_to_beta,
-    beta_logvar_filename,
-    beta_mean_filename,
-    beta_metrics_filename,
-)
 
 _MODELS: dict[float, tuple[float, lgb.Booster]] = {}
 _LEVEL_MODELS: dict[float, tuple[float, lgb.Booster]] = {}
 _LEVEL_STD: dict[float, float] = {}
-_BETA_MEAN_MODELS: dict[float, tuple[float, lgb.Booster]] = {}
-_BETA_VAR_MODELS: dict[float, tuple[float, lgb.Booster]] = {}
-_BETA_RESIDUAL_VAR: dict[float, float] = {}
 
 # Hot-path caches. LightGBM on a single row / small batch is already <<50ms on CPU;
 # GPU would add PCIe transfer overhead and is not used for this workload.
@@ -103,92 +93,10 @@ def _normal_pdf(xs: np.ndarray, mean: float, std: float) -> np.ndarray:
     return (1.0 / (std * np.sqrt(2.0 * np.pi))) * np.exp(-0.5 * z * z)
 
 
-def _load_beta_heads(horizon_seconds: float) -> tuple[lgb.Booster, lgb.Booster]:
-    h = float(horizon_seconds)
-    mean_path = settings.models_dir / beta_mean_filename(h)
-    var_path = settings.models_dir / beta_logvar_filename(h)
-    if not mean_path.is_file() or not var_path.is_file():
-        raise FileNotFoundError(f"Beta model not found for h={h:g}s")
-    mean_stamp = mean_path.stat().st_mtime
-    var_stamp = var_path.stat().st_mtime
-    mean_cached = _BETA_MEAN_MODELS.get(h)
-    var_cached = _BETA_VAR_MODELS.get(h)
-    if mean_cached is None or mean_cached[0] != mean_stamp:
-        _BETA_MEAN_MODELS[h] = (mean_stamp, lgb.Booster(model_file=str(mean_path)))
-    if var_cached is None or var_cached[0] != var_stamp:
-        _BETA_VAR_MODELS[h] = (var_stamp, lgb.Booster(model_file=str(var_path)))
-    return _BETA_MEAN_MODELS[h][1], _BETA_VAR_MODELS[h][1]
-
-
-def _beta_residual_var(horizon_seconds: float) -> float:
-    """Held-out MSE floor so live Beta widths match calibration, not under-dispersed heads."""
-    h = float(horizon_seconds)
-    cached = _BETA_RESIDUAL_VAR.get(h)
-    if cached is not None:
-        return cached
-    floor = 0.04 ** 2
-    path = settings.models_dir / beta_metrics_filename(h)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        test = payload.get("test") or {}
-        rmse = test.get("rmse")
-        mse = test.get("mean_realized_squared_error")
-        if mse is not None and float(mse) > 0:
-            floor = float(mse)
-        elif rmse is not None and float(rmse) > 0:
-            floor = float(rmse) ** 2
-    except (OSError, ValueError, TypeError, AttributeError):
-        pass
-    _BETA_RESIDUAL_VAR[h] = floor
-    return floor
-
-
-def _beta_pdf(xs: np.ndarray, alpha: float, beta: float) -> np.ndarray:
-    a = max(1e-3, float(alpha))
-    b = max(1e-3, float(beta))
-    log_norm = math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
-    x = np.clip(xs, 1e-6, 1.0 - 1e-6)
-    return np.exp((a - 1.0) * np.log(x) + (b - 1.0) * np.log1p(-x) - log_norm)
-
-
-def _beta_pdf_curve(alpha: float, beta: float, *, mean: float, std: float) -> tuple[np.ndarray, np.ndarray]:
-    """Sample Beta density on [0, 1] with extra resolution near the mode (not a Normal zoom)."""
-    a = max(1e-3, float(alpha))
-    b = max(1e-3, float(beta))
-    if a > 1.0 and b > 1.0:
-        mode = (a - 1.0) / (a + b - 2.0)
-    elif a > 1.0:
-        mode = 1.0 - 1e-4
-    elif b > 1.0:
-        mode = 1e-4
-    else:
-        mode = float(mean)
-
-    support = np.linspace(1e-4, 1.0 - 1e-4, 121)
-    half = max(0.04, min(0.35, 8.0 * max(float(std), 0.01)))
-    local = np.linspace(max(1e-4, mode - half), min(1.0 - 1e-4, mode + half), 81)
-    xs = np.unique(np.sort(np.concatenate([support, local, [float(mean), mode]])))
-    dens = _beta_pdf(xs, a, b)
-    return xs, dens
-
-
-def _calibrate_beta_moments(
-    mu: float, raw_var: float, *, horizon_seconds: float
-) -> tuple[float, float, float, float, float]:
-    """Return mean, variance, std, alpha, beta with a held-out variance floor."""
-    mean = float(np.clip(mu, 1e-4, 1.0 - 1e-4))
-    max_var = mean * (1.0 - mean) * 0.995
-    floor = _beta_residual_var(horizon_seconds)
-    # Blend keeps some state-dependence while preventing Normal-looking ultra-peaks.
-    var = float(min(max(float(raw_var), floor), max_var))
-    alpha_arr, beta_arr = _moments_to_beta(np.array([mean]), np.array([var]))
-    alpha = float(alpha_arr[0])
-    beta = float(beta_arr[0])
-    return mean, var, float(math.sqrt(var)), alpha, beta
-
-
 def _score_beta_row(row: pd.Series, *, horizons: tuple[float, ...]) -> dict[str, Any]:
-    """Score Beta mean/variance heads and return chip-compatible predictions."""
+    """Score Beta density heads for each requested horizon t (exact or interpolated)."""
+    from app.ml.price_distribution import future_up_price_pdf
+
     values = pd.to_numeric(row.reindex(FEATURE_COLUMNS), errors="coerce").to_numpy(dtype=np.float32)
     feature_coverage = float(np.mean(np.isfinite(values)))
     if feature_coverage < 0.25:
@@ -203,28 +111,25 @@ def _score_beta_row(row: pd.Series, *, horizons: tuple[float, ...]) -> dict[str,
 
     predictions: list[dict[str, Any]] = []
     for horizon in horizons:
-        mean_model, var_model = _load_beta_heads(float(horizon))
-        mu = float(np.clip(mean_model.predict(values.reshape(1, -1))[0], 1e-4, 1.0 - 1e-4))
-        raw_var = float(np.exp(np.clip(var_model.predict(values.reshape(1, -1))[0], math.log(1e-6), math.log(0.25))))
-        mean, var, std, alpha, beta = _calibrate_beta_moments(mu, raw_var, horizon_seconds=float(horizon))
-        xs = np.linspace(1e-4, 1.0 - 1e-4, 401)
-        dens = _beta_pdf(xs, alpha, beta)
-        trapz = getattr(np, "trapezoid", None) or np.trapz
-        rise_mask = xs > float(current)
-        p_up = float(trapz(dens[rise_mask], xs[rise_mask]) / max(1e-12, trapz(dens, xs)))
-        p_up = float(np.clip(p_up, 0.0, 1.0))
+        dist = future_up_price_pdf(
+            float(horizon),
+            values,
+            family="beta",
+            current_up=float(current),
+        )
         predictions.append(
             {
                 "horizon_seconds": float(horizon),
-                "probability_up": p_up,
-                "probability_down": 1.0 - p_up,
-                "direction": "UP" if p_up >= 0.5 else "DOWN",
-                "confidence": abs(p_up - 0.5) * 2.0,
-                "mean": mean,
-                "variance": var,
-                "std": std,
-                "alpha": alpha,
-                "beta": beta,
+                "probability_up": dist["probability_up"],
+                "probability_down": dist["probability_down"],
+                "direction": dist["direction"],
+                "confidence": dist["confidence"],
+                "mean": dist["mean"],
+                "variance": dist["variance"],
+                "std": dist["std"],
+                "alpha": dist["alpha"],
+                "beta": dist["beta"],
+                "source": dist.get("source"),
             }
         )
 
@@ -246,49 +151,40 @@ def _predict_distribution_for_horizon(
     direction_predictions: list[dict[str, Any]] | None = None,
     family: str = "level",
 ) -> dict[str, Any] | None:
-    """Build a predictive Up-price density for one horizon."""
+    """Build a predictive Up-price density for one horizon t via future_up_price_pdf."""
+    from app.ml.price_distribution import future_up_price_pdf
+
     current = _finite(row.get("up_mid"))
     if current is None:
         current = _finite(row.get("up_price"))
     if current is None:
         current = 0.5
 
-    if family == "beta":
-        for pred in direction_predictions or []:
-            if abs(float(pred.get("horizon_seconds", -1)) - float(horizon)) < 1e-9 and pred.get("alpha") is not None:
-                mean = float(pred["mean"])
-                variance = float(pred["variance"])
-                std = float(pred["std"])
-                alpha = float(pred["alpha"])
-                beta = float(pred["beta"])
-                xs, dens = _beta_pdf_curve(alpha, beta, mean=mean, std=std)
-                return {
-                    "horizon_seconds": float(horizon),
-                    "mean": mean,
-                    "variance": variance,
-                    "std": std,
-                    "alpha": alpha,
-                    "beta": beta,
-                    "current_up": float(current),
-                    "source": "beta",
-                    "family": "beta",
-                    "pdf": [{"x": float(x), "density": float(y)} for x, y in zip(xs, dens)],
-                }
-        return None
-
-    mean: float | None = None
-    std: float | None = None
-    source = "level"
+    pdf_family = "beta" if family == "beta" else "level"
     try:
         values = pd.to_numeric(row.reindex(FEATURE_COLUMNS), errors="coerce").to_numpy(dtype=np.float32)
-        coverage = float(np.mean(np.isfinite(values)))
-        if coverage < 0.25:
-            raise RuntimeError("level coverage too low")
-        raw = float(_load_level_model(float(horizon)).predict(values.reshape(1, -1))[0])
-        mean = float(np.clip(raw, 0.0, 1.0))
-        std = max(0.005, _level_residual_std(float(horizon)))
-    except Exception:
-        source = "direction_approx"
+        dist = future_up_price_pdf(
+            float(horizon),
+            values,
+            family=pdf_family,  # type: ignore[arg-type]
+            current_up=float(current),
+        )
+        return {
+            "horizon_seconds": float(horizon),
+            "mean": dist["mean"],
+            "variance": dist["variance"],
+            "std": dist["std"],
+            "alpha": dist.get("alpha"),
+            "beta": dist.get("beta"),
+            "current_up": float(current),
+            "source": dist.get("source"),
+            "family": dist.get("family"),
+            "pdf": dist["pdf"],
+        }
+    except FileNotFoundError:
+        # Fall back to direction-approx Normal when no density artifacts exist.
+        if pdf_family == "beta":
+            return None
         p_up = 0.5
         for pred in direction_predictions or []:
             if abs(float(pred.get("horizon_seconds", -1)) - float(horizon)) < 1e-9:
@@ -298,25 +194,22 @@ def _predict_distribution_for_horizon(
         sign = 1.0 if p_up >= 0.5 else -1.0
         mean = float(np.clip(current + sign * expected_move, 0.0, 1.0))
         std = 0.04
-
-    variance = float(std * std)
-    xs = np.linspace(1e-4, 1.0 - 1e-4, 161, dtype=np.float64)
-    dens = _normal_pdf(xs, mean, std)
-    trapz = getattr(np, "trapezoid", None) or np.trapz
-    area = float(trapz(dens, xs)) if len(xs) > 1 else 1.0
-    if area > 0:
-        dens = dens / area
-
-    return {
-        "horizon_seconds": float(horizon),
-        "mean": mean,
-        "variance": variance,
-        "std": float(std),
-        "current_up": float(current),
-        "source": source,
-        "family": "normal",
-        "pdf": [{"x": float(x), "density": float(y)} for x, y in zip(xs, dens)],
-    }
+        xs = np.linspace(1e-4, 1.0 - 1e-4, 161, dtype=np.float64)
+        dens = _normal_pdf(xs, mean, std)
+        trapz = getattr(np, "trapezoid", None) or np.trapz
+        area = float(trapz(dens, xs)) if len(xs) > 1 else 1.0
+        if area > 0:
+            dens = dens / area
+        return {
+            "horizon_seconds": float(horizon),
+            "mean": mean,
+            "variance": float(std * std),
+            "std": float(std),
+            "current_up": float(current),
+            "source": "direction_approx",
+            "family": "normal",
+            "pdf": [{"x": float(x), "density": float(y)} for x, y in zip(xs, dens)],
+        }
 
 
 def _predict_distribution(
@@ -544,6 +437,16 @@ def _history_point(scored: dict[str, Any]) -> dict[str, Any]:
         horizon = float(pred["horizon_seconds"])
         tag = f"{horizon:g}".replace(".", "p")
         point[f"p_up_{tag}s"] = float(pred["probability_up"])
+        if pred.get("mean") is not None:
+            try:
+                point[f"mean_{tag}s"] = float(pred["mean"])
+            except (TypeError, ValueError):
+                pass
+        if pred.get("std") is not None:
+            try:
+                point[f"std_{tag}s"] = float(pred["std"])
+            except (TypeError, ValueError):
+                pass
     return point
 
 

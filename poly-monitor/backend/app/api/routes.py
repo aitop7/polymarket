@@ -1142,8 +1142,8 @@ class DirectionModelSelection(BaseModel):
 
 class DirectionModelJobRequest(BaseModel):
     action: str = Field(pattern="^(train|evaluate)$")
-    kind: str = Field(default="direction", pattern="^(direction|beta)$")
-    horizon_seconds: float = Field(gt=0, le=60)
+    kind: str = Field(default="direction", pattern="^(direction|beta|beta_ct)$")
+    horizon_seconds: float = Field(default=3.0, gt=0, le=60)
     min_move: float = Field(default=0.001, ge=0, le=0.1)
     max_markets: int | None = Field(default=None, ge=10, le=10_000)
 
@@ -1152,12 +1152,14 @@ class DirectionModelJobRequest(BaseModel):
 async def direction_models(kind: str = Query(default="direction", pattern="^(direction|beta)$")) -> dict[str, Any]:
     """Available direction/Beta artifacts and the currently live selection."""
     from app.ml.model_control import active_horizons, active_kind, available_models, job_status
+    from app.ml.train_predict_up_beta_ct import continuous_model_ready
 
     live_kind = active_kind()
     return {
         "models": available_models(kind=kind),
         "active_kind": live_kind,
         "active_horizons": list(active_horizons()) if kind == live_kind else [],
+        "continuous_t_ready": continuous_model_ready(),
         "job": job_status(),
     }
 
@@ -1189,6 +1191,70 @@ async def start_direction_model_job(body: DirectionModelJobRequest) -> dict[str,
         )
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/live/price-distribution")
+async def live_price_distribution(
+    t: float = Query(..., gt=0, le=60, description="Horizon seconds ahead"),
+    family: str = Query(default="beta", pattern="^(beta|level)$"),
+) -> dict[str, Any]:
+    """Predictive PDF of Up price t seconds later for the active market tip.
+
+    Uses ``future_up_price_pdf``: exact trained horizon when available, otherwise
+    interpolates moments between neighboring trained horizons.
+    """
+    from app.live import get_live_service
+    from app.ml.price_distribution import future_up_price_pdf
+    from app.ml.predict_direction import _frame_from_live_snapshot
+
+    svc = get_live_service()
+    try:
+        await svc.ensure_snapshot(max_age_s=0.75)
+    except Exception:
+        pass
+    inputs = svc.prediction_inputs(lookback_ms=120_000)
+    snapshot = inputs.get("snapshot") if isinstance(inputs.get("snapshot"), dict) else None
+    series = list(inputs.get("series") or [])
+    if not snapshot and not series:
+        raise HTTPException(503, "No live market tip available yet")
+
+    market_id = str(svc._market_id or (snapshot or {}).get("market_id") or "")
+    if not market_id:
+        raise HTTPException(503, "No active market is available")
+    try:
+        live_df = _frame_from_live_snapshot(market_id=market_id, series=series, snapshot=snapshot or {})
+        if live_df.empty:
+            raise RuntimeError("empty live features")
+        row = live_df.iloc[-1]
+    except Exception as exc:
+        raise HTTPException(503, f"Could not engineer live features: {exc}") from exc
+
+    current = row.get("up_mid")
+    try:
+        current_f = float(current) if current is not None else None
+        if current_f is not None and not (current_f == current_f):  # NaN
+            current_f = None
+    except (TypeError, ValueError):
+        current_f = None
+    if current_f is None:
+        try:
+            current_f = float(row.get("up_price"))
+        except (TypeError, ValueError):
+            current_f = None
+
+    try:
+        dist = await asyncio.to_thread(
+            future_up_price_pdf,
+            float(t),
+            row,
+            family=family,  # type: ignore[arg-type]
+            current_up=current_f,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return {"market_id": market_id, **dist}
 
 
 @router.get("/live/direction-prediction")

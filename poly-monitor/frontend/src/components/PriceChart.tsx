@@ -43,11 +43,21 @@ type Point = {
   chainlink?: number | null
   up?: number | null
   down?: number | null
+  /** Predicted Up mid (0–1), overlaid on outcomes chart */
+  upPred?: number | null
+  /** Optional ± band around upPred (0–1) */
+  upPredLo?: number | null
+  upPredHi?: number | null
 }
 
 type ChartPoint = Point & {
   upPct?: number
   downPct?: number
+  upPredPct?: number
+  upPredLoPct?: number
+  upPredHiPct?: number
+  /** hi − lo for stacked confidence band */
+  upPredBandPct?: number
   upEma?: number
   downEma?: number
   upSavgol?: number
@@ -101,6 +111,11 @@ type Props = {
   traderMarks?: TraderMark[]
   /** External highlight (e.g. activity-row hover): vertical cursor + emphasized mark */
   highlightTime?: number | null
+  /**
+   * Outcomes: bridge stub/jump gaps instead of leaving holes.
+   * Use on prediction desk where a continuous live path matters more than hiding flashes.
+   */
+  bridgeOutcomeGaps?: boolean
   /** Outcomes mode: show EMA overlays on Up/Down */
   showEma?: boolean
   onShowEmaChange?: (next: boolean) => void
@@ -288,6 +303,9 @@ function formatTipDateTime(ms: number): string {
 type ChartDatum = Point & {
   upPct?: number | null
   downPct?: number | null
+  upPredPct?: number | null
+  upPredLoPct?: number | null
+  upPredHiPct?: number | null
   upEma?: number | null
   downEma?: number | null
   upSavgol?: number | null
@@ -374,20 +392,36 @@ function isStubOutcome(v: number): boolean {
  * - Drop leading stubs until a mid-range quote exists
  * - Drop stub / huge jumps (leave a gap; do not forward-fill across them)
  * - Forward-fill only when this tick has no Up/Down quote (BTC-only rows)
+ * - Do not forward-fill into prediction-only forward stubs (live price ends at "now")
+ * - bridgeGaps: carry last good quote across stub/jump flashes (continuous path)
  */
 function mapOutcomesChartData(
   data: Point[],
   emaPeriod: number,
   savgolWindow = DEFAULT_SAVGOL_WINDOW,
   savgolPoly = DEFAULT_SAVGOL_POLY,
+  bridgeGaps = false,
 ): ChartPoint[] {
-  const MAX_JUMP_PCT = 45
+  const MAX_JUMP_PCT = bridgeGaps ? 70 : 45
   let seenMid = false
   let lastUpPct: number | undefined
   let lastDownPct: number | undefined
   const mapped: ChartPoint[] = []
 
+  // Strictly increasing time — duplicate/out-of-order rows make Recharts draw backward.
+  const deduped: Point[] = []
+  const byT = new Map<number, Point>()
   for (const d of data) {
+    const t = Number(d.t)
+    if (!Number.isFinite(t)) continue
+    const prev = byT.get(t)
+    byT.set(t, prev ? { ...prev, ...d, t } : { ...d, t })
+  }
+  for (const t of [...byT.keys()].sort((a, b) => a - b)) {
+    deduped.push(byT.get(t)!)
+  }
+
+  for (const d of deduped) {
     const rawUp = d.up != null && Number.isFinite(d.up) ? Number(d.up) : null
     const rawDown = d.down != null && Number.isFinite(d.down) ? Number(d.down) : null
 
@@ -423,26 +457,65 @@ function mapOutcomesChartData(
     let downPct: number | undefined
 
     if (rawUp == null && rawDown == null) {
-      // Hollow / BTC-only timestamp — carry last good odds.
-      upPct = lastUpPct
-      downPct = lastDownPct
+      // Prediction-only forward stubs: keep a gap so live Up/Down ends at "now".
+      if (d.upPred != null && Number.isFinite(d.upPred)) {
+        upPct = undefined
+        downPct = undefined
+      } else {
+        // Hollow / BTC-only timestamp — carry last good odds.
+        upPct = lastUpPct
+        downPct = lastDownPct
+      }
     } else {
       // Missing one side on this tick → carry; rejected stub/jump → leave gap.
       upPct = rawUp == null ? lastUpPct : acceptSide(rawUp, lastUpPct)
       downPct = rawDown == null ? lastDownPct : acceptSide(rawDown, lastDownPct)
+      if (bridgeGaps) {
+        if (upPct == null && lastUpPct != null) upPct = lastUpPct
+        if (downPct == null && lastDownPct != null) downPct = lastDownPct
+      }
       if (rawUp != null && upPct != null) lastUpPct = upPct
       if (rawDown != null && downPct != null) lastDownPct = downPct
     }
 
-    mapped.push({ ...d, upPct, downPct })
+    const upPredPct =
+      d.upPred != null && Number.isFinite(d.upPred) ? Number(d.upPred) * 100 : undefined
+    const upPredLoPct =
+      d.upPredLo != null && Number.isFinite(d.upPredLo) ? Number(d.upPredLo) * 100 : undefined
+    const upPredHiPct =
+      d.upPredHi != null && Number.isFinite(d.upPredHi) ? Number(d.upPredHi) * 100 : undefined
+    const upPredBandPct =
+      upPredHiPct != null && upPredLoPct != null
+        ? Math.max(0, upPredHiPct - upPredLoPct)
+        : undefined
+
+    mapped.push({
+      ...d,
+      upPct,
+      downPct,
+      upPredPct,
+      upPredLoPct,
+      upPredHiPct,
+      upPredBandPct,
+    })
   }
 
   let i = 0
-  while (i < mapped.length && mapped[i].upPct == null && mapped[i].downPct == null) {
+  while (
+    i < mapped.length &&
+    mapped[i].upPct == null &&
+    mapped[i].downPct == null &&
+    mapped[i].upPredPct == null
+  ) {
     i += 1
   }
   let j = mapped.length
-  while (j > i && mapped[j - 1].upPct == null && mapped[j - 1].downPct == null) {
+  while (
+    j > i &&
+    mapped[j - 1].upPct == null &&
+    mapped[j - 1].downPct == null &&
+    mapped[j - 1].upPredPct == null
+  ) {
     j -= 1
   }
   const sliced = i || j < mapped.length ? mapped.slice(i, j) : mapped
@@ -452,13 +525,16 @@ function mapOutcomesChartData(
   const downEma = emaSeries(downVals, emaPeriod)
   const upSavgol = savgolSeries(upVals, savgolWindow, savgolPoly)
   const downSavgol = savgolSeries(downVals, savgolWindow, savgolPoly)
-  return sliced.map((d, idx) => ({
-    ...d,
-    upEma: upEma[idx],
-    downEma: downEma[idx],
-    upSavgol: upSavgol[idx],
-    downSavgol: downSavgol[idx],
-  }))
+  return sliced.map((d, idx) => {
+    const predOnly = d.upPct == null && d.downPct == null && d.upPredPct != null
+    return {
+      ...d,
+      upEma: predOnly ? undefined : upEma[idx],
+      downEma: predOnly ? undefined : downEma[idx],
+      upSavgol: predOnly ? undefined : upSavgol[idx],
+      downSavgol: predOnly ? undefined : downSavgol[idx],
+    }
+  })
 }
 
 /** Point EMA over finite samples only; undefined until the first finite value. */
@@ -815,8 +891,8 @@ function tipFromDataAtTime(
       }
     }
   } else {
-    const wantUp = !showMomentum || momSide.up
-    const wantDown = !showMomentum || momSide.down
+    const wantUp = momSide.up
+    const wantDown = momSide.down
     const wantPrice = !showMomentum || momSource.price
     const wantEma = showMomentum ? momSource.ema : showEma
     const wantSg = showMomentum ? momSource.sg : showSavgol
@@ -833,6 +909,14 @@ function tipFromDataAtTime(
         color: '#10b981',
         dataKey: 'upPct',
         valueText: formatTipValue('outcomes', point.upPct),
+      })
+    }
+    if (wantUp && wantPrice && point.upPredPct != null && Number.isFinite(point.upPredPct)) {
+      rows.push({
+        label: 'Pred Up',
+        color: '#3b82f6',
+        dataKey: 'upPredPct',
+        valueText: formatTipValue('outcomes', point.upPredPct),
       })
     }
     if (wantUp && wantEma && point.upEma != null && Number.isFinite(point.upEma)) {
@@ -1085,6 +1169,7 @@ function defaultTipTime(
     }
     if (p.upPct != null && Number.isFinite(p.upPct)) return true
     if (p.downPct != null && Number.isFinite(p.downPct)) return true
+    if (p.upPredPct != null && Number.isFinite(p.upPredPct)) return true
     if (showEma && p.upEma != null && Number.isFinite(p.upEma)) return true
     if (showEma && p.downEma != null && Number.isFinite(p.downEma)) return true
     if (showSavgol && p.upSavgol != null && Number.isFinite(p.upSavgol)) return true
@@ -1127,15 +1212,17 @@ function HaloDot({
   cx,
   cy,
   fill,
+  r = 3.5,
 }: {
   cx?: number
   cy?: number
   fill?: string
+  r?: number
 }) {
   if (cx == null || cy == null) return null
   const color = fill ?? FLOAT_TIP_ORANGE
   return (
-    <circle cx={cx} cy={cy} r={3.5} fill={color} stroke="#fff" strokeWidth={1.5} />
+    <circle cx={cx} cy={cy} r={r} fill={color} stroke="#fff" strokeWidth={1.5} />
   )
 }
 
@@ -1233,6 +1320,7 @@ export default function PriceChart(props: Props) {
     onHoverTimeChange,
     traderMarks = [],
     highlightTime = null,
+    bridgeOutcomeGaps = false,
     showEma = false,
     onShowEmaChange,
     showSavgol = false,
@@ -1268,10 +1356,11 @@ export default function PriceChart(props: Props) {
   const plotPrice = lightbox ? momSource.price : true
   const plotEma = lightbox ? momSource.ema : showEma
   const plotSg = lightbox ? momSource.sg : showSavgol
-  const plotUp = lightbox ? momSide.up : true
-  const plotDown = lightbox ? momSide.down : true
+  const plotUp = showBtc ? true : momSide.up
+  const plotDown = showBtc ? true : momSide.down
   const showSmooth = plotEma || plotSg
   const twapFillId = `twapAreaFill-${mode}${lightbox ? '-lb' : ''}`
+  const predBandId = `predBandFill-${mode}${lightbox ? '-lb' : ''}`
   const [localHoverTime, setLocalHoverTime] = useState<number | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [enlarged, setEnlarged] = useState(false)
@@ -1289,7 +1378,13 @@ export default function PriceChart(props: Props) {
             upPct: undefined,
             downPct: undefined,
           }))
-        : mapOutcomesChartData(data, emaPeriod, savgolWindow, savgolPoly)
+        : mapOutcomesChartData(
+            data,
+            emaPeriod,
+            savgolWindow,
+            savgolPoly,
+            bridgeOutcomeGaps,
+          )
     if (!lightbox) return base
     return attachMomentum(
       base,
@@ -1297,7 +1392,22 @@ export default function PriceChart(props: Props) {
       savgolWindow,
       savgolPoly,
     )
-  }, [data, mode, emaPeriod, savgolWindow, savgolPoly, lightbox])
+  }, [data, mode, emaPeriod, savgolWindow, savgolPoly, lightbox, bridgeOutcomeGaps])
+
+  const hasPredOverlay = useMemo(
+    () => chartData.some((d) => d.upPredPct != null && Number.isFinite(d.upPredPct)),
+    [chartData],
+  )
+  const hasPredBand = useMemo(
+    () =>
+      chartData.some(
+        (d) =>
+          d.upPredBandPct != null &&
+          Number.isFinite(d.upPredBandPct) &&
+          d.upPredLoPct != null,
+      ),
+    [chartData],
+  )
 
   // Prefer TWAP; then Chainlink; only fall back to Binance when neither exists.
   // Apply once into seriesVisible so toggles stay clickable (don't fight a derived plotVisible).
@@ -1534,11 +1644,28 @@ export default function PriceChart(props: Props) {
   const aboveTarget =
     lastTwap != null && priceToBeat != null ? lastTwap >= priceToBeat : null
 
-  // Keep manual Y zoom across live ticks; only reset when the market window changes.
-  const yResetKey = `${mode}:${xDefaultDomain[0]}:${xDefaultDomain[1]}`
+  // Keep manual Y zoom across live ticks. PredictionPage's default X window slides
+  // with the tip every second — only reset Y when mode changes or the default
+  // window jumps (market roll / span change), not on a live slide.
+  const yResetPrevRef = useRef<{ mode: string; domain: TimeDomain } | null>(null)
   useEffect(() => {
+    const prev = yResetPrevRef.current
+    yResetPrevRef.current = { mode, domain: xDefaultDomain }
+    if (!prev || prev.mode !== mode) {
+      setYZoom(null)
+      return
+    }
+    const d0 = xDefaultDomain[0] - prev.domain[0]
+    const d1 = xDefaultDomain[1] - prev.domain[1]
+    const spanPrev = prev.domain[1] - prev.domain[0]
+    const spanNext = xDefaultDomain[1] - xDefaultDomain[0]
+    const isLiveSlide =
+      Math.abs(spanNext - spanPrev) < 2_000 &&
+      Math.abs(d0 - d1) < 2_000 &&
+      Math.abs(d0) < 60_000
+    if (isLiveSlide) return
     setYZoom(null)
-  }, [yResetKey])
+  }, [mode, xDefaultDomain])
 
   const followLiveAction = () => {
     if (onFollowLive) onFollowLive()
@@ -1734,6 +1861,24 @@ export default function PriceChart(props: Props) {
               ))}
             </div>
           ) : null}
+          {(!collapsed || lightbox) && !showBtc && !lightbox ? (
+            <div className="chart-series-toggles" role="group" aria-label="Outcome side">
+              <label className={`chart-series-toggle ${momSide.up ? 'on' : ''}`}>
+                <input type="checkbox" checked={momSide.up} onChange={() => toggleMomSide('up')} />
+                <span className="chart-series-swatch" style={{ background: '#10b981' }} />
+                Up
+              </label>
+              <label className={`chart-series-toggle ${momSide.down ? 'on' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={momSide.down}
+                  onChange={() => toggleMomSide('down')}
+                />
+                <span className="chart-series-swatch" style={{ background: '#ef4444' }} />
+                Down
+              </label>
+            </div>
+          ) : null}
           {!lightbox &&
           !collapsed &&
           !showBtc &&
@@ -1913,6 +2058,12 @@ export default function PriceChart(props: Props) {
               </>
             ) : (
               <>
+                <defs>
+                  <linearGradient id={predBandId} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.28} />
+                    <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.08} />
+                  </linearGradient>
+                </defs>
                 <YAxis
                   yAxisId="price"
                   orientation="right"
@@ -1934,28 +2085,61 @@ export default function PriceChart(props: Props) {
                   <ReferenceLine
                     yAxisId="price"
                     x={highlightTime}
-                    stroke="#3b82f6"
-                    strokeWidth={1.75}
+                    stroke={hasPredOverlay ? '#1d4ed8' : '#3b82f6'}
+                    strokeWidth={hasPredOverlay ? 2 : 1.75}
                     strokeDasharray="4 3"
                     ifOverflow="hidden"
                   />
                 )}
+                {plotUp && plotPrice && hasPredBand ? (
+                  <>
+                    <Area
+                      yAxisId="price"
+                      type="monotone"
+                      dataKey="upPredLoPct"
+                      stackId="predBand"
+                      stroke="none"
+                      fill="transparent"
+                      dot={false}
+                      activeDot={false}
+                      isAnimationActive={false}
+                      connectNulls
+                      legendType="none"
+                      tooltipType="none"
+                    />
+                    <Area
+                      yAxisId="price"
+                      type="monotone"
+                      dataKey="upPredBandPct"
+                      name="Pred ±σ"
+                      stackId="predBand"
+                      stroke="none"
+                      fill={`url(#${predBandId})`}
+                      fillOpacity={1}
+                      dot={false}
+                      activeDot={false}
+                      isAnimationActive={false}
+                      connectNulls
+                      legendType="none"
+                    />
+                  </>
+                ) : null}
                 {plotUp && plotPrice ? (
                   <Line
                     yAxisId="price"
                     type="monotone"
                     dataKey="upPct"
                     name="Up"
-                    stroke="#10b981"
-                    strokeOpacity={showSmooth ? 0.45 : 1}
+                    stroke="#059669"
+                    strokeOpacity={hasPredOverlay ? (showSmooth ? 0.4 : 0.72) : showSmooth ? 0.45 : 1}
                     strokeDasharray={showSmooth ? '4 3' : undefined}
                     dot={false}
                     activeDot={(dotProps) => (
-                      <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#10b981" />
+                      <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#059669" />
                     )}
-                    strokeWidth={showSmooth ? 1.5 : 2}
+                    strokeWidth={hasPredOverlay ? (showSmooth ? 1.35 : 1.85) : showSmooth ? 1.5 : 2}
                     isAnimationActive={false}
-                    connectNulls={false}
+                    connectNulls={bridgeOutcomeGaps}
                   />
                 ) : null}
                 {plotDown && plotPrice ? (
@@ -1964,17 +2148,67 @@ export default function PriceChart(props: Props) {
                     type="monotone"
                     dataKey="downPct"
                     name="Down"
-                    stroke="#ef4444"
-                    strokeOpacity={showSmooth ? 0.45 : 1}
+                    stroke="#dc2626"
+                    strokeOpacity={hasPredOverlay ? (showSmooth ? 0.4 : 0.72) : showSmooth ? 0.45 : 1}
                     strokeDasharray={showSmooth ? '4 3' : undefined}
                     dot={false}
                     activeDot={(dotProps) => (
-                      <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#ef4444" />
+                      <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#dc2626" />
                     )}
-                    strokeWidth={showSmooth ? 1.5 : 2}
+                    strokeWidth={hasPredOverlay ? (showSmooth ? 1.35 : 1.85) : showSmooth ? 1.5 : 2}
                     isAnimationActive={false}
-                    connectNulls={false}
+                    connectNulls={bridgeOutcomeGaps}
                   />
+                ) : null}
+                {plotUp && plotPrice && hasPredOverlay ? (
+                  <Line
+                    yAxisId="price"
+                    type="monotone"
+                    dataKey="upPredPct"
+                    name="Pred Up"
+                    stroke="#2563eb"
+                    strokeDasharray="1.5 3.5"
+                    strokeLinecap="round"
+                    dot={false}
+                    activeDot={(dotProps) => (
+                      <HaloDot cx={dotProps.cx} cy={dotProps.cy} fill="#2563eb" r={4} />
+                    )}
+                    strokeWidth={1.65}
+                    isAnimationActive={false}
+                    connectNulls
+                  />
+                ) : null}
+                {plotUp && plotPrice && hasPredOverlay && !hasPredBand ? (
+                  <>
+                    <Line
+                      yAxisId="price"
+                      type="monotone"
+                      dataKey="upPredHiPct"
+                      name="Pred +σ"
+                      stroke="#93c5fd"
+                      strokeDasharray="2 4"
+                      dot={false}
+                      activeDot={false}
+                      strokeWidth={1.25}
+                      isAnimationActive={false}
+                      connectNulls
+                      legendType="none"
+                    />
+                    <Line
+                      yAxisId="price"
+                      type="monotone"
+                      dataKey="upPredLoPct"
+                      name="Pred −σ"
+                      stroke="#93c5fd"
+                      strokeDasharray="2 4"
+                      dot={false}
+                      activeDot={false}
+                      strokeWidth={1.25}
+                      isAnimationActive={false}
+                      connectNulls
+                      legendType="none"
+                    />
+                  </>
                 ) : null}
                 {plotEma ? (
                   <>
