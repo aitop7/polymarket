@@ -247,12 +247,14 @@ def post_momentum_pair_train(
 def get_market_dates(
     split: str = Query("validation", pattern="^(train|validation|test|twap)$"),
     rebuild_index: bool = Query(False),
+    series: str = Query("5m", pattern="^(5m|15m)$"),
 ) -> dict[str, Any]:
     if rebuild_index:
         build_market_index(split, force=True)
-    dates = list_dates(split)
+    dates = list_dates(split, series=series)
     return {
         "split": split,
+        "series": series,
         "count": len(dates),
         "dates": dates,
         "min": dates[0] if dates else None,
@@ -266,13 +268,20 @@ def get_market_at(
     date: str | None = Query(None, description="YYYY-MM-DD in ET"),
     time: str | None = Query(None, description="HH:MM in ET"),
     t: int | None = Query(None, description="unix ms"),
+    series: str = Query("5m", pattern="^(5m|15m)$"),
 ) -> dict[str, Any]:
+    from app.core.series import filter_rows_by_series
+
     if date and time:
         m = find_market_by_date_time(split, date, time)
+        if m and not filter_rows_by_series([m], series):
+            m = None
     elif t is not None:
         m = find_market_at(split, int(t))
+        if m and not filter_rows_by_series([m], series):
+            m = None
     elif date:
-        day = list_markets_for_date(split, date)
+        day = list_markets_for_date(split, date, series=series)
         m = day[0] if day else None
     else:
         raise HTTPException(400, "Provide date+time, date, or t")
@@ -287,31 +296,43 @@ def get_markets(
     limit: int = Query(50, ge=1, le=5000),
     date: str | None = Query(None, description="Filter by ET date YYYY-MM-DD"),
     rebuild_index: bool = Query(False),
+    series: str = Query("5m", pattern="^(5m|15m)$"),
 ) -> dict[str, Any]:
+    from app.core.series import filter_rows_by_series
+
     if rebuild_index:
         build_market_index(split, force=True)
     if date:
-        markets = list_markets_for_date(split, date)
+        markets = list_markets_for_date(split, date, series=series)
     else:
         # Prefer indexed full list (fast); fall back to legacy limited scan
         try:
             markets = filter_history_markets(split, build_market_index(split))
+            markets = filter_rows_by_series(markets, series)
             if limit is not None:
                 markets = markets[: max(0, int(limit))]
         except Exception:
             markets = list_markets(split, limit=limit)
-    return {"split": split, "date": date, "count": len(markets), "markets": markets}
+            markets = filter_rows_by_series(markets, series)
+    return {
+        "split": split,
+        "series": series,
+        "date": date,
+        "count": len(markets),
+        "markets": markets,
+    }
 
 
 @router.get("/markets/day-slots")
 def get_day_slots(
     date: str = Query(..., description="ET date YYYY-MM-DD"),
     split: str = Query("twap", pattern="^(train|validation|test|twap)$"),
+    series: str = Query("5m", pattern="^(5m|15m)$"),
 ) -> dict[str, Any]:
-    """Expected vs present 5m slots for one history day (TWAP local catalog)."""
+    """Expected vs present slots for one history day (TWAP local catalog)."""
     if split != TWAP_SPLIT:
         raise HTTPException(400, "day-slots is only available for the TWAP collection")
-    return list_day_slot_gaps(date, split=split)
+    return list_day_slot_gaps(date, split=split, series=series)
 
 
 @router.post("/markets/day-slots/fix")
@@ -1128,11 +1149,13 @@ def paper_status(session_id: str) -> dict[str, Any]:
 
 
 @router.get("/live/state")
-async def live_state() -> dict[str, Any]:
+async def live_state(
+    series: str = Query("5m", pattern="^(5m|15m)$"),
+) -> dict[str, Any]:
     """One-shot live market snapshot (BTC + Up/Down + CLOB ladder)."""
     from app.live import get_live_service
 
-    return await get_live_service().snapshot()
+    return await get_live_service(series).snapshot()
 
 
 class DirectionModelSelection(BaseModel):
@@ -1197,6 +1220,7 @@ async def start_direction_model_job(body: DirectionModelJobRequest) -> dict[str,
 async def live_price_distribution(
     t: float = Query(..., gt=0, le=60, description="Horizon seconds ahead"),
     family: str = Query(default="beta", pattern="^(beta|level)$"),
+    market_series: str = Query("5m", pattern="^(5m|15m)$", alias="series"),
 ) -> dict[str, Any]:
     """Predictive PDF of Up price t seconds later for the active market tip.
 
@@ -1207,22 +1231,24 @@ async def live_price_distribution(
     from app.ml.price_distribution import future_up_price_pdf
     from app.ml.predict_direction import _frame_from_live_snapshot
 
-    svc = get_live_service()
+    svc = get_live_service(market_series)
     try:
         await svc.ensure_snapshot(max_age_s=0.75)
     except Exception:
         pass
     inputs = svc.prediction_inputs(lookback_ms=120_000)
     snapshot = inputs.get("snapshot") if isinstance(inputs.get("snapshot"), dict) else None
-    series = list(inputs.get("series") or [])
-    if not snapshot and not series:
+    chart_series = list(inputs.get("series") or [])
+    if not snapshot and not chart_series:
         raise HTTPException(503, "No live market tip available yet")
 
     market_id = str(svc._market_id or (snapshot or {}).get("market_id") or "")
     if not market_id:
         raise HTTPException(503, "No active market is available")
     try:
-        live_df = _frame_from_live_snapshot(market_id=market_id, series=series, snapshot=snapshot or {})
+        live_df = _frame_from_live_snapshot(
+            market_id=market_id, series=chart_series, snapshot=snapshot or {}
+        )
         if live_df.empty:
             raise RuntimeError("empty live features")
         row = live_df.iloc[-1]
@@ -1254,11 +1280,13 @@ async def live_price_distribution(
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, str(exc)) from exc
-    return {"market_id": market_id, **dist}
+    return {"market_id": market_id, "series": market_series, **dist}
 
 
 @router.get("/live/direction-prediction")
-async def live_direction_prediction() -> dict[str, Any]:
+async def live_direction_prediction(
+    market_series: str = Query("5m", pattern="^(5m|15m)$", alias="series"),
+) -> dict[str, Any]:
     """Latest 3s/5s Up-vs-Down direction probabilities for the active market.
 
     Returns a warm cache immediately when possible. Book/VPS refresh stays in
@@ -1269,7 +1297,7 @@ async def live_direction_prediction() -> dict[str, Any]:
     from app.ml.model_control import active_horizons, active_kind
     from app.ml.predict_direction import get_cached_prediction, predict_direction
 
-    svc = get_live_service()
+    svc = get_live_service(market_series)
     live_kind = active_kind()
     horizons = active_horizons(kind=live_kind)
     market_id = str(svc._market_id or "")
@@ -1291,7 +1319,7 @@ async def live_direction_prediction() -> dict[str, Any]:
             except Exception:
                 pass
             try:
-                inputs = svc.prediction_inputs(lookback_ms=300_000)
+                inputs = svc.prediction_inputs(lookback_ms=svc.duration_ms)
                 await asyncio.to_thread(
                     predict_direction,
                     market_id,
@@ -1327,15 +1355,15 @@ async def live_direction_prediction() -> dict[str, Any]:
 
     asyncio.create_task(_bg_refresh())
 
-    inputs = svc.prediction_inputs(lookback_ms=300_000)
-    series = list(inputs.get("series") or [])
+    inputs = svc.prediction_inputs(lookback_ms=svc.duration_ms)
+    chart_series = list(inputs.get("series") or [])
     snapshot = inputs.get("snapshot") if isinstance(inputs.get("snapshot"), dict) else None
     try:
         return await asyncio.to_thread(
             predict_direction,
             market_id,
             horizons=horizons,
-            series=series,
+            series=chart_series,
             snapshot=snapshot,
             prefer_live=True,
             model_kind=live_kind,
@@ -1350,27 +1378,32 @@ async def live_direction_prediction() -> dict[str, Any]:
 async def live_series(
     market_id: str | None = None,
     lookback_ms: int = 300_000,
+    market_series: str = Query("5m", pattern="^(5m|15m)$", alias="series"),
 ) -> dict[str, Any]:
     """Historical chart points for the active (or requested) live market window."""
     from app.live import get_live_service
     from app.live.vps_sync import get_vps_sync
 
-    svc = get_live_service()
+    svc = get_live_service(market_series)
     # Ensure market discovery so window bounds / id are current.
     await svc.market_meta()
     mid = str(market_id or svc._market_id or "") or None
     if mid:
         # Live reload/seed: pull this market's history from VPS so charts continue.
         await get_vps_sync().ensure_active_market(mid, force=True)
-    return svc.series(market_id or mid, lookback_ms=lookback_ms)
+    lb = int(lookback_ms) if lookback_ms else svc.duration_ms
+    return svc.series(market_id or mid, lookback_ms=lb)
 
 
 @router.get("/live/holders")
-async def live_holders(limit: int = 20) -> dict[str, Any]:
+async def live_holders(
+    limit: int = 20,
+    market_series: str = Query("5m", pattern="^(5m|15m)$", alias="series"),
+) -> dict[str, Any]:
     """Top Up/Down holders for the active live market."""
     from app.live import get_live_service
 
-    return await get_live_service().holders(limit=limit)
+    return await get_live_service(market_series).holders(limit=limit)
 
 
 @router.websocket("/ws/live")
@@ -1379,12 +1412,14 @@ async def ws_live(websocket: WebSocket) -> None:
 
     Client may send on connect (or later):
       `{interval_s: 0.5}` — tick cadence
+      `{series: "5m"|"15m"}` — market duration series (default 5m)
       `{want_direction: true}` — also stream `direction_prediction` messages (~0.5s)
     """
     from app.live import get_live_service
 
     await websocket.accept()
-    svc = get_live_service()
+    market_series = "5m"
+    svc = get_live_service(market_series)
     last_market_id: str | None = None
     interval_s = 0.5
     want_direction = False
@@ -1396,13 +1431,20 @@ async def ws_live(websocket: WebSocket) -> None:
             return interval_s
         return max(0.1, min(2.0, v))
 
+    def _parse_series(raw: Any) -> str:
+        text = str(raw or "").strip().lower()
+        return text if text in {"5m", "15m"} else "5m"
+
     try:
-        # First client message sets poll interval (default 0.5s).
+        # First client message sets poll interval / series (default 0.5s / 5m).
         try:
             init = await asyncio.wait_for(websocket.receive_json(), timeout=2.0)
             if isinstance(init, dict):
                 if "interval_s" in init:
                     interval_s = _clamp_interval(init.get("interval_s"))
+                if "series" in init:
+                    market_series = _parse_series(init.get("series"))
+                    svc = get_live_service(market_series)
                 if init.get("want_direction"):
                     want_direction = True
         except (asyncio.TimeoutError, WebSocketDisconnect):
@@ -1414,22 +1456,36 @@ async def ws_live(websocket: WebSocket) -> None:
             await websocket.send_json(meta)
 
         async def reader() -> None:
-            nonlocal interval_s, want_direction
+            nonlocal interval_s, want_direction, market_series, svc, last_market_id
             while True:
                 msg = await websocket.receive_json()
                 if not isinstance(msg, dict):
                     continue
                 if msg.get("type") == "interval" or "interval_s" in msg:
                     interval_s = _clamp_interval(msg.get("interval_s"))
+                if msg.get("type") == "series" or "series" in msg:
+                    nxt = _parse_series(msg.get("series"))
+                    if nxt != market_series:
+                        market_series = nxt
+                        svc = get_live_service(market_series)
+                        last_market_id = None
+                        try:
+                            meta2 = await svc.market_meta()
+                            if meta2:
+                                last_market_id = meta2.get("market_id")
+                                await send_json(meta2)
+                        except Exception:
+                            pass
                 if msg.get("type") == "direction" or "want_direction" in msg:
                     want_direction = bool(msg.get("want_direction", msg.get("enabled", True)))
 
-        reader_task = asyncio.create_task(reader())
         send_lock = asyncio.Lock()
 
         async def send_json(payload: dict[str, Any]) -> None:
             async with send_lock:
                 await websocket.send_json(payload)
+
+        reader_task = asyncio.create_task(reader())
 
         async def holders_sender() -> None:
             while True:
@@ -1467,7 +1523,7 @@ async def ws_live(websocket: WebSocket) -> None:
                     if mid:
                         # Occasional VPS catch-up for parquet (throttled inside client).
                         await get_vps_sync().ensure_active_market(mid, force=first)
-                    payload = svc.series(mid, lookback_ms=360_000)
+                    payload = svc.series(mid, lookback_ms=max(360_000, svc.duration_ms))
                     await send_json({"type": "series", **payload})
                     first = False
                 except WebSocketDisconnect:
@@ -1492,7 +1548,7 @@ async def ws_live(websocket: WebSocket) -> None:
                                 except Exception:
                                     pass
                             live_kind = active_kind()
-                            inputs = svc.prediction_inputs(lookback_ms=300_000)
+                            inputs = svc.prediction_inputs(lookback_ms=svc.duration_ms)
                             payload = await asyncio.to_thread(
                                 predict_direction,
                                 mid,

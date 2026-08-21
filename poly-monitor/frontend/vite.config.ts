@@ -17,7 +17,9 @@ const apiProxy = {
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: '127.0.0.1',
+    // Listen on all interfaces so other PCs on the LAN can open this UI.
+    // /api is still proxied to 127.0.0.1:8000 on this machine.
+    host: '0.0.0.0',
     port: 5173,
     proxy: apiProxy,
     fs: {

@@ -1,4 +1,4 @@
-"""Gamma discovery for btc-updown-5m markets."""
+"""Gamma discovery for btc-updown-5m / btc-updown-15m markets."""
 
 from __future__ import annotations
 
@@ -10,13 +10,19 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.series import ALL_SERIES, MarketSeries, SERIES_5M, series_from_slug
 
-_UPDOWN_SLUG_RE = re.compile(r"(?i)^btc-updown-5m-(\d+)$")
+_UPDOWN_SLUG_RE = re.compile(r"(?i)^btc-updown-(5m|15m)-(\d+)$")
 
 
-def window_start_unix(now_s: float | None = None) -> int:
+def window_start_unix(
+    now_s: float | None = None, *, duration_s: int | None = None
+) -> int:
     ts = int(now_s if now_s is not None else time.time())
-    return ts - (ts % settings.market_duration_s)
+    dur = int(duration_s if duration_s is not None else settings.market_duration_s)
+    if dur <= 0:
+        dur = 300
+    return ts - (ts % dur)
 
 
 def parse_token_ids(market: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -35,19 +41,24 @@ def parse_token_ids(market: dict[str, Any]) -> tuple[str | None, str | None]:
     return yes, no
 
 
-def parse_window(market: dict[str, Any]) -> tuple[int, int]:
+def parse_window(
+    market: dict[str, Any], *, series: MarketSeries | None = None
+) -> tuple[int, int]:
     slug = str(market.get("slug") or "")
     match = _UPDOWN_SLUG_RE.match(slug)
     if match:
-        start_s = int(match.group(1))
+        start_s = int(match.group(2))
+        series = series or series_from_slug(slug) or SERIES_5M
     else:
-        start_s = window_start_unix()
-    end_s = start_s + settings.market_duration_s
+        series = series or SERIES_5M
+        start_s = window_start_unix(duration_s=series.duration_s)
+    end_s = start_s + series.duration_s
     return start_s * 1000, end_s * 1000
 
 
 class Discovery:
-    def __init__(self) -> None:
+    def __init__(self, series: MarketSeries | None = None) -> None:
+        self.series = series or SERIES_5M
         self._http = httpx.AsyncClient(
             base_url=settings.gamma_url,
             timeout=httpx.Timeout(8.0, connect=4.0),
@@ -73,10 +84,11 @@ class Discovery:
         return None
 
     async def discover_active(self) -> dict[str, Any] | None:
-        start = window_start_unix()
-        dur = settings.market_duration_s
+        series = self.series
+        start = window_start_unix(duration_s=series.duration_s)
+        dur = series.duration_s
         for offset in (0, -dur, dur, -2 * dur):
-            slug = f"btc-updown-5m-{start + offset}"
+            slug = series.slug_for_start(start + offset)
             market = await self.get_market_by_slug(slug)
             if not market:
                 continue
@@ -97,3 +109,7 @@ class Discovery:
         except Exception:
             return None
         return None
+
+
+def default_discoveries() -> list[Discovery]:
+    return [Discovery(series) for series in ALL_SERIES]

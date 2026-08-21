@@ -1,0 +1,2909 @@
+{
+  "count": 363,
+  "mismatches": [
+    {
+      "market_id": "3388170",
+      "date": "2026-08-07",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64851.4140625,
+      "binance_end": 64839.9765625
+    },
+    {
+      "market_id": "3388452",
+      "date": "2026-08-07",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64991.98,
+      "binance_end": 64978.00390625
+    },
+    {
+      "market_id": "3389753",
+      "date": "2026-08-07",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64970.0,
+      "binance_end": 64972.015625
+    },
+    {
+      "market_id": "3389787",
+      "date": "2026-08-07",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64972.02,
+      "binance_end": 64971.99609375
+    },
+    {
+      "market_id": "3391012",
+      "date": "2026-08-07",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64909.07,
+      "binance_end": 64923.17578125
+    },
+    {
+      "market_id": "3391202",
+      "date": "2026-08-07",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64872.0,
+      "binance_end": 64877.28515625
+    },
+    {
+      "market_id": "3392454",
+      "date": "2026-08-07",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64890.14,
+      "binance_end": 64888.90625
+    },
+    {
+      "market_id": "3392492",
+      "date": "2026-08-07",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64890.015625,
+      "binance_end": 64869.99609375
+    },
+    {
+      "market_id": "3392509",
+      "date": "2026-08-07",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64869.99609375,
+      "binance_end": 64880.125
+    },
+    {
+      "market_id": "3392575",
+      "date": "2026-08-07",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64888.69,
+      "binance_end": 64889.06640625
+    },
+    {
+      "market_id": "3392788",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64900.14453125,
+      "binance_end": 64901.00390625
+    },
+    {
+      "market_id": "3393032",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64900.9,
+      "binance_end": 64899.78515625
+    },
+    {
+      "market_id": "3393197",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64913.4,
+      "binance_end": 64929.00390625
+    },
+    {
+      "market_id": "3393338",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64929.01,
+      "binance_end": 64918.92578125
+    },
+    {
+      "market_id": "3393656",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64900.96,
+      "binance_end": 64904.31640625
+    },
+    {
+      "market_id": "3393912",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64943.69,
+      "binance_end": 64933.3359375
+    },
+    {
+      "market_id": "3395313",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65013.58,
+      "binance_end": 65009.6953125
+    },
+    {
+      "market_id": "3395438",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65017.05,
+      "binance_end": 65018.63671875
+    },
+    {
+      "market_id": "3396538",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65006.6,
+      "binance_end": 65006.60546875
+    },
+    {
+      "market_id": "3396608",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64995.03,
+      "binance_end": 64995.9453125
+    },
+    {
+      "market_id": "3396623",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64995.94,
+      "binance_end": 64995.9453125
+    },
+    {
+      "market_id": "3396701",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64954.1,
+      "binance_end": 64954.015625
+    },
+    {
+      "market_id": "3396740",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64959.99,
+      "binance_end": 64959.99609375
+    },
+    {
+      "market_id": "3396775",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64958.45,
+      "binance_end": 64958.4453125
+    },
+    {
+      "market_id": "3396929",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64963.08,
+      "binance_end": 64963.07421875
+    },
+    {
+      "market_id": "3397151",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64992.53,
+      "binance_end": 64993.875
+    },
+    {
+      "market_id": "3397625",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65021.16,
+      "binance_end": 65021.18359375
+    },
+    {
+      "market_id": "3397767",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65010.00390625,
+      "binance_end": 65010.046875
+    },
+    {
+      "market_id": "3397916",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65005.875,
+      "binance_end": 65001.453125
+    },
+    {
+      "market_id": "3398022",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64973.98,
+      "binance_end": 64970.99609375
+    },
+    {
+      "market_id": "3398338",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64964.61,
+      "binance_end": 64967.35546875
+    },
+    {
+      "market_id": "3398811",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65008.34,
+      "binance_end": 65001.07421875
+    },
+    {
+      "market_id": "3398945",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65002.00390625,
+      "binance_end": 65005.453125
+    },
+    {
+      "market_id": "3399207",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65010.38,
+      "binance_end": 65015.2734375
+    },
+    {
+      "market_id": "3399618",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65155.99609375,
+      "binance_end": 65155.90625
+    },
+    {
+      "market_id": "3404283",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65110.53,
+      "binance_end": 65108.00390625
+    },
+    {
+      "market_id": "3404331",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65108.01,
+      "binance_end": 65108.00390625
+    },
+    {
+      "market_id": "3404401",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65136.72,
+      "binance_end": 65136.00390625
+    },
+    {
+      "market_id": "3404451",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65122.18,
+      "binance_end": 65122.1953125
+    },
+    {
+      "market_id": "3404587",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65119.74,
+      "binance_end": 65119.74609375
+    },
+    {
+      "market_id": "3406696",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65020.01,
+      "binance_end": 65018.99609375
+    },
+    {
+      "market_id": "3408938",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65060.01,
+      "binance_end": 65060.00390625
+    },
+    {
+      "market_id": "3409209",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65082.41,
+      "binance_end": 65082.4140625
+    },
+    {
+      "market_id": "3410226",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65026.0,
+      "binance_end": 65018.046875
+    },
+    {
+      "market_id": "3410333",
+      "date": "2026-08-08",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65000.0,
+      "binance_end": 65015.00390625
+    },
+    {
+      "market_id": "3411638",
+      "date": "2026-08-08",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64965.29,
+      "binance_end": 64962.59375
+    },
+    {
+      "market_id": "3411754",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64962.0,
+      "binance_end": 64960.2734375
+    },
+    {
+      "market_id": "3413626",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64881.74,
+      "binance_end": 64889.34375
+    },
+    {
+      "market_id": "3413788",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64866.99,
+      "binance_end": 64861.453125
+    },
+    {
+      "market_id": "3413917",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64843.4,
+      "binance_end": 64842.61328125
+    },
+    {
+      "market_id": "3414084",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64777.93,
+      "binance_end": 64784.71484375
+    },
+    {
+      "market_id": "3414174",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64732.01,
+      "binance_end": 64749.78515625
+    },
+    {
+      "market_id": "3414296",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64791.58,
+      "binance_end": 64788.296875
+    },
+    {
+      "market_id": "3414903",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64788.8,
+      "binance_end": 64788.796875
+    },
+    {
+      "market_id": "3415668",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64785.01,
+      "binance_end": 64785.00390625
+    },
+    {
+      "market_id": "3415801",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64785.01,
+      "binance_end": 64785.00390625
+    },
+    {
+      "market_id": "3415939",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64790.84375,
+      "binance_end": 64790.00390625
+    },
+    {
+      "market_id": "3416312",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64841.2,
+      "binance_end": 64841.1953125
+    },
+    {
+      "market_id": "3416744",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64857.98,
+      "binance_end": 64849.99609375
+    },
+    {
+      "market_id": "3416756",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64850.0,
+      "binance_end": 64854.82421875
+    },
+    {
+      "market_id": "3416947",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64860.00390625,
+      "binance_end": 64853.56640625
+    },
+    {
+      "market_id": "3416966",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64853.57,
+      "binance_end": 64849.99609375
+    },
+    {
+      "market_id": "3417175",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64826.15,
+      "binance_end": 64826.14453125
+    },
+    {
+      "market_id": "3417208",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64930.39,
+      "binance_end": 64921.11328125
+    },
+    {
+      "market_id": "3417540",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64828.82,
+      "binance_end": 64830.2265625
+    },
+    {
+      "market_id": "3417560",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64830.23,
+      "binance_end": 64824.17578125
+    },
+    {
+      "market_id": "3417633",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64809.69,
+      "binance_end": 64809.6953125
+    },
+    {
+      "market_id": "3417720",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64814.56,
+      "binance_end": 64814.53515625
+    },
+    {
+      "market_id": "3417914",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64970.66,
+      "binance_end": 64970.36328125
+    },
+    {
+      "market_id": "3418142",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64975.99,
+      "binance_end": 64975.99609375
+    },
+    {
+      "market_id": "3418168",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64975.99,
+      "binance_end": 64978.00390625
+    },
+    {
+      "market_id": "3418448",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64978.01,
+      "binance_end": 64978.00390625
+    },
+    {
+      "market_id": "3418877",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64938.29,
+      "binance_end": 64941.99609375
+    },
+    {
+      "market_id": "3418893",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64942.0,
+      "binance_end": 64941.99609375
+    },
+    {
+      "market_id": "3418906",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64942.0,
+      "binance_end": 64938.5234375
+    },
+    {
+      "market_id": "3419062",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64938.53,
+      "binance_end": 64938.5234375
+    },
+    {
+      "market_id": "3419103",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64938.5234375,
+      "binance_end": 64941.99609375
+    },
+    {
+      "market_id": "3420150",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65219.79,
+      "binance_end": 65219.9140625
+    },
+    {
+      "market_id": "3420170",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65219.9140625,
+      "binance_end": 65219.78515625
+    },
+    {
+      "market_id": "3420997",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65258.33,
+      "binance_end": 65248.8046875
+    },
+    {
+      "market_id": "3421037",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65248.81,
+      "binance_end": 65250.6953125
+    },
+    {
+      "market_id": "3422065",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65228.68,
+      "binance_end": 65235.34375
+    },
+    {
+      "market_id": "3423600",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65239.17578125,
+      "binance_end": 65239.15625
+    },
+    {
+      "market_id": "3424693",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65200.88671875,
+      "binance_end": 65198.68359375
+    },
+    {
+      "market_id": "3425780",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65219.99,
+      "binance_end": 65219.99609375
+    },
+    {
+      "market_id": "3425790",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65219.99,
+      "binance_end": 65219.99609375
+    },
+    {
+      "market_id": "3427083",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65199.69,
+      "binance_end": 65199.68359375
+    },
+    {
+      "market_id": "3427106",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65199.68,
+      "binance_end": 65199.234375
+    },
+    {
+      "market_id": "3427669",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65199.234375,
+      "binance_end": 65199.984375
+    },
+    {
+      "market_id": "3429091",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65188.01,
+      "binance_end": 65180.00390625
+    },
+    {
+      "market_id": "3429272",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65180.0,
+      "binance_end": 65180.6640625
+    },
+    {
+      "market_id": "3430946",
+      "date": "2026-08-09",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65126.01,
+      "binance_end": 65126.125
+    },
+    {
+      "market_id": "3431408",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65136.13,
+      "binance_end": 65133.46
+    },
+    {
+      "market_id": "3431502",
+      "date": "2026-08-09",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65242.95,
+      "binance_end": 65222.953125
+    },
+    {
+      "market_id": "3433325",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64892.01,
+      "binance_end": 64895.99609375
+    },
+    {
+      "market_id": "3434030",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64977.99,
+      "binance_end": 64978.375
+    },
+    {
+      "market_id": "3434284",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65261.04,
+      "binance_end": 65207.99609375
+    },
+    {
+      "market_id": "3434345",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65094.00390625,
+      "binance_end": 65103.375
+    },
+    {
+      "market_id": "3434529",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65097.6,
+      "binance_end": 65099.99
+    },
+    {
+      "market_id": "3436192",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65068.71,
+      "binance_end": 65044.31640625
+    },
+    {
+      "market_id": "3436859",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65025.54,
+      "binance_end": 65027.796875
+    },
+    {
+      "market_id": "3437076",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65000.01,
+      "binance_end": 65009.3359375
+    },
+    {
+      "market_id": "3437100",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65030.01,
+      "binance_end": 65026.00390625
+    },
+    {
+      "market_id": "3438131",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65039.87,
+      "binance_end": 65048.89453125
+    },
+    {
+      "market_id": "3438543",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65143.32,
+      "binance_end": 65133.99609375
+    },
+    {
+      "market_id": "3439125",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65245.65,
+      "binance_end": 65243.99609375
+    },
+    {
+      "market_id": "3439729",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65328.125,
+      "binance_end": 65326.453125
+    },
+    {
+      "market_id": "3440615",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65267.99609375,
+      "binance_end": 65262.15625
+    },
+    {
+      "market_id": "3442886",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 65190.01,
+      "binance_end": 65196.07421875
+    },
+    {
+      "market_id": "3445105",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 65017.17,
+      "binance_end": 65011.36328125
+    },
+    {
+      "market_id": "3448753",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64881.99,
+      "binance_end": 64881.63671875
+    },
+    {
+      "market_id": "3449233",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64951.23,
+      "binance_end": 64954.6640625
+    },
+    {
+      "market_id": "3449301",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64913.8359375,
+      "binance_end": 64929.453125
+    },
+    {
+      "market_id": "3449366",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64680.51,
+      "binance_end": 64681.14453125
+    },
+    {
+      "market_id": "3450731",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64675.0,
+      "binance_end": 64674.64453125
+    },
+    {
+      "market_id": "3450984",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64388.53,
+      "binance_end": 64395.99609375
+    },
+    {
+      "market_id": "3454384",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63932.29,
+      "binance_end": 63923.07421875
+    },
+    {
+      "market_id": "3454771",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63959.71,
+      "binance_end": 63949.61328125
+    },
+    {
+      "market_id": "3461525",
+      "date": "2026-08-10",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63900.14,
+      "binance_end": 63909.96484375
+    },
+    {
+      "market_id": "3470973",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63987.0,
+      "binance_end": 63971.9765625
+    },
+    {
+      "market_id": "3472232",
+      "date": "2026-08-10",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63954.87,
+      "binance_end": 63948.00390625
+    },
+    {
+      "market_id": "3473434",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64061.703125,
+      "binance_end": 64060.8046875
+    },
+    {
+      "market_id": "3473850",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64041.56,
+      "binance_end": 64041.5546875
+    },
+    {
+      "market_id": "3474211",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64129.93,
+      "binance_end": 64140.93359375
+    },
+    {
+      "market_id": "3475546",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64100.34,
+      "binance_end": 64100.34375
+    },
+    {
+      "market_id": "3476516",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64036.0,
+      "binance_end": 64036.00390625
+    },
+    {
+      "market_id": "3479565",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64051.5,
+      "binance_end": 64065.99609375
+    },
+    {
+      "market_id": "3480102",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64048.99609375,
+      "binance_end": 64049.6953125
+    },
+    {
+      "market_id": "3480802",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64137.56640625,
+      "binance_end": 64121.51
+    },
+    {
+      "market_id": "3480814",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64121.52,
+      "binance_end": 64129.984375
+    },
+    {
+      "market_id": "3480861",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64189.99,
+      "binance_end": 64190.00390625
+    },
+    {
+      "market_id": "3481278",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64299.99,
+      "binance_end": 64299.984375
+    },
+    {
+      "market_id": "3481568",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64232.046875,
+      "binance_end": 64227.99609375
+    },
+    {
+      "market_id": "3481988",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64245.63,
+      "binance_end": 64244.92578125
+    },
+    {
+      "market_id": "3482288",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64340.32,
+      "binance_end": 64340.32421875
+    },
+    {
+      "market_id": "3484243",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64328.88,
+      "binance_end": 64331.11328125
+    },
+    {
+      "market_id": "3484957",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64331.67,
+      "binance_end": 64330.00390625
+    },
+    {
+      "market_id": "3487194",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64198.01,
+      "binance_end": 64200.046875
+    },
+    {
+      "market_id": "3491491",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63772.64,
+      "binance_end": 63775.99609375
+    },
+    {
+      "market_id": "3492595",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63608.6,
+      "binance_end": 63608.0546875
+    },
+    {
+      "market_id": "3492602",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63613.82,
+      "binance_end": 63626.42578125
+    },
+    {
+      "market_id": "3493049",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63545.36,
+      "binance_end": 63540.0
+    },
+    {
+      "market_id": "3497849",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63268.5,
+      "binance_end": 63248.53515625
+    },
+    {
+      "market_id": "3499922",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63689.12,
+      "binance_end": 63681.39453125
+    },
+    {
+      "market_id": "3500754",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63741.23,
+      "binance_end": 63742.6640625
+    },
+    {
+      "market_id": "3502515",
+      "date": "2026-08-11",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63573.17,
+      "binance_end": 63580.00390625
+    },
+    {
+      "market_id": "3502960",
+      "date": "2026-08-11",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63617.63,
+      "binance_end": 63604.00390625
+    },
+    {
+      "market_id": "3504833",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63735.14,
+      "binance_end": 63732.00390625
+    },
+    {
+      "market_id": "3505021",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63762.91,
+      "binance_end": 63752.18359375
+    },
+    {
+      "market_id": "3505315",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63861.25,
+      "binance_end": 63851.8359375
+    },
+    {
+      "market_id": "3505335",
+      "date": "2026-08-12",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63851.83984375,
+      "binance_end": 63855.00390625
+    },
+    {
+      "market_id": "3505555",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63778.47,
+      "binance_end": 63777.99609375
+    },
+    {
+      "market_id": "3505561",
+      "date": "2026-08-12",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63769.95,
+      "binance_end": 63773.6953125
+    },
+    {
+      "market_id": "3505747",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63757.16,
+      "binance_end": 63756.57421875
+    },
+    {
+      "market_id": "3508774",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63637.36,
+      "binance_end": 63636.9453125
+    },
+    {
+      "market_id": "3509837",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63837.99,
+      "binance_end": 63836.92578125
+    },
+    {
+      "market_id": "3512648",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64237.79,
+      "binance_end": 64235.125
+    },
+    {
+      "market_id": "3515008",
+      "date": "2026-08-12",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63942.04,
+      "binance_end": 63959.99609375
+    },
+    {
+      "market_id": "3515029",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63960.0,
+      "binance_end": 63920.01
+    },
+    {
+      "market_id": "3515076",
+      "date": "2026-08-12",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63922.56,
+      "binance_end": 63958.234375
+    },
+    {
+      "market_id": "3515365",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63792.11328125,
+      "binance_end": 63790.43359375
+    },
+    {
+      "market_id": "3515488",
+      "date": "2026-08-12",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63574.52,
+      "binance_end": 63576.0546875
+    },
+    {
+      "market_id": "3515512",
+      "date": "2026-08-12",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63604.25390625,
+      "binance_end": 63609.0859375
+    },
+    {
+      "market_id": "3517741",
+      "date": "2026-08-12",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63544.01,
+      "binance_end": 63545.99609375
+    },
+    {
+      "market_id": "3518097",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63494.0,
+      "binance_end": 63492.125
+    },
+    {
+      "market_id": "3518127",
+      "date": "2026-08-12",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63510.50390625,
+      "binance_end": 63512.00390625
+    },
+    {
+      "market_id": "3518507",
+      "date": "2026-08-12",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63476.00390625,
+      "binance_end": 63476.015625
+    },
+    {
+      "market_id": "3518725",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63486.06,
+      "binance_end": 63476.0546875
+    },
+    {
+      "market_id": "3524903",
+      "date": "2026-08-12",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63370.703125,
+      "binance_end": 63380.375
+    },
+    {
+      "market_id": "3527094",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63537.5546875,
+      "binance_end": 63518.00390625
+    },
+    {
+      "market_id": "3528393",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63432.92,
+      "binance_end": 63432.2734375
+    },
+    {
+      "market_id": "3529146",
+      "date": "2026-08-12",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63416.96484375,
+      "binance_end": 63411.28515625
+    },
+    {
+      "market_id": "3532113",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63556.92,
+      "binance_end": 63565.375
+    },
+    {
+      "market_id": "3532730",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63449.13671875,
+      "binance_end": 63450.00390625
+    },
+    {
+      "market_id": "3534046",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63642.0,
+      "binance_end": 63643.203125
+    },
+    {
+      "market_id": "3535871",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63890.01953125,
+      "binance_end": 63893.99609375
+    },
+    {
+      "market_id": "3536078",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63835.88,
+      "binance_end": 63840.56
+    },
+    {
+      "market_id": "3536166",
+      "date": "2026-08-13",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63828.72,
+      "binance_end": 63826.375
+    },
+    {
+      "market_id": "3538825",
+      "date": "2026-08-13",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63627.99609375,
+      "binance_end": 63568.00390625
+    },
+    {
+      "market_id": "3538868",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63562.015625,
+      "binance_end": 63587.15625
+    },
+    {
+      "market_id": "3539270",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63572.00390625,
+      "binance_end": 63607.68359375
+    },
+    {
+      "market_id": "3539493",
+      "date": "2026-08-13",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63807.99609375,
+      "binance_end": 63807.92578125
+    },
+    {
+      "market_id": "3539792",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63830.00390625,
+      "binance_end": 63833.61328125
+    },
+    {
+      "market_id": "3539922",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63948.01,
+      "binance_end": 63959.99609375
+    },
+    {
+      "market_id": "3542118",
+      "date": "2026-08-13",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63460.00390625,
+      "binance_end": 63451.93359375
+    },
+    {
+      "market_id": "3542331",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63449.64453125,
+      "binance_end": 63464.296875
+    },
+    {
+      "market_id": "3547435",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63133.99609375,
+      "binance_end": 63138.00390625
+    },
+    {
+      "market_id": "3551187",
+      "date": "2026-08-13",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63422.81,
+      "binance_end": 63418.24609375
+    },
+    {
+      "market_id": "3551876",
+      "date": "2026-08-13",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63407.99,
+      "binance_end": 63405.234375
+    },
+    {
+      "market_id": "3552270",
+      "date": "2026-08-13",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63453.31,
+      "binance_end": 63447.99609375
+    },
+    {
+      "market_id": "3552491",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63384.59375,
+      "binance_end": 63391.10546875
+    },
+    {
+      "market_id": "3552802",
+      "date": "2026-08-13",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63451.61328125,
+      "binance_end": 63455.59375
+    },
+    {
+      "market_id": "3553907",
+      "date": "2026-08-13",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63478.02,
+      "binance_end": 63478.00390625
+    },
+    {
+      "market_id": "3555743",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63508.0,
+      "binance_end": 63503.234375
+    },
+    {
+      "market_id": "3555936",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63539.46484375,
+      "binance_end": 63541.4453125
+    },
+    {
+      "market_id": "3556403",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63502.01,
+      "binance_end": 63501.9765625
+    },
+    {
+      "market_id": "3558250",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63384.2734375,
+      "binance_end": 63387.9453125
+    },
+    {
+      "market_id": "3558701",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63351.84,
+      "binance_end": 63350.00390625
+    },
+    {
+      "market_id": "3558719",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63350.01,
+      "binance_end": 63350.00390625
+    },
+    {
+      "market_id": "3559235",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63243.81640625,
+      "binance_end": 63226.453125
+    },
+    {
+      "market_id": "3561328",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62925.99609375,
+      "binance_end": 62937.46484375
+    },
+    {
+      "market_id": "3561394",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62770.8,
+      "binance_end": 62781.1640625
+    },
+    {
+      "market_id": "3561418",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62781.16,
+      "binance_end": 62799.99609375
+    },
+    {
+      "market_id": "3561928",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62860.86328125,
+      "binance_end": 62877.046875
+    },
+    {
+      "market_id": "3562048",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62794.99,
+      "binance_end": 62817.5859375
+    },
+    {
+      "market_id": "3562374",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62752.47,
+      "binance_end": 62763.7734375
+    },
+    {
+      "market_id": "3562675",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62888.00390625,
+      "binance_end": 62888.4453125
+    },
+    {
+      "market_id": "3563211",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62850.25,
+      "binance_end": 62852.515625
+    },
+    {
+      "market_id": "3563226",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62852.515625,
+      "binance_end": 62859.796875
+    },
+    {
+      "market_id": "3563599",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 62901.515625,
+      "binance_end": 62888.00390625
+    },
+    {
+      "market_id": "3563639",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62888.01,
+      "binance_end": 62896.10546875
+    },
+    {
+      "market_id": "3563801",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 62868.82421875,
+      "binance_end": 62868.015625
+    },
+    {
+      "market_id": "3563839",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62803.67,
+      "binance_end": 62824.7734375
+    },
+    {
+      "market_id": "3563861",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 62827.453125,
+      "binance_end": 62802.015625
+    },
+    {
+      "market_id": "3564182",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62761.90625,
+      "binance_end": 62781.99609375
+    },
+    {
+      "market_id": "3564744",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62647.99,
+      "binance_end": 62661.6640625
+    },
+    {
+      "market_id": "3564760",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 62674.95,
+      "binance_end": 62668.64453125
+    },
+    {
+      "market_id": "3564817",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62601.84,
+      "binance_end": 62609.99609375
+    },
+    {
+      "market_id": "3564850",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 62596.00390625,
+      "binance_end": 62593.99609375
+    },
+    {
+      "market_id": "3565560",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63001.21,
+      "binance_end": 63024.00390625
+    },
+    {
+      "market_id": "3572881",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62889.92,
+      "binance_end": 62901.81640625
+    },
+    {
+      "market_id": "3573232",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62833.34,
+      "binance_end": 62834.484375
+    },
+    {
+      "market_id": "3573265",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 62834.484375,
+      "binance_end": 62833.99609375
+    },
+    {
+      "market_id": "3573945",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 62880.35546875,
+      "binance_end": 62880.34375
+    },
+    {
+      "market_id": "3574138",
+      "date": "2026-08-14",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62886.88,
+      "binance_end": 62887.45
+    },
+    {
+      "market_id": "3574351",
+      "date": "2026-08-14",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 62948.10546875,
+      "binance_end": 62929.85546875
+    },
+    {
+      "market_id": "3574932",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63021.7265625,
+      "binance_end": 63027.85546875
+    },
+    {
+      "market_id": "3575025",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63019.984375,
+      "binance_end": 63013.35546875
+    },
+    {
+      "market_id": "3575359",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63037.9140625,
+      "binance_end": 63033.99609375
+    },
+    {
+      "market_id": "3575896",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63116.85546875,
+      "binance_end": 63102.57421875
+    },
+    {
+      "market_id": "3576176",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63126.1640625,
+      "binance_end": 63128.00390625
+    },
+    {
+      "market_id": "3576347",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63154.0,
+      "binance_end": 63132.00390625
+    },
+    {
+      "market_id": "3576819",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63125.8359375,
+      "binance_end": 63124.56640625
+    },
+    {
+      "market_id": "3578015",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63075.07,
+      "binance_end": 63068.953125
+    },
+    {
+      "market_id": "3578041",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63068.96,
+      "binance_end": 63068.5234375
+    },
+    {
+      "market_id": "3578302",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63037.77,
+      "binance_end": 63047.67578125
+    },
+    {
+      "market_id": "3580013",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63018.81,
+      "binance_end": 63018.8046875
+    },
+    {
+      "market_id": "3580487",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63032.53,
+      "binance_end": 63035.00390625
+    },
+    {
+      "market_id": "3580538",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63035.01,
+      "binance_end": 63035.00390625
+    },
+    {
+      "market_id": "3580840",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63025.1953125,
+      "binance_end": 63022.00390625
+    },
+    {
+      "market_id": "3580916",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62986.37,
+      "binance_end": 62987.25390625
+    },
+    {
+      "market_id": "3581094",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62987.25,
+      "binance_end": 62987.25390625
+    },
+    {
+      "market_id": "3581187",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 62985.0,
+      "binance_end": 62977.81640625
+    },
+    {
+      "market_id": "3582146",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63074.21484375,
+      "binance_end": 63054.68359375
+    },
+    {
+      "market_id": "3582485",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63040.9453125,
+      "binance_end": 63040.046875
+    },
+    {
+      "market_id": "3583218",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63042.83,
+      "binance_end": 63055.01
+    },
+    {
+      "market_id": "3584095",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63040.01,
+      "binance_end": 63045.6953125
+    },
+    {
+      "market_id": "3584472",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63086.39453125,
+      "binance_end": 63083.03515625
+    },
+    {
+      "market_id": "3584963",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63096.62,
+      "binance_end": 63096.60546875
+    },
+    {
+      "market_id": "3585077",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63096.62,
+      "binance_end": 63096.625
+    },
+    {
+      "market_id": "3585121",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63096.63,
+      "binance_end": 63096.5859375
+    },
+    {
+      "market_id": "3585195",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63096.58,
+      "binance_end": 63096.5859375
+    },
+    {
+      "market_id": "3585577",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63070.5,
+      "binance_end": 63070.49609375
+    },
+    {
+      "market_id": "3586285",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63050.05,
+      "binance_end": 63050.0546875
+    },
+    {
+      "market_id": "3589397",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63088.1953125,
+      "binance_end": 63086.60546875
+    },
+    {
+      "market_id": "3589718",
+      "date": "2026-08-15",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63101.31,
+      "binance_end": 63101.31640625
+    },
+    {
+      "market_id": "3590311",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63126.08,
+      "binance_end": 63126.07421875
+    },
+    {
+      "market_id": "3593638",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63139.96,
+      "binance_end": 63139.953125
+    },
+    {
+      "market_id": "3594042",
+      "date": "2026-08-15",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63086.01,
+      "binance_end": 63086.00390625
+    },
+    {
+      "market_id": "3594118",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63072.53,
+      "binance_end": 63070.4765625
+    },
+    {
+      "market_id": "3594144",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63070.48,
+      "binance_end": 63071.74609375
+    },
+    {
+      "market_id": "3594403",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63070.73,
+      "binance_end": 63073.015625
+    },
+    {
+      "market_id": "3594825",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63066.94,
+      "binance_end": 63066.93359375
+    },
+    {
+      "market_id": "3595692",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63124.03,
+      "binance_end": 63120.93359375
+    },
+    {
+      "market_id": "3598790",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63094.0,
+      "binance_end": 63093.99609375
+    },
+    {
+      "market_id": "3598844",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63070.01,
+      "binance_end": 63070.00390625
+    },
+    {
+      "market_id": "3598950",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63070.0,
+      "binance_end": 63070.00390625
+    },
+    {
+      "market_id": "3598960",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63070.00390625,
+      "binance_end": 63068.53515625
+    },
+    {
+      "market_id": "3599594",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63043.99609375,
+      "binance_end": 63057.375
+    },
+    {
+      "market_id": "3600140",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63054.84,
+      "binance_end": 63054.34375
+    },
+    {
+      "market_id": "3600144",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63054.34,
+      "binance_end": 63054.34375
+    },
+    {
+      "market_id": "3600193",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63061.02,
+      "binance_end": 63061.0234375
+    },
+    {
+      "market_id": "3600198",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63061.02,
+      "binance_end": 63061.0234375
+    },
+    {
+      "market_id": "3600441",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63061.03,
+      "binance_end": 63061.0234375
+    },
+    {
+      "market_id": "3600521",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63064.1,
+      "binance_end": 63064.10546875
+    },
+    {
+      "market_id": "3600580",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63064.11,
+      "binance_end": 63064.10546875
+    },
+    {
+      "market_id": "3600608",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63079.76,
+      "binance_end": 63072.42578125
+    },
+    {
+      "market_id": "3601020",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63054.34375,
+      "binance_end": 63056.7265625
+    },
+    {
+      "market_id": "3601070",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63000.00390625,
+      "binance_end": 62997.99609375
+    },
+    {
+      "market_id": "3601419",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63008.57,
+      "binance_end": 63008.56640625
+    },
+    {
+      "market_id": "3601511",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63008.57,
+      "binance_end": 63008.56640625
+    },
+    {
+      "market_id": "3601519",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63008.56,
+      "binance_end": 63008.56640625
+    },
+    {
+      "market_id": "3603203",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63025.41,
+      "binance_end": 63025.39453125
+    },
+    {
+      "market_id": "3603295",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63025.36,
+      "binance_end": 63025.35546875
+    },
+    {
+      "market_id": "3603384",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63004.95,
+      "binance_end": 63005.97
+    },
+    {
+      "market_id": "3603729",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63021.99,
+      "binance_end": 63021.984375
+    },
+    {
+      "market_id": "3604076",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63058.03,
+      "binance_end": 63062.99609375
+    },
+    {
+      "market_id": "3604383",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63060.01,
+      "binance_end": 63063.04
+    },
+    {
+      "market_id": "3604462",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63063.04,
+      "binance_end": 63063.046875
+    },
+    {
+      "market_id": "3604887",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63114.0,
+      "binance_end": 63114.00390625
+    },
+    {
+      "market_id": "3605042",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63110.26,
+      "binance_end": 63110.25390625
+    },
+    {
+      "market_id": "3605788",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63146.39453125,
+      "binance_end": 63138.5859375
+    },
+    {
+      "market_id": "3606859",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63260.0,
+      "binance_end": 63276.60546875
+    },
+    {
+      "market_id": "3606871",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63276.61,
+      "binance_end": 63266.18359375
+    },
+    {
+      "market_id": "3606948",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63212.82,
+      "binance_end": 63217.09
+    },
+    {
+      "market_id": "3607907",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63166.39,
+      "binance_end": 63159.99609375
+    },
+    {
+      "market_id": "3610698",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63145.15,
+      "binance_end": 63145.14453125
+    },
+    {
+      "market_id": "3612985",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63190.0,
+      "binance_end": 63187.99609375
+    },
+    {
+      "market_id": "3615581",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63072.1953125,
+      "binance_end": 63067.796875
+    },
+    {
+      "market_id": "3615624",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63067.79,
+      "binance_end": 63063.35546875
+    },
+    {
+      "market_id": "3616736",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63032.0,
+      "binance_end": 63034.4140625
+    },
+    {
+      "market_id": "3619418",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62842.6953125,
+      "binance_end": 62876.61328125
+    },
+    {
+      "market_id": "3619437",
+      "date": "2026-08-16",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 62876.61,
+      "binance_end": 62876.24609375
+    },
+    {
+      "market_id": "3620193",
+      "date": "2026-08-16",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 62890.765625,
+      "binance_end": 62899.99609375
+    },
+    {
+      "market_id": "3620713",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63052.01,
+      "binance_end": 63056.484375
+    },
+    {
+      "market_id": "3621274",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63081.99609375,
+      "binance_end": 63083.265625
+    },
+    {
+      "market_id": "3621572",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63385.01,
+      "binance_end": 63391.015625
+    },
+    {
+      "market_id": "3622889",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63495.03,
+      "binance_end": 63486.984375
+    },
+    {
+      "market_id": "3622911",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63486.53,
+      "binance_end": 63486.93359375
+    },
+    {
+      "market_id": "3623127",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63494.00390625,
+      "binance_end": 63518.00390625
+    },
+    {
+      "market_id": "3625332",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63491.95,
+      "binance_end": 63488.06640625
+    },
+    {
+      "market_id": "3626022",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63590.61328125,
+      "binance_end": 63574.0234375
+    },
+    {
+      "market_id": "3626322",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63602.84,
+      "binance_end": 63600.14453125
+    },
+    {
+      "market_id": "3627145",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63539.5546875,
+      "binance_end": 63514.4453125
+    },
+    {
+      "market_id": "3627791",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63416.734375,
+      "binance_end": 63418.2265625
+    },
+    {
+      "market_id": "3627807",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63418.23,
+      "binance_end": 63414.484375
+    },
+    {
+      "market_id": "3629018",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63370.00390625,
+      "binance_end": 63385.49609375
+    },
+    {
+      "market_id": "3629333",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63385.49,
+      "binance_end": 63380.8359375
+    },
+    {
+      "market_id": "3631102",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63637.60546875,
+      "binance_end": 63623.92578125
+    },
+    {
+      "market_id": "3631123",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63623.93,
+      "binance_end": 63618.84375
+    },
+    {
+      "market_id": "3632289",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63631.11,
+      "binance_end": 63620.56640625
+    },
+    {
+      "market_id": "3632347",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63620.01,
+      "binance_end": 63627.99609375
+    },
+    {
+      "market_id": "3633344",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63702.0,
+      "binance_end": 63711.43
+    },
+    {
+      "market_id": "3633839",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 63628.0,
+      "binance_end": 63641.53515625
+    },
+    {
+      "market_id": "3635277",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 63922.83,
+      "binance_end": 63919.9
+    },
+    {
+      "market_id": "3636679",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64080.79,
+      "binance_end": 64098.546875
+    },
+    {
+      "market_id": "3636705",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64098.54,
+      "binance_end": 64097.8046875
+    },
+    {
+      "market_id": "3643302",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64452.66,
+      "binance_end": 64454.9765625
+    },
+    {
+      "market_id": "3646833",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64312.85,
+      "binance_end": 64309.96
+    },
+    {
+      "market_id": "3647013",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64309.1953125,
+      "binance_end": 64304.39453125
+    },
+    {
+      "market_id": "3647146",
+      "date": "2026-08-17",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64368.796875,
+      "binance_end": 64370.00390625
+    },
+    {
+      "market_id": "3648376",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64366.39,
+      "binance_end": 64364.00390625
+    },
+    {
+      "market_id": "3649951",
+      "date": "2026-08-17",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64292.15625,
+      "binance_end": 64291.25390625
+    },
+    {
+      "market_id": "3651299",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64437.42578125,
+      "binance_end": 64426.68359375
+    },
+    {
+      "market_id": "3653063",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64192.01,
+      "binance_end": 64192.8359375
+    },
+    {
+      "market_id": "3653222",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64152.75390625,
+      "binance_end": 64152.82421875
+    },
+    {
+      "market_id": "3653491",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64126.0,
+      "binance_end": 64122.453125
+    },
+    {
+      "market_id": "3657139",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64196.61328125,
+      "binance_end": 64199.21484375
+    },
+    {
+      "market_id": "3658229",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64342.32,
+      "binance_end": 64338.82421875
+    },
+    {
+      "market_id": "3659951",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64164.0,
+      "binance_end": 64164.00390625
+    },
+    {
+      "market_id": "3664557",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64375.39,
+      "binance_end": 64374.03
+    },
+    {
+      "market_id": "3664633",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64374.02,
+      "binance_end": 64373.88671875
+    },
+    {
+      "market_id": "3669105",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64298.0,
+      "binance_end": 64303.82421875
+    },
+    {
+      "market_id": "3669162",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64242.07421875,
+      "binance_end": 64242.1953125
+    },
+    {
+      "market_id": "3669853",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64786.01,
+      "binance_end": 64806.46484375
+    },
+    {
+      "market_id": "3669984",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64765.25,
+      "binance_end": 64765.99609375
+    },
+    {
+      "market_id": "3670558",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64875.99609375,
+      "binance_end": 64857.99609375
+    },
+    {
+      "market_id": "3672122",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64670.0234375,
+      "binance_end": 64673.6640625
+    },
+    {
+      "market_id": "3680994",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64716.0,
+      "binance_end": 64719.31640625
+    },
+    {
+      "market_id": "3681968",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64668.41,
+      "binance_end": 64665.85546875
+    },
+    {
+      "market_id": "3682647",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64584.0,
+      "binance_end": 64599.99609375
+    },
+    {
+      "market_id": "3683036",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64629.49,
+      "binance_end": 64624.375
+    },
+    {
+      "market_id": "3683430",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64589.31640625,
+      "binance_end": 64583.375
+    },
+    {
+      "market_id": "3683974",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64590.31,
+      "binance_end": 64571.953125
+    },
+    {
+      "market_id": "3684024",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64571.953125,
+      "binance_end": 64583.11328125
+    },
+    {
+      "market_id": "3684061",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64583.12,
+      "binance_end": 64583.11328125
+    },
+    {
+      "market_id": "3684362",
+      "date": "2026-08-18",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64583.11,
+      "binance_end": 64592.13671875
+    },
+    {
+      "market_id": "3685396",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64728.27,
+      "binance_end": 64722.8046875
+    },
+    {
+      "market_id": "3685498",
+      "date": "2026-08-18",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64754.60546875,
+      "binance_end": 64753.53515625
+    },
+    {
+      "market_id": "3686005",
+      "date": "2026-08-19",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64572.01,
+      "binance_end": 64587.60546875
+    },
+    {
+      "market_id": "3686932",
+      "date": "2026-08-19",
+      "btc_dir": "UP",
+      "market_result": "DOWN",
+      "binance_open": 64485.0546875,
+      "binance_end": 64487.1640625
+    },
+    {
+      "market_id": "3686956",
+      "date": "2026-08-19",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64487.17,
+      "binance_end": 64474.296875
+    },
+    {
+      "market_id": "3687611",
+      "date": "2026-08-19",
+      "btc_dir": "DOWN",
+      "market_result": "UP",
+      "binance_open": 64351.86,
+      "binance_end": 64350.00390625
+    }
+  ]
+}

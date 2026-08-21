@@ -24,6 +24,8 @@ createRoot(document.getElementById('root')!).render(
           <Route path="pmdata" element={<PmDataPage />} />
           <Route path="strategy" element={<StrategyPage />} />
           <Route path="prediction" element={<PredictionPage />} />
+          {/* History deep-link: /:marketId (numeric). Keep after named routes. */}
+          <Route path=":marketId" element={<MarketPage mode="monitor" />} />
         </Route>
       </Routes>
     </BrowserRouter>

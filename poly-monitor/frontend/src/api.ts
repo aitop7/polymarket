@@ -204,25 +204,39 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
     }),
-  markets: (split: string, opts?: { limit?: number; date?: string; rebuild_index?: boolean }) => {
+  markets: (
+    split: string,
+    opts?: { limit?: number; date?: string; rebuild_index?: boolean; series?: '5m' | '15m' },
+  ) => {
     const q = new URLSearchParams({ split })
     if (opts?.limit != null) q.set('limit', String(opts.limit))
     if (opts?.date) q.set('date', opts.date)
     if (opts?.rebuild_index) q.set('rebuild_index', 'true')
-    return json<{ split: string; count: number; markets: MarketSummary[]; date?: string }>(`/api/markets?${q}`)
-  },
-  marketDates: (split: string, opts?: { rebuild_index?: boolean }) => {
-    const q = new URLSearchParams({ split })
-    if (opts?.rebuild_index) q.set('rebuild_index', 'true')
-    return json<{ split: string; count: number; dates: string[]; min: string | null; max: string | null }>(
-      `/api/markets/dates?${q}`,
+    if (opts?.series) q.set('series', opts.series)
+    return json<{ split: string; series?: string; count: number; markets: MarketSummary[]; date?: string }>(
+      `/api/markets?${q}`,
     )
   },
-  daySlots: (date: string, opts?: { split?: string }) => {
+  marketDates: (split: string, opts?: { rebuild_index?: boolean; series?: '5m' | '15m' }) => {
+    const q = new URLSearchParams({ split })
+    if (opts?.rebuild_index) q.set('rebuild_index', 'true')
+    if (opts?.series) q.set('series', opts.series)
+    return json<{
+      split: string
+      series?: string
+      count: number
+      dates: string[]
+      min: string | null
+      max: string | null
+    }>(`/api/markets/dates?${q}`)
+  },
+  daySlots: (date: string, opts?: { split?: string; series?: '5m' | '15m' }) => {
     const q = new URLSearchParams({ date, split: opts?.split || 'twap' })
+    if (opts?.series) q.set('series', opts.series)
     return json<{
       date_et: string
       split: string
+      series?: string
       expected: number
       present: number
       n_missing: number
@@ -256,11 +270,15 @@ export const api = {
       n_missing?: number
       error?: string
     }>(`/api/markets/day-slots/fix?date=${encodeURIComponent(date)}`, { method: 'POST' }),
-  marketAt: (split: string, opts: { date?: string; time?: string; t?: number }) => {
+  marketAt: (
+    split: string,
+    opts: { date?: string; time?: string; t?: number; series?: '5m' | '15m' },
+  ) => {
     const q = new URLSearchParams({ split })
     if (opts.date) q.set('date', opts.date)
     if (opts.time) q.set('time', opts.time)
     if (opts.t != null) q.set('t', String(opts.t))
+    if (opts.series) q.set('series', opts.series)
     return json<MarketSummary>(`/api/markets/at?${q}`)
   },
   market: (id: string, split?: string) =>
@@ -552,18 +570,24 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  liveSeries: (marketId?: string | null, lookbackMs = 300_000) => {
+  liveSeries: (
+    marketId?: string | null,
+    lookbackMs = 300_000,
+    opts?: { series?: '5m' | '15m' },
+  ) => {
     const q = new URLSearchParams()
     if (marketId) q.set('market_id', marketId)
     q.set('lookback_ms', String(lookbackMs))
+    if (opts?.series) q.set('series', opts.series)
     const qs = q.toString()
     return json<LiveSeriesResponse>(`/api/live/series${qs ? `?${qs}` : ''}`)
   },
-  liveHolders: (limit = 20) => {
+  liveHolders: (limit = 20, opts?: { series?: '5m' | '15m' }) => {
     const q = new URLSearchParams({
       limit: String(Math.max(1, Math.min(20, limit))),
       _ts: String(Date.now()),
     })
+    if (opts?.series) q.set('series', opts.series)
     return json<LiveHoldersResponse>(`/api/live/holders?${q}`, {
       cache: 'no-store',
     })

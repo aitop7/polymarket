@@ -23,12 +23,19 @@ for p in (_BACKEND, _POLY):
         sys.path.insert(0, s)
 
 from app.api.routes import router  # noqa: E402
+from app.live.service import warm_all_live_services  # noqa: E402
 from app.core.config import settings  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Warm both 5m and 15m live services so discovery/PTB stay ready.
+    try:
+        warm_all_live_services()
+    except Exception as exc:
+        logger.warning("warm live services failed: %s", exc)
+
     # Background: refresh finished TWAP history from VPS every minute (never live window).
     async def _vps_sync_loop() -> None:
         from app.live.vps_sync import PERIODIC_SYNC_S, get_vps_sync

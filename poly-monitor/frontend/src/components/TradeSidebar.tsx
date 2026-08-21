@@ -2,6 +2,7 @@ import TradeCard from './TradeCard'
 
 type Props = {
   mode: 'monitor' | 'paper'
+  marketSeries?: '5m' | '15m'
   tradeAction: 'BUY' | 'SELL'
   onTradeAction: (a: 'BUY' | 'SELL') => void
   side: 'UP' | 'DOWN'
@@ -22,6 +23,7 @@ type Props = {
 export default function TradeSidebar(props: Props) {
   const {
     mode,
+    marketSeries = '5m',
     tradeAction,
     onTradeAction,
     side,
@@ -42,6 +44,7 @@ export default function TradeSidebar(props: Props) {
   return (
     <div className="trade-stack">
       <TradeCard
+        title={`BTC Up or Down ${marketSeries}`}
         monitorHint={monitorHint ?? mode === 'monitor'}
         tradeAction={tradeAction}
         onTradeAction={onTradeAction}

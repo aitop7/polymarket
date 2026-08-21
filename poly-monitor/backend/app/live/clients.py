@@ -1,4 +1,4 @@
-"""Thin public-API clients for live BTC Up/Down 5m markets."""
+"""Thin public-API clients for live BTC Up/Down 5m / 15m markets."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import time
 from typing import Any
 
 import httpx
+
+from app.core.series import SERIES_5M, MarketSeries, get_series
 
 GAMMA_URL = "https://gamma-api.polymarket.com"
 CLOB_URL = "https://clob.polymarket.com"
@@ -17,14 +19,18 @@ BINANCE_FALLBACKS = (
     "https://api1.binance.com",
 )
 
-MARKET_DURATION_S = 300
+# Back-compat alias (5m default).
+MARKET_DURATION_S = SERIES_5M.duration_s
 
 
-def window_start_unix(now_s: float | None = None) -> int:
-    import time
-
+def window_start_unix(
+    now_s: float | None = None, *, duration_s: int | None = None
+) -> int:
     ts = int(now_s if now_s is not None else time.time())
-    return ts - (ts % MARKET_DURATION_S)
+    dur = int(duration_s if duration_s is not None else MARKET_DURATION_S)
+    if dur <= 0:
+        dur = 300
+    return ts - (ts % dur)
 
 
 def parse_token_ids(market: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -198,12 +204,14 @@ class LiveClients:
             return None
         return None
 
-    async def discover_active_updown(self) -> dict[str, Any] | None:
-        """Resolve current (or nearest) open btc-updown-5m market."""
-        start = window_start_unix()
-        # Prefer current window, then previous/next (clock skew / rollover).
-        for offset in (0, -MARKET_DURATION_S, MARKET_DURATION_S, -2 * MARKET_DURATION_S):
-            slug = f"btc-updown-5m-{start + offset}"
+    async def discover_active_updown(
+        self, series: MarketSeries | str | None = None
+    ) -> dict[str, Any] | None:
+        """Resolve current (or nearest) open btc-updown-{5m|15m} market."""
+        s = series if isinstance(series, MarketSeries) else get_series(series)
+        start = window_start_unix(duration_s=s.duration_s)
+        for offset in (0, -s.duration_s, s.duration_s, -2 * s.duration_s):
+            slug = s.slug_for_start(start + offset)
             try:
                 market = await self.get_market_by_slug(slug)
             except Exception:

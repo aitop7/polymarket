@@ -1,0 +1,365 @@
+{
+  "n_mismatches": 363,
+  "n_all_markets": 3344,
+  "overall_mismatch_pct": 10.86,
+  "by_hour": [
+    {
+      "hour_et": 0,
+      "label": "00:00",
+      "mismatches": 13,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 3.58,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 9.03,
+      "lift": 0.832
+    },
+    {
+      "hour_et": 1,
+      "label": "01:00",
+      "mismatches": 17,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 4.68,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 11.81,
+      "lift": 1.088
+    },
+    {
+      "hour_et": 2,
+      "label": "02:00",
+      "mismatches": 13,
+      "all": 143,
+      "p_hour_given_mismatch_pct": 3.58,
+      "p_hour_base_pct": 4.28,
+      "p_mismatch_given_hour_pct": 9.09,
+      "lift": 0.837
+    },
+    {
+      "hour_et": 3,
+      "label": "03:00",
+      "mismatches": 17,
+      "all": 132,
+      "p_hour_given_mismatch_pct": 4.68,
+      "p_hour_base_pct": 3.95,
+      "p_mismatch_given_hour_pct": 12.88,
+      "lift": 1.186
+    },
+    {
+      "hour_et": 4,
+      "label": "04:00",
+      "mismatches": 17,
+      "all": 132,
+      "p_hour_given_mismatch_pct": 4.68,
+      "p_hour_base_pct": 3.95,
+      "p_mismatch_given_hour_pct": 12.88,
+      "lift": 1.186
+    },
+    {
+      "hour_et": 5,
+      "label": "05:00",
+      "mismatches": 14,
+      "all": 132,
+      "p_hour_given_mismatch_pct": 3.86,
+      "p_hour_base_pct": 3.95,
+      "p_mismatch_given_hour_pct": 10.61,
+      "lift": 0.977
+    },
+    {
+      "hour_et": 6,
+      "label": "06:00",
+      "mismatches": 13,
+      "all": 132,
+      "p_hour_given_mismatch_pct": 3.58,
+      "p_hour_base_pct": 3.95,
+      "p_mismatch_given_hour_pct": 9.85,
+      "lift": 0.907
+    },
+    {
+      "hour_et": 7,
+      "label": "07:00",
+      "mismatches": 18,
+      "all": 132,
+      "p_hour_given_mismatch_pct": 4.96,
+      "p_hour_base_pct": 3.95,
+      "p_mismatch_given_hour_pct": 13.64,
+      "lift": 1.256
+    },
+    {
+      "hour_et": 8,
+      "label": "08:00",
+      "mismatches": 23,
+      "all": 132,
+      "p_hour_given_mismatch_pct": 6.34,
+      "p_hour_base_pct": 3.95,
+      "p_mismatch_given_hour_pct": 17.42,
+      "lift": 1.605
+    },
+    {
+      "hour_et": 9,
+      "label": "09:00",
+      "mismatches": 20,
+      "all": 132,
+      "p_hour_given_mismatch_pct": 5.51,
+      "p_hour_base_pct": 3.95,
+      "p_mismatch_given_hour_pct": 15.15,
+      "lift": 1.396
+    },
+    {
+      "hour_et": 10,
+      "label": "10:00",
+      "mismatches": 15,
+      "all": 132,
+      "p_hour_given_mismatch_pct": 4.13,
+      "p_hour_base_pct": 3.95,
+      "p_mismatch_given_hour_pct": 11.36,
+      "lift": 1.047
+    },
+    {
+      "hour_et": 11,
+      "label": "11:00",
+      "mismatches": 10,
+      "all": 131,
+      "p_hour_given_mismatch_pct": 2.75,
+      "p_hour_base_pct": 3.92,
+      "p_mismatch_given_hour_pct": 7.63,
+      "lift": 0.703
+    },
+    {
+      "hour_et": 12,
+      "label": "12:00",
+      "mismatches": 16,
+      "all": 142,
+      "p_hour_given_mismatch_pct": 4.41,
+      "p_hour_base_pct": 4.25,
+      "p_mismatch_given_hour_pct": 11.27,
+      "lift": 1.038
+    },
+    {
+      "hour_et": 13,
+      "label": "13:00",
+      "mismatches": 18,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 4.96,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 12.5,
+      "lift": 1.152
+    },
+    {
+      "hour_et": 14,
+      "label": "14:00",
+      "mismatches": 9,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 2.48,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 6.25,
+      "lift": 0.576
+    },
+    {
+      "hour_et": 15,
+      "label": "15:00",
+      "mismatches": 18,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 4.96,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 12.5,
+      "lift": 1.152
+    },
+    {
+      "hour_et": 16,
+      "label": "16:00",
+      "mismatches": 12,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 3.31,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 8.33,
+      "lift": 0.768
+    },
+    {
+      "hour_et": 17,
+      "label": "17:00",
+      "mismatches": 12,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 3.31,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 8.33,
+      "lift": 0.768
+    },
+    {
+      "hour_et": 18,
+      "label": "18:00",
+      "mismatches": 14,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 3.86,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 9.72,
+      "lift": 0.896
+    },
+    {
+      "hour_et": 19,
+      "label": "19:00",
+      "mismatches": 19,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 5.23,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 13.19,
+      "lift": 1.215
+    },
+    {
+      "hour_et": 20,
+      "label": "20:00",
+      "mismatches": 14,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 3.86,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 9.72,
+      "lift": 0.896
+    },
+    {
+      "hour_et": 21,
+      "label": "21:00",
+      "mismatches": 14,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 3.86,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 9.72,
+      "lift": 0.896
+    },
+    {
+      "hour_et": 22,
+      "label": "22:00",
+      "mismatches": 18,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 4.96,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 12.5,
+      "lift": 1.152
+    },
+    {
+      "hour_et": 23,
+      "label": "23:00",
+      "mismatches": 9,
+      "all": 144,
+      "p_hour_given_mismatch_pct": 2.48,
+      "p_hour_base_pct": 4.31,
+      "p_mismatch_given_hour_pct": 6.25,
+      "lift": 0.576
+    }
+  ],
+  "by_session": [
+    {
+      "session": "overnight",
+      "mismatches": 91,
+      "all": 827,
+      "p_session_given_mismatch_pct": 25.07,
+      "p_mismatch_given_session_pct": 11.0
+    },
+    {
+      "session": "morning",
+      "mismatches": 99,
+      "all": 791,
+      "p_session_given_mismatch_pct": 27.27,
+      "p_mismatch_given_session_pct": 12.52
+    },
+    {
+      "session": "afternoon",
+      "mismatches": 85,
+      "all": 862,
+      "p_session_given_mismatch_pct": 23.42,
+      "p_mismatch_given_session_pct": 9.86
+    },
+    {
+      "session": "evening",
+      "mismatches": 88,
+      "all": 864,
+      "p_session_given_mismatch_pct": 24.24,
+      "p_mismatch_given_session_pct": 10.19
+    }
+  ],
+  "by_dow": [
+    {
+      "dow": "Mon",
+      "mismatches": 55,
+      "all": 576,
+      "p_mismatch_pct": 9.55
+    },
+    {
+      "dow": "Tue",
+      "mismatches": 56,
+      "all": 576,
+      "p_mismatch_pct": 9.72
+    },
+    {
+      "dow": "Wed",
+      "mismatches": 20,
+      "all": 323,
+      "p_mismatch_pct": 6.19
+    },
+    {
+      "dow": "Thu",
+      "mismatches": 22,
+      "all": 288,
+      "p_mismatch_pct": 7.64
+    },
+    {
+      "dow": "Fri",
+      "mismatches": 52,
+      "all": 430,
+      "p_mismatch_pct": 12.09
+    },
+    {
+      "dow": "Sat",
+      "mismatches": 69,
+      "all": 575,
+      "p_mismatch_pct": 12.0
+    },
+    {
+      "dow": "Sun",
+      "mismatches": 89,
+      "all": 576,
+      "p_mismatch_pct": 15.45
+    }
+  ],
+  "by_4h": [
+    {
+      "block": "00-04",
+      "mismatches": 60,
+      "all": 563,
+      "p_mismatch_pct": 10.66,
+      "p_block_given_mismatch_pct": 16.53
+    },
+    {
+      "block": "04-08",
+      "mismatches": 62,
+      "all": 528,
+      "p_mismatch_pct": 11.74,
+      "p_block_given_mismatch_pct": 17.08
+    },
+    {
+      "block": "08-12",
+      "mismatches": 68,
+      "all": 527,
+      "p_mismatch_pct": 12.9,
+      "p_block_given_mismatch_pct": 18.73
+    },
+    {
+      "block": "12-16",
+      "mismatches": 61,
+      "all": 574,
+      "p_mismatch_pct": 10.63,
+      "p_block_given_mismatch_pct": 16.8
+    },
+    {
+      "block": "16-20",
+      "mismatches": 57,
+      "all": 576,
+      "p_mismatch_pct": 9.9,
+      "p_block_given_mismatch_pct": 15.7
+    },
+    {
+      "block": "20-24",
+      "mismatches": 55,
+      "all": 576,
+      "p_mismatch_pct": 9.55,
+      "p_block_given_mismatch_pct": 15.15
+    }
+  ]
+}

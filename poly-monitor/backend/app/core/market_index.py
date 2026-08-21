@@ -19,6 +19,7 @@ from app.core.live_dataset import (
     iter_live_market_metas,
     live_fingerprint,
 )
+from app.core.series import SERIES_5M, MarketSeries, filter_rows_by_series, get_series
 
 SPLITS = ("train", "validation", "test")
 ALL_SPLITS = (*SPLITS, TWAP_SPLIT)
@@ -228,31 +229,31 @@ def filter_history_markets(split: str, rows: list[dict[str, Any]]) -> list[dict[
     return out
 
 
-def list_dates(split: str) -> list[str]:
-    idx = filter_history_markets(split, build_market_index(split))
-    return sorted({r["date_et"] for r in idx})
-
-
-MARKET_SLOT_S = 300
-FULL_DAY_SLOTS = 24 * 60 // (MARKET_SLOT_S // 60)  # 288
+MARKET_SLOT_S = SERIES_5M.duration_s
+FULL_DAY_SLOTS = SERIES_5M.slots_per_day  # 288 for 5m
 
 
 def expected_slot_starts_s(
-    date_et: str, *, now_ms: int | None = None
+    date_et: str,
+    *,
+    now_ms: int | None = None,
+    series: MarketSeries | str | None = None,
 ) -> list[int]:
-    """Unix-second starts for every 5m BTC window on an ET calendar day.
+    """Unix-second starts for every BTC window on an ET calendar day.
 
     When ``now_ms`` is set, omit windows that have not finished yet (today).
     """
+    s = series if isinstance(series, MarketSeries) else get_series(series)
+    slot_s = s.duration_s
     if not _DAY_RE.match(str(date_et or "")):
         return []
     d0 = datetime.strptime(date_et, "%Y-%m-%d").replace(tzinfo=ET)
     d1 = d0 + timedelta(days=1)
     t0 = int(d0.timestamp())
     t1 = int(d1.timestamp())
-    starts = list(range(t0, t1, MARKET_SLOT_S))
+    starts = list(range(t0, t1, slot_s))
     if now_ms is not None:
-        starts = [s for s in starts if (s + MARKET_SLOT_S) * 1000 <= int(now_ms)]
+        starts = [st for st in starts if (st + slot_s) * 1000 <= int(now_ms)]
     return starts
 
 
@@ -261,11 +262,14 @@ def list_day_slot_gaps(
     *,
     split: str = TWAP_SPLIT,
     now_ms: int | None = None,
+    series: MarketSeries | str | None = None,
 ) -> dict[str, Any]:
-    """Compare local history index vs expected 5m slots for one ET day."""
+    """Compare local history index vs expected slots for one ET day."""
+    s = series if isinstance(series, MarketSeries) else get_series(series)
+    slot_s = s.duration_s
     now = int(now_ms if now_ms is not None else time.time() * 1000)
-    expected = expected_slot_starts_s(date_et, now_ms=now)
-    day = list_markets_for_date(split, date_et) if expected else []
+    expected = expected_slot_starts_s(date_et, now_ms=now, series=s)
+    day = list_markets_for_date(split, date_et, series=s) if expected else []
     have = {int(r.get("start_time") or 0) // 1000 for r in day}
     missing: list[dict[str, Any]] = []
     for start_s in expected:
@@ -275,31 +279,45 @@ def list_day_slot_gaps(
             {
                 "start_s": start_s,
                 "start_time": start_s * 1000,
-                "end_time": (start_s + MARKET_SLOT_S) * 1000,
-                "slug": f"btc-updown-5m-{start_s}",
+                "end_time": (start_s + slot_s) * 1000,
+                "slug": s.slug_for_start(start_s),
+                "series": s.key,
                 "time_et": ms_to_et_time(start_s * 1000),
             }
         )
     day_start_ms = expected[0] * 1000 if expected else 0
-    day_end_ms = (expected[-1] + MARKET_SLOT_S) * 1000 if expected else 0
+    day_end_ms = (expected[-1] + slot_s) * 1000 if expected else 0
     return {
         "date_et": date_et,
         "split": split,
+        "series": s.key,
         "expected": len(expected),
         "present": len(day),
         "n_missing": len(missing),
         "missing": missing,
         "day_start_ms": day_start_ms,
         "day_end_ms": day_end_ms,
-        "full_day_slots": FULL_DAY_SLOTS,
+        "full_day_slots": s.slots_per_day,
     }
 
 
-def list_markets_for_date(split: str, date_et: str) -> list[dict[str, Any]]:
+def list_markets_for_date(
+    split: str,
+    date_et: str,
+    *,
+    series: MarketSeries | str | None = None,
+) -> list[dict[str, Any]]:
     idx = filter_history_markets(split, build_market_index(split))
     day = [r for r in idx if r["date_et"] == date_et]
+    day = filter_rows_by_series(day, series)
     day.sort(key=lambda r: int(r["start_time"]), reverse=True)
     return day
+
+
+def list_dates(split: str, *, series: MarketSeries | str | None = None) -> list[str]:
+    idx = filter_history_markets(split, build_market_index(split))
+    idx = filter_rows_by_series(idx, series)
+    return sorted({r["date_et"] for r in idx})
 
 
 def find_market_at(split: str, timestamp_ms: int) -> dict[str, Any] | None:

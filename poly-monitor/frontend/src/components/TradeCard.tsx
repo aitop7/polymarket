@@ -21,6 +21,7 @@ type Props = {
   onTrade: (opts: { size_usd?: number; shares?: number }) => void
   tradeDisabled: boolean
   monitorHint?: boolean
+  title?: string
 }
 
 const TAP_AMOUNTS = [5, 25, 100] as const
@@ -57,6 +58,7 @@ export default function TradeCard({
   onTrade,
   tradeDisabled,
   monitorHint,
+  title = 'BTC Up or Down 5m',
 }: Props) {
   const [orderType, setOrderType] = useState<OrderType>('1-tap')
   const [orderMenuOpen, setOrderMenuOpen] = useState(false)
@@ -163,7 +165,7 @@ export default function TradeCard({
           ₿
         </div>
         <div>
-          <div className="trade-card-title">BTC Up or Down 5m</div>
+          <div className="trade-card-title">{title}</div>
           <div className={`trade-card-side ${side === 'UP' ? 'up' : 'down'}`}>
             {side === 'UP' ? 'Up' : 'Down'}
           </div>

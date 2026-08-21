@@ -54,8 +54,11 @@ class ClobMarketWs:
         self._running = False
         self._asset_token: dict[str, bool] = {}  # asset_id -> is_down (plan: 0=UP,1=DOWN)
         self._asset_market: dict[str, str] = {}
+        # market_id -> (token_up, token_down)
+        self._markets: dict[str, tuple[str | None, str | None]] = {}
         self._books: dict[str, InMemoryBook] = {}
         self._want_assets: list[str] = []
+        self._last_price: dict[str, float] = {}
         self._last_up_price: float | None = None
         self._last_down_price: float | None = None
 
@@ -67,6 +70,11 @@ class ClobMarketWs:
     def last_down_price(self) -> float | None:
         return self._last_down_price
 
+    def last_price(self, token_id: str | None) -> float | None:
+        if not token_id:
+            return None
+        return self._last_price.get(token_id)
+
     def set_subscriptions(
         self,
         *,
@@ -74,21 +82,57 @@ class ClobMarketWs:
         token_up: str | None,
         token_down: str | None,
     ) -> None:
+        """Replace all subscriptions with a single market (compat)."""
+        self._markets = {str(market_id): (token_up, token_down)}
+        self._rebuild_subscriptions()
+
+    def set_all_subscriptions(
+        self,
+        markets: list[dict[str, Any]],
+    ) -> None:
+        """
+        Subscribe to multiple markets at once.
+
+        Each item: {market_id, token_up, token_down}
+        """
+        next_map: dict[str, tuple[str | None, str | None]] = {}
+        for m in markets:
+            mid = str(m.get("market_id") or "")
+            if not mid:
+                continue
+            next_map[mid] = (
+                str(m["token_up"]) if m.get("token_up") else None,
+                str(m["token_down"]) if m.get("token_down") else None,
+            )
+        self._markets = next_map
+        self._rebuild_subscriptions()
+
+    def _rebuild_subscriptions(self) -> None:
         mapping: dict[str, bool] = {}
         assets: list[str] = []
-        self._asset_market.clear()
-        if token_up:
-            mapping[token_up] = False  # UP => token False (0)
-            assets.append(token_up)
-            self._asset_market[token_up] = market_id
-            self._books.setdefault(token_up, InMemoryBook())
-        if token_down:
-            mapping[token_down] = True  # DOWN => token True (1)
-            assets.append(token_down)
-            self._asset_market[token_down] = market_id
-            self._books.setdefault(token_down, InMemoryBook())
+        asset_market: dict[str, str] = {}
+        for market_id, (token_up, token_down) in self._markets.items():
+            if token_up:
+                mapping[token_up] = False
+                assets.append(token_up)
+                asset_market[token_up] = market_id
+                self._books.setdefault(token_up, InMemoryBook())
+            if token_down:
+                mapping[token_down] = True
+                assets.append(token_down)
+                asset_market[token_down] = market_id
+                self._books.setdefault(token_down, InMemoryBook())
+        # Dedupe while preserving order
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for a in assets:
+            if a in seen:
+                continue
+            seen.add(a)
+            uniq.append(a)
         self._asset_token = mapping
-        self._want_assets = assets
+        self._asset_market = asset_market
+        self._want_assets = uniq
 
     def seed_book(self, token_id: str, levels: dict[str, list[dict[str, float]]]) -> None:
         book = self._books.setdefault(token_id, InMemoryBook())
@@ -183,6 +227,7 @@ class ClobMarketWs:
         side_raw = str(event.get("side") or "BUY").upper()
         # plan: side 0=BUY, 1=SELL
         side = side_raw in {"SELL", "S"}
+        self._last_price[asset_id] = price
         if is_down:
             self._last_down_price = price
         else:
@@ -196,6 +241,8 @@ class ClobMarketWs:
             "side": bool(side),
             "price": price,
             "shares": max(0, min(int(round(size)), 2**32 - 1)),
+            "market_id": self._asset_market.get(asset_id),
+            "asset_id": asset_id,
         }
         self.on_trade(row)
 

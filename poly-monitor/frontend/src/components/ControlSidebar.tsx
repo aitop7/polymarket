@@ -132,6 +132,8 @@ function IconStop() {
 
 type Props = {
   mode: 'monitor' | 'paper'
+  marketSeries: '5m' | '15m'
+  onMarketSeries: (s: '5m' | '15m') => void
   liveActive: boolean
   onToggleLive: () => void
   liveLabel?: string
@@ -185,6 +187,8 @@ type Props = {
 export default function ControlSidebar(props: Props) {
   const {
     mode,
+    marketSeries,
+    onMarketSeries,
     liveActive,
     onToggleLive,
     liveLabel,
@@ -251,7 +255,7 @@ export default function ControlSidebar(props: Props) {
     }
     let cancelled = false
     void api
-      .daySlots(selectedDate, { split: 'twap' })
+      .daySlots(selectedDate, { split: 'twap', series: marketSeries })
       .then((res) => {
         if (cancelled) return
         setDaySlots({
@@ -266,7 +270,7 @@ export default function ControlSidebar(props: Props) {
     return () => {
       cancelled = true
     }
-  }, [liveActive, beforeTwap, selectedDate, markets.length])
+  }, [liveActive, beforeTwap, selectedDate, markets.length, marketSeries])
 
   const fixMissingSlots = async () => {
     if (!selectedDate || fixingSlots || beforeTwap) return
@@ -382,6 +386,23 @@ export default function ControlSidebar(props: Props) {
           </span>
         </div>
 
+        <div className="mode-segment" role="group" aria-label="Market duration">
+          <button
+            type="button"
+            className={`mode-segment-btn${marketSeries === '5m' ? ' active' : ''}`}
+            onClick={() => onMarketSeries('5m')}
+          >
+            5m
+          </button>
+          <button
+            type="button"
+            className={`mode-segment-btn${marketSeries === '15m' ? ' active' : ''}`}
+            onClick={() => onMarketSeries('15m')}
+          >
+            15m
+          </button>
+        </div>
+
         {liveActive ? (
           <button type="button" className="mode-nav-btn history" onClick={onToggleLive}>
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden>
@@ -461,7 +482,7 @@ export default function ControlSidebar(props: Props) {
                   }`}
                   title={
                     daySlots && daySlots.n_missing > 0
-                      ? `${daySlots.n_missing} missing of ${daySlots.expected} expected 5m slots`
+                      ? `${daySlots.n_missing} missing of ${daySlots.expected} expected ${marketSeries} slots`
                       : undefined
                   }
                 >

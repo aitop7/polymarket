@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import {
   api,
   formatUsd,
@@ -28,8 +29,26 @@ import PriceChart, {
 import TradeSidebar from '../components/TradeSidebar'
 import VolumeChart from '../components/VolumeChart'
 
-const DEFAULT_X_SPAN_MS = 300_000 // 5m market window fallback
-const MARKET_WINDOW_MS = 300_000
+const SERIES_WINDOW_MS = { '5m': 300_000, '15m': 900_000 } as const
+type MarketSeriesKey = keyof typeof SERIES_WINDOW_MS
+
+function loadMarketSeries(): MarketSeriesKey {
+  try {
+    const v = sessionStorage.getItem('poly_monitor_series')
+    if (v === '5m' || v === '15m') return v
+  } catch {
+    /* ignore */
+  }
+  return '5m'
+}
+
+function saveMarketSeries(s: MarketSeriesKey) {
+  try {
+    sessionStorage.setItem('poly_monitor_series', s)
+  } catch {
+    /* ignore */
+  }
+}
 
 function volumeFields(p: {
   bn_buy?: number | null
@@ -346,6 +365,25 @@ function formatSlotLabel(timeEt: string, startMs?: number, endMs?: number): stri
 }
 
 export default function MarketPage({ mode }: Props) {
+  const navigate = useNavigate()
+  const { marketId: routeMarketIdRaw } = useParams<{ marketId?: string }>()
+  const routeMarketId =
+    routeMarketIdRaw && /^\d+$/.test(routeMarketIdRaw) ? routeMarketIdRaw : undefined
+  /** Prefer this id when building history day lists (URL deep-link / in-flight open). */
+  const preferMarketIdRef = useRef<string | null>(routeMarketId ?? null)
+
+  const [marketSeries, setMarketSeriesState] = useState<MarketSeriesKey>(() => loadMarketSeries())
+  const marketSeriesRef = useRef(marketSeries)
+  marketSeriesRef.current = marketSeries
+  const MARKET_WINDOW_MS = SERIES_WINDOW_MS[marketSeries]
+  const DEFAULT_X_SPAN_MS = MARKET_WINDOW_MS
+
+  const setMarketSeries = (s: MarketSeriesKey) => {
+    if (s === marketSeriesRef.current) return
+    saveMarketSeries(s)
+    setMarketSeriesState(s)
+  }
+
   const [split, setSplit] = useState('validation')
   const [collection, setCollection] = useState<'before_twap' | 'twap'>('twap')
   const effectiveSplit = collection === 'twap' ? 'twap' : split
@@ -354,7 +392,7 @@ export default function MarketPage({ mode }: Props) {
   const [selectedDate, setSelectedDate] = useState('')
   const [selectedTime, setSelectedTime] = useState('')
   const [markets, setMarkets] = useState<MarketSummary[]>([])
-  const [marketId, setMarketId] = useState<string>('')
+  const [marketId, setMarketId] = useState<string>(routeMarketId ?? '')
   const [historyReloadToken, setHistoryReloadToken] = useState(0)
   const [detail, setDetail] = useState<MarketDetail | null>(null)
   const [neighbors, setNeighbors] = useState<{ prev: string | null; next: string | null }>({
@@ -382,7 +420,7 @@ export default function MarketPage({ mode }: Props) {
   const [paused, setPaused] = useState(false)
   /** Scrub position for idle preview / sticky seek; charts & feed follow when set. */
   const [previewTs, setPreviewTs] = useState<number | null>(null)
-  const [liveActive, setLiveActive] = useState(true)
+  const [liveActive, setLiveActive] = useState(() => !routeMarketId)
   const [liveMarketId, setLiveMarketId] = useState<string>('')
   const [liveWindow, setLiveWindow] = useState<{ start: number; end: number } | null>(null)
   const [btcSeriesVisible, setBtcSeriesVisible] = useState<BtcSeriesVisibility>({
@@ -436,27 +474,40 @@ export default function MarketPage({ mode }: Props) {
     }
   }
 
+  const selectHistoryMarket = (id: string) => {
+    preferMarketIdRef.current = id
+    setMarketId(id)
+  }
+
   const applyMarketsList = (list: MarketSummary[]) => {
     const ordered = filterHistoryMarkets(list).sort(
       (a, b) => (b.start_time || 0) - (a.start_time || 0),
     )
     if (!ordered.length) {
       setMarkets([])
-      setSelectedTime('')
-      setMarketId('')
       setNeighbors({ prev: null, next: null })
+      // Keep deep-link / sticky id while its day catalog is still loading.
+      if (!preferMarketIdRef.current) {
+        setSelectedTime('')
+        setMarketId('')
+      }
       return
     }
     setMarkets(ordered)
     setMarketId((prev) => {
-      const keep = ordered.find((m) => m.market_id === prev)
+      const preferred = preferMarketIdRef.current
+      const want = preferred || prev
+      const keep = want ? ordered.find((m) => m.market_id === want) : undefined
       if (keep) {
         setSelectedTime(keep.time_et || '')
         setNeighbors(neighborsFromMarkets(ordered, keep.market_id))
-        return prev
+        return keep.market_id
       }
+      // Preferred id is on another day (or still resolving) — do not steal selection.
+      if (preferred) return preferred
       const still = ordered.find((m) => (m.time_et || '') === selectedTimeRef.current)
       const pick = still || ordered[0]
+      preferMarketIdRef.current = pick.market_id
       setSelectedTime(pick.time_et || '')
       setNeighbors(neighborsFromMarkets(ordered, pick.market_id))
       return pick.market_id
@@ -468,7 +519,10 @@ export default function MarketPage({ mode }: Props) {
     const split = effectiveSplitRef.current
     const rebuild = Boolean(opts?.rebuild)
     try {
-      const datesRes = await api.marketDates(split, { rebuild_index: rebuild })
+      const datesRes = await api.marketDates(split, {
+        rebuild_index: rebuild,
+        series: marketSeriesRef.current,
+      })
       setDateMin(datesRes.min || '')
       setDateMax(datesRes.max || '')
       let date = selectedDateRef.current
@@ -478,7 +532,11 @@ export default function MarketPage({ mode }: Props) {
         if (date) setSelectedDate(date)
       }
       if (!date) return
-      const res = await api.markets(split, { date, rebuild_index: rebuild })
+      const res = await api.markets(split, {
+        date,
+        rebuild_index: rebuild,
+        series: marketSeriesRef.current,
+      })
       // Only apply into UI when not live (list is for history sidebar); still warm cache when live.
       if (!liveActiveRef.current) {
         applyMarketsList(res.markets)
@@ -526,14 +584,19 @@ export default function MarketPage({ mode }: Props) {
     setIndexing(true)
     setError(null)
     setMarkets([])
-    setMarketId('')
-    setSelectedTime('')
+    // Preserve URL deep-link id across catalog rebuild / split changes.
+    if (!preferMarketIdRef.current) {
+      setMarketId('')
+      setSelectedTime('')
+    }
     api
-      .marketDates(effectiveSplit)
+      .marketDates(effectiveSplit, { series: marketSeriesRef.current })
       .then((res) => {
         if (cancelled) return
         setDateMin(res.min || '')
         setDateMax(res.max || '')
+        // Deep-link: wait for market detail to set the correct ET day.
+        if (preferMarketIdRef.current && !selectedDate) return
         const next =
           (selectedDate && res.dates.includes(selectedDate) && selectedDate) ||
           res.max ||
@@ -551,13 +614,13 @@ export default function MarketPage({ mode }: Props) {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveSplit, liveActive])
+  }, [effectiveSplit, liveActive, marketSeries])
 
   useEffect(() => {
     if (liveActive || !selectedDate) return
     let cancelled = false
     api
-      .markets(effectiveSplit, { date: selectedDate })
+      .markets(effectiveSplit, { date: selectedDate, series: marketSeriesRef.current })
       .then((res) => {
         if (cancelled) return
         applyMarketsList(res.markets)
@@ -569,11 +632,11 @@ export default function MarketPage({ mode }: Props) {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveSplit, selectedDate, liveActive])
+  }, [effectiveSplit, selectedDate, liveActive, marketSeries])
 
-  // Refresh TWAP/history catalog ~2s after each 5m wall-clock boundary (market finish).
+  // Refresh TWAP/history catalog after each series wall-clock boundary.
   useEffect(() => {
-    const PERIOD_MS = 300_000
+    const PERIOD_MS = SERIES_WINDOW_MS[marketSeriesRef.current]
     const delayToNext = () => {
       const now = Date.now()
       return Math.max(500, Math.ceil(now / PERIOD_MS) * PERIOD_MS + 2_000 - now)
@@ -597,20 +660,69 @@ export default function MarketPage({ mode }: Props) {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveSplit])
+  }, [effectiveSplit, marketSeries])
 
   const onTimeChange = (timeEt: string) => {
     setSelectedTime(timeEt)
     const m = markets.find((x) => x.time_et === timeEt)
     if (m) {
-      setMarketId(m.market_id)
+      selectHistoryMarket(m.market_id)
       return
     }
-    api.marketAt(effectiveSplit, { date: selectedDate, time: timeEt }).then((hit) => {
-      setMarketId(hit.market_id)
+    api
+      .marketAt(effectiveSplit, {
+        date: selectedDate,
+        time: timeEt,
+        series: marketSeriesRef.current,
+      })
+      .then((hit) => {
+      selectHistoryMarket(hit.market_id)
       setSelectedTime(hit.time_et || timeEt)
     }).catch((e) => setError(String(e)))
   }
+
+  // Keep address bar in sync with history selection: /:marketId
+  useEffect(() => {
+    if (liveActive) {
+      if (routeMarketIdRaw) navigate('/', { replace: true })
+      return
+    }
+    if (!marketId) return
+    if (marketId !== routeMarketId) {
+      navigate(`/${marketId}`, { replace: true })
+    }
+  }, [liveActive, marketId, routeMarketId, routeMarketIdRaw, navigate])
+
+  // Browser back/forward or typed URL while already on the monitor page.
+  useEffect(() => {
+    if (!routeMarketId) return
+    preferMarketIdRef.current = routeMarketId
+    if (marketId !== routeMarketId) setMarketId(routeMarketId)
+    if (!liveActive) return
+    clearLiveReconnectTimer()
+    clearLiveVolumeRefresh()
+    liveActiveRef.current = false
+    const ws = liveWsRef.current
+    liveWsRef.current = null
+    if (ws) {
+      ws.onerror = null
+      ws.onclose = null
+      ws.onmessage = null
+      ws.close()
+    }
+    setLiveActive(false)
+    setLiveMarketId('')
+    liveMarketIdRef.current = ''
+    setLiveWindow(null)
+    setBinanceBook(null)
+    setHolders(null)
+    setLiveActivityTrades([])
+    setTraders(null)
+    setSelectedWallet(null)
+    setTraderDetail(null)
+    setError(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeMarketId])
 
   // Keep Prev/Next aligned with the filtered history list (no jump into live).
   useEffect(() => {
@@ -1015,7 +1127,12 @@ export default function MarketPage({ mode }: Props) {
       if (liveWsRef.current !== ws) return
       liveReconnectAttempt.current = 0
       setError(null)
-      ws.send(JSON.stringify({ interval_s: interval }))
+      ws.send(
+        JSON.stringify({
+          interval_s: interval,
+          series: marketSeriesRef.current,
+        }),
+      )
       // Chart backfill arrives via WS `series` messages (no HTTP poll).
       clearLiveVolumeRefresh()
     }
@@ -1204,9 +1321,9 @@ export default function MarketPage({ mode }: Props) {
     }
   }
 
-  // Live market is the default: connect on mount.
+  // Live is default on `/`; deep-link `/:marketId` opens history instead.
   useEffect(() => {
-    startLive()
+    if (liveActive) startLive()
     return () => {
       clearLiveReconnectTimer()
       clearLiveVolumeRefresh()
@@ -1222,6 +1339,29 @@ export default function MarketPage({ mode }: Props) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Switching 5m ↔ 15m: reconnect live or reload history catalog.
+  const seriesBootRef = useRef(true)
+  useEffect(() => {
+    if (seriesBootRef.current) {
+      seriesBootRef.current = false
+      return
+    }
+    preferMarketIdRef.current = null
+    setMarketId('')
+    setSelectedTime('')
+    setDetail(null)
+    setSeriesLive([])
+    setTick(null)
+    setBook(null)
+    setHolders(null)
+    setLiveActivityTrades([])
+    if (liveActiveRef.current) {
+      startLive()
+    }
+    // Catalog reload is driven by marketSeries deps on history effects.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketSeries])
 
   const onLiveInterval = (s: number) => {
     const v = Math.max(0.1, Math.min(2, s))
@@ -1257,6 +1397,8 @@ export default function MarketPage({ mode }: Props) {
       setTraderDetail(null)
       setError(null)
       if (detail) {
+        preferMarketIdRef.current = detail.market_id
+        setMarketId(detail.market_id)
         setSeriesLive(
           detail.series.map((p) => ({
             t: p.t,
@@ -1271,6 +1413,12 @@ export default function MarketPage({ mode }: Props) {
         setTick(null)
         api.book(detail.market_id).then((b) => setBook(b as BookPayload)).catch(() => {})
       }
+      return
+    }
+    preferMarketIdRef.current = null
+    // Leaving `/:id` remounts index route which starts live on mount.
+    if (routeMarketIdRaw) {
+      navigate('/', { replace: true })
       return
     }
     startLive()
@@ -1561,6 +1709,8 @@ export default function MarketPage({ mode }: Props) {
       <aside className="workspace-rail workspace-rail-left">
         <ControlSidebar
           mode={mode}
+          marketSeries={marketSeries}
+          onMarketSeries={setMarketSeries}
           liveActive={liveActive}
           onToggleLive={toggleLive}
           liveLabel={liveLabel}
@@ -1590,8 +1740,8 @@ export default function MarketPage({ mode }: Props) {
           marketId={marketId}
           hasPrev={Boolean(neighbors.prev)}
           hasNext={Boolean(neighbors.next)}
-          onPrev={() => neighbors.prev && setMarketId(neighbors.prev)}
-          onNext={() => neighbors.next && setMarketId(neighbors.next)}
+          onPrev={() => neighbors.prev && selectHistoryMarket(neighbors.prev)}
+          onNext={() => neighbors.next && selectHistoryMarket(neighbors.next)}
           strategy={strategy}
           onStrategy={setStrategy}
           marketStartMs={detail?.start_time}
@@ -1622,6 +1772,7 @@ export default function MarketPage({ mode }: Props) {
         {liveActive && (
           <TradeSidebar
             mode={mode}
+            marketSeries={marketSeries}
             tradeAction={tradeAction}
             onTradeAction={setTradeAction}
             side={side}
@@ -1647,6 +1798,7 @@ export default function MarketPage({ mode }: Props) {
         {error && <p className="error">{error}</p>}
 
         <BtcPricePanel
+          title={`BTC Up or Down ${marketSeries}`}
           marketId={displayMarketId}
           windowLabel={windowLabel}
           priceToBeat={beat}

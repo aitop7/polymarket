@@ -1,4 +1,4 @@
-"""Active market session lifecycle."""
+"""Active market session lifecycle (one series)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 from loguru import logger
 
 from app.discovery import Discovery, parse_token_ids, parse_window
+from app.series import SERIES_5M, MarketSeries
 from app.storage.market_store import MarketStore
 from app.twap_open import TwapOpenResolver
 
@@ -21,11 +22,13 @@ class SessionManager:
         discovery: Discovery,
         twap: TwapOpenResolver,
         *,
+        series: MarketSeries | None = None,
         on_market_change: OnMarketChange | None = None,
         on_market_end: OnMarketEnd | None = None,
     ) -> None:
         self.discovery = discovery
         self.twap = twap
+        self.series = series or discovery.series or SERIES_5M
         self.on_market_change = on_market_change
         self.on_market_end = on_market_end
         self.current: MarketStore | None = None
@@ -60,8 +63,9 @@ class SessionManager:
         store.update_meta(btc_close_price=close_px, active=False)
         store.flush(force=True)
         logger.info(
-            "Finalized market {} close_twap={}",
+            "Finalized market {} series={} close_twap={}",
             store.market_id,
+            self.series.key,
             close_px,
         )
 
@@ -77,7 +81,7 @@ class SessionManager:
         if not market_id:
             return self.current
 
-        start_ms, end_ms = parse_window(market)
+        start_ms, end_ms = parse_window(market, series=self.series)
         token_up, token_down = parse_token_ids(market)
 
         if self.current and self.current.market_id == market_id:
@@ -88,7 +92,9 @@ class SessionManager:
         if self.current is not None:
             ending = self.current
             await self._finalize_ending(ending)
-            logger.info("Rolled off market {}", ending.market_id)
+            logger.info(
+                "Rolled off market {} series={}", ending.market_id, self.series.key
+            )
 
         open_px = await self.twap.resolve_open_price(start_ms)
         condition_id = str(
@@ -98,6 +104,7 @@ class SessionManager:
             "market_id": market_id,
             "condition_id": condition_id or None,
             "slug": str(market.get("slug") or ""),
+            "series": self.series.key,
             "question": str(market.get("question") or market.get("title") or ""),
             "up_token_id": token_up,
             "down_token_id": token_down,
@@ -115,8 +122,9 @@ class SessionManager:
         self._token_up = token_up
         self._token_down = token_down
         logger.info(
-            "New market {} slug={} open_twap={}",
+            "New market {} series={} slug={} open_twap={}",
             market_id,
+            self.series.key,
             meta["slug"],
             open_px,
         )

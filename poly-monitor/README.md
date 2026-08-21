@@ -46,6 +46,16 @@ npm run dev
 
 Open http://localhost:5173
 
+### Other computer on the LAN
+
+Vite listens on `0.0.0.0:5173` and proxies `/api` to this PC’s `127.0.0.1:8000`. Keep `run-api.bat` as-is.
+
+1. Restart `npm run dev`. Note the **Network** URL Vite prints (or run `ipconfig` → IPv4).
+2. Allow inbound **TCP 5173** in Windows Firewall (Private).
+3. On the other PC, open `http://THIS_PC_LAN_IP:5173`.
+
+Both machines must be on the same LAN (not guest Wi‑Fi). This is not for the public internet.
+
 ### Built UI
 
 ```bash

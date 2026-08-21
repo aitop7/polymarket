@@ -16,7 +16,7 @@ type QueueKind = 'books' | 'chainlink'
 
 const CONCURRENCY: Record<QueueKind, number> = {
   // PMData bans keys for bursty downloads — keep this low.
-  books: 2,
+  books: 32,
   chainlink: 1,
 }
 

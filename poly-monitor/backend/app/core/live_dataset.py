@@ -479,6 +479,12 @@ def iter_live_market_metas() -> list[dict[str, Any]]:
                 {
                     "market_id": mid,
                     "split": TWAP_SPLIT,
+                    "slug": str(meta.get("slug") or "") or None,
+                    "series": (
+                        str(meta.get("series") or "").strip().lower()
+                        if str(meta.get("series") or "").strip().lower() in {"5m", "15m"}
+                        else None
+                    ),
                     "start_time": start,
                     "end_time": end,
                     "date_et": _ms_to_et_date(start),

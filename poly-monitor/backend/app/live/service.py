@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import time
 import asyncio
 from collections import deque
@@ -12,7 +11,8 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.pricing import quotes_from_up_buy
-from app.live.clients import MARKET_DURATION_S, LiveClients, parse_token_ids, window_start_unix
+from app.core.series import SERIES_5M, MarketSeries, get_series
+from app.live.clients import LiveClients, parse_token_ids, window_start_unix
 from app.live import ptb_store
 from app.live.fetch_live_series import (
     break_outcome_jumps,
@@ -20,10 +20,8 @@ from app.live.fetch_live_series import (
     merge_series,
     scrub_leading_outcome_extremes,
 )
-from app.live.activity_feed import get_activity_feed
+from app.live.activity_feed import ActivityFeed
 from app.live.twap_feed import get_twap_feed
-
-_UPDOWN_SLUG_RE = re.compile(r"(?i)^btc-updown-5m-(\d+)$")
 
 # Don't lock PTB before the open boundary; keep refining near open for RTDS.
 _PTB_REFINE_MS = 45_000
@@ -115,10 +113,12 @@ def _side_book(raw: dict[str, Any], traded: float) -> dict[str, Any]:
 
 
 class LiveMarketService:
-    def __init__(self) -> None:
+    def __init__(self, series: MarketSeries | str | None = None) -> None:
+        self.series = series if isinstance(series, MarketSeries) else get_series(series)
         self.clients = LiveClients()
         self.twap = get_twap_feed()
-        self.activity = get_activity_feed()
+        # Per-series activity feed so 5m and 15m do not fight over filters.
+        self.activity = ActivityFeed()
         self._market: dict[str, Any] | None = None
         self._market_id: str | None = None
         self._condition_id: str | None = None
@@ -144,6 +144,14 @@ class LiveMarketService:
         # Start RTDS early so open TWAP (Price to Beat) is ready at market open.
         self.twap.ensure_started()
         self.activity.ensure_started()
+
+    @property
+    def duration_s(self) -> int:
+        return self.series.duration_s
+
+    @property
+    def duration_ms(self) -> int:
+        return self.series.duration_ms
 
     async def close(self) -> None:
         if self._ptb_refine_task is not None and not self._ptb_refine_task.done():
@@ -606,17 +614,18 @@ class LiveMarketService:
 
     async def _ensure_market(self, *, force: bool = False) -> dict[str, Any] | None:
         now = time.time()
-        wall_window_ms = window_start_unix(now) * 1000
+        dur_s = self.duration_s
+        wall_window_ms = window_start_unix(now, duration_s=dur_s) * 1000
         need = force or self._market is None or (now - self._last_discover_s) > 15
         if self._window_end_ms is not None and now * 1000 >= self._window_end_ms:
             need = True
-        # New 5m slot on the wall clock → force rediscovery even if Gamma lags.
+        # New slot on the wall clock → force rediscovery even if Gamma lags.
         if self._window_start_ms is not None and wall_window_ms != self._window_start_ms:
             need = True
         if not need:
             return self._market
 
-        market = await self.clients.discover_active_updown()
+        market = await self.clients.discover_active_updown(self.series)
         self._last_discover_s = now
         if not market:
             # Wall clock moved on; clear beat for the new slot until Gamma catches up.
@@ -627,7 +636,7 @@ class LiveMarketService:
                 self._token_up = None
                 self._token_down = None
                 self._window_start_ms = wall_window_ms
-                self._window_end_ms = wall_window_ms + MARKET_DURATION_S * 1000
+                self._window_end_ms = wall_window_ms + self.duration_ms
                 self._price_to_beat = None
                 self._holders_cache = None
             else:
@@ -639,12 +648,12 @@ class LiveMarketService:
         slug = str(market.get("slug") or "")
         token_up, token_down = parse_token_ids(market)
 
-        match = _UPDOWN_SLUG_RE.match(slug)
+        match = self.series.slug_re.match(slug)
         if match:
             start_s = int(match.group(1))
         else:
-            start_s = window_start_unix(now)
-        end_s = start_s + MARKET_DURATION_S
+            start_s = window_start_unix(now, duration_s=dur_s)
+        end_s = start_s + dur_s
         start_ms = start_s * 1000
 
         rolled = market_id != self._market_id or start_ms != self._window_start_ms
@@ -895,7 +904,7 @@ class LiveMarketService:
                     "book": {
                         "timestamp": now_ms,
                         "mode": "ladder",
-                        "note": "No active btc-updown-5m market found",
+                        "note": f"No active {self.series.slug_prefix} market found",
                         "up": None,
                         "down": None,
                     },
@@ -1129,6 +1138,7 @@ class LiveMarketService:
         return {
             "type": "market",
             "live": True,
+            "series": self.series.key,
             "market_id": self._market_id,
             "condition_id": self._condition_id,
             "slug": str(market.get("slug") or ""),
@@ -1142,11 +1152,20 @@ class LiveMarketService:
         }
 
 
-_LIVE: LiveMarketService | None = None
+_LIVE: dict[str, LiveMarketService] = {}
 
 
-def get_live_service() -> LiveMarketService:
-    global _LIVE
-    if _LIVE is None:
-        _LIVE = LiveMarketService()
-    return _LIVE
+def get_live_service(series: str | MarketSeries | None = None) -> LiveMarketService:
+    """Return the live service for a series (default 5m). Both series stay warm once started."""
+    s = series if isinstance(series, MarketSeries) else get_series(series)
+    key = s.key
+    svc = _LIVE.get(key)
+    if svc is None:
+        svc = LiveMarketService(s)
+        _LIVE[key] = svc
+    return svc
+
+
+def warm_all_live_services() -> list[LiveMarketService]:
+    """Ensure 5m and 15m live services exist (called from app lifespan)."""
+    return [get_live_service(s.key) for s in (SERIES_5M, get_series("15m"))]

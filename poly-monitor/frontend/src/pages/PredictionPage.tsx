@@ -12,9 +12,28 @@ import {
 import PredictionDistChart from '../components/PredictionDistChart'
 import PriceChart, { type TimeDomain } from '../components/PriceChart'
 
-const MARKET_WINDOW_MS = 300_000
+const SERIES_WINDOW_MS = { '5m': 300_000, '15m': 900_000 } as const
+type MarketSeriesKey = keyof typeof SERIES_WINDOW_MS
 const MAX_SERIES_POINTS = 1200
 const WS_RECONNECT_MS = 1_500
+
+function loadMarketSeries(): MarketSeriesKey {
+  try {
+    const v = sessionStorage.getItem('poly_monitor_series')
+    if (v === '5m' || v === '15m') return v
+  } catch {
+    /* ignore */
+  }
+  return '5m'
+}
+
+function saveMarketSeries(s: MarketSeriesKey) {
+  try {
+    sessionStorage.setItem('poly_monitor_series', s)
+  } catch {
+    /* ignore */
+  }
+}
 
 function ageLabel(ageMs: number) {
   if (!Number.isFinite(ageMs) || ageMs < 0) return '—'
@@ -196,6 +215,15 @@ export default function PredictionPage() {
   const [modelError, setModelError] = useState<string | null>(null)
   const [liveKind, setLiveKind] = useState<'direction' | 'beta'>('direction')
   const [continuousReady, setContinuousReady] = useState(false)
+  const [marketSeries, setMarketSeriesState] = useState<MarketSeriesKey>(() => loadMarketSeries())
+  const marketSeriesRef = useRef(marketSeries)
+  marketSeriesRef.current = marketSeries
+  const MARKET_WINDOW_MS = SERIES_WINDOW_MS[marketSeries]
+  const setMarketSeries = (s: MarketSeriesKey) => {
+    if (s === marketSeriesRef.current) return
+    saveMarketSeries(s)
+    setMarketSeriesState(s)
+  }
   const marketIdRef = useRef<string | null>(null)
   const marketStartRef = useRef<number | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -258,6 +286,14 @@ export default function PredictionPage() {
     let cancelled = false
     let reconnectTimer: number | null = null
 
+    marketIdRef.current = null
+    marketStartRef.current = null
+    setSeries([])
+    setResult(null)
+    setHoverTime(null)
+    setChartXDomain(null)
+    setFollowLiveX(true)
+
     const clearReconnect = () => {
       if (reconnectTimer != null) {
         window.clearTimeout(reconnectTimer)
@@ -309,7 +345,13 @@ export default function PredictionPage() {
       ws.onopen = () => {
         if (cancelled || wsRef.current !== ws) return
         setError(null)
-        ws.send(JSON.stringify({ interval_s: 0.5, want_direction: true }))
+        ws.send(
+          JSON.stringify({
+            interval_s: 0.5,
+            want_direction: true,
+            series: marketSeriesRef.current,
+          }),
+        )
       }
 
       ws.onmessage = (ev) => {
@@ -401,7 +443,7 @@ export default function PredictionPage() {
         ws.close()
       }
     }
-  }, [])
+  }, [marketSeries])
 
   const chartData = useMemo(() => {
     const history = result?.history ?? []
@@ -898,10 +940,26 @@ export default function PredictionPage() {
           <div>
             <p className="eyebrow">Prediction desk</p>
             <h1>Up / Down</h1>
+            <div className="mode-segment" role="group" aria-label="Market duration" style={{ marginTop: 10 }}>
+              <button
+                type="button"
+                className={`mode-segment-btn${marketSeries === '5m' ? ' active' : ''}`}
+                onClick={() => setMarketSeries('5m')}
+              >
+                5m
+              </button>
+              <button
+                type="button"
+                className={`mode-segment-btn${marketSeries === '15m' ? ' active' : ''}`}
+                onClick={() => setMarketSeries('15m')}
+              >
+                15m
+              </button>
+            </div>
           </div>
           <div className="prediction-status-strip">
             <span className="prediction-live-dot" aria-hidden />
-            <span>Live WS</span>
+            <span>Live WS · {marketSeries}</span>
             <span className="prediction-status-sep" />
             <span>Market {result?.market_id ?? '—'}</span>
             <span className="prediction-status-sep" />

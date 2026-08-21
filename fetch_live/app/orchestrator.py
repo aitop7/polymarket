@@ -1,4 +1,4 @@
-"""Wire feeds, snapshots, flush, and market lifecycle."""
+"""Wire feeds, snapshots, flush, and market lifecycle (5m + 15m in parallel)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ from app.discovery import Discovery
 from app.polymarket.clob_rest import ClobRest
 from app.polymarket.clob_ws import ClobMarketWs
 from app.polymarket.data_api_trades import DataApiTrades
-from app.polymarket.rtds_trades import RtdsTrades
+from app.polymarket.rtds_trades import RtdsMarketFilter, RtdsTrades
+from app.series import ALL_SERIES
 from app.session.manager import SessionManager
 from app.session.resolver import Resolver
 from app.storage.market_store import MarketStore
@@ -26,27 +27,85 @@ from app.twap_open import TwapOpenResolver
 
 class Orchestrator:
     def __init__(self) -> None:
-        self.discovery = Discovery()
         self.twap = TwapOpenResolver()
         self.clob_rest = ClobRest()
-        self.resolver = Resolver(self.discovery)
-        self.sessions = SessionManager(
-            self.discovery,
-            self.twap,
-            on_market_change=self._on_market_change,
-            on_market_end=self._on_market_end,
-        )
-        # CLOB WS: order books only.
-        # RTDS activity/trades: real-time fills + proxyWallet.
-        # Data API: seed / end gap-fill only.
+        # Shared HTTP discovery client pool — one Discovery per series.
+        self.discoveries: dict[str, Discovery] = {
+            s.key: Discovery(s) for s in ALL_SERIES
+        }
+        # Resolver needs any discovery for get_market_by_id / slug lookups.
+        self.resolver = Resolver(self.discoveries["5m"])
+        self.sessions: dict[str, SessionManager] = {}
+        for series in ALL_SERIES:
+            self.sessions[series.key] = SessionManager(
+                self.discoveries[series.key],
+                self.twap,
+                series=series,
+                on_market_change=self._on_market_change,
+                on_market_end=self._on_market_end,
+            )
         self.clob_ws = ClobMarketWs(on_trade=None, on_book=None)
         self.rtds_trades = RtdsTrades(on_trade=self._on_rtds_trade)
         self.data_trades = DataApiTrades()
-        self.binance = BinanceHub(
-            on_trade=self._on_btc_trade,
-        )
+        self.binance = BinanceHub(on_trade=self._on_btc_trade)
         self._running = False
         self._tasks: list[asyncio.Task[Any]] = []
+        # token_id / market_id -> store for routing
+        self._store_by_market: dict[str, MarketStore] = {}
+        self._store_by_token: dict[str, MarketStore] = {}
+
+    @property
+    def discovery(self) -> Discovery:
+        """Back-compat: primary (5m) discovery."""
+        return self.discoveries["5m"]
+
+    def _active_stores(self) -> list[MarketStore]:
+        out: list[MarketStore] = []
+        for sess in self.sessions.values():
+            if sess.current is not None:
+                out.append(sess.current)
+        return out
+
+    def _rebuild_routing(self) -> None:
+        by_market: dict[str, MarketStore] = {}
+        by_token: dict[str, MarketStore] = {}
+        clob_markets: list[dict[str, Any]] = []
+        rtds_markets: list[RtdsMarketFilter] = []
+        for key, sess in self.sessions.items():
+            store = sess.current
+            if store is None:
+                continue
+            by_market[store.market_id] = store
+            tok_up = sess.token_up
+            tok_down = sess.token_down
+            if tok_up:
+                by_token[tok_up] = store
+            if tok_down:
+                by_token[tok_down] = store
+            clob_markets.append(
+                {
+                    "market_id": store.market_id,
+                    "token_up": tok_up,
+                    "token_down": tok_down,
+                }
+            )
+            cid = str(store.meta.get("condition_id") or "")
+            slug = str(store.meta.get("slug") or "")
+            rtds_markets.append(
+                RtdsMarketFilter(
+                    market_id=store.market_id,
+                    slug=slug or None,
+                    condition_id=cid or None,
+                    token_up=tok_up,
+                    token_down=tok_down,
+                    start_ms=store.start_ms,
+                    end_ms=store.end_ms,
+                )
+            )
+        self._store_by_market = by_market
+        self._store_by_token = by_token
+        self.clob_ws.set_all_subscriptions(clob_markets)
+        self.rtds_trades.set_markets(rtds_markets)
 
     async def _on_market_change(
         self,
@@ -56,29 +115,15 @@ class Orchestrator:
         condition_id: str = "",
     ) -> None:
         self.resolver.track(store)
-        self.clob_ws.set_subscriptions(
-            market_id=store.market_id,
-            token_up=token_up,
-            token_down=token_down,
-        )
-        cid = condition_id or str(store.meta.get("condition_id") or "")
-        slug = str(store.meta.get("slug") or "")
-        self.rtds_trades.set_market(
-            slug=slug or None,
-            condition_id=cid or None,
-            token_up=token_up,
-            token_down=token_down,
-            start_ms=store.start_ms,
-            end_ms=store.end_ms,
-        )
+        self._rebuild_routing()
         up_levels, down_levels = await self.clob_rest.seed_books(token_up, token_down)
         if token_up:
             self.clob_ws.seed_book(token_up, up_levels)
         if token_down:
             self.clob_ws.seed_book(token_down, down_levels)
-        # Seed any trades already indexed before we subscribed
         mode = get_trades_mode()
         store.update_meta(trades_mode=mode)
+        cid = condition_id or str(store.meta.get("condition_id") or "")
         if cid:
             try:
                 rows = await self.data_trades.fetch_window(
@@ -93,9 +138,10 @@ class Orchestrator:
                 store.upsert_pm_trades(rows)
                 store.flush()
                 logger.info(
-                    "Seeded {} Data API trades for market {} mode={}",
+                    "Seeded {} Data API trades for market {} series={} mode={}",
                     len(rows),
                     store.market_id,
+                    store.meta.get("series"),
                     mode,
                 )
             except Exception as exc:
@@ -104,12 +150,11 @@ class Orchestrator:
     async def _on_market_end(self, store: MarketStore) -> None:
         """Gap-fill from Data API before rolling off / deactivating."""
         cid = str(store.meta.get("condition_id") or "")
+        disc = self._discovery_for_store(store)
         if not cid:
-            market = await self.discovery.get_market_by_slug(
-                str(store.meta.get("slug") or "")
-            )
+            market = await disc.get_market_by_slug(str(store.meta.get("slug") or ""))
             if market is None:
-                market = await self.discovery.get_market_by_id(store.market_id)
+                market = await disc.get_market_by_id(store.market_id)
             if market:
                 cid = str(market.get("conditionId") or market.get("condition_id") or "")
                 if cid:
@@ -136,8 +181,9 @@ class Orchestrator:
             filled, n = store.wallet_fill_rate()
             store.flush(force=True)
             logger.info(
-                "Final trades gap-fill market {} mode={} api_rows={} wallets={}/{}",
+                "Final trades gap-fill market {} series={} mode={} api_rows={} wallets={}/{}",
                 store.market_id,
+                store.meta.get("series"),
                 mode,
                 len(rows),
                 filled,
@@ -148,27 +194,29 @@ class Orchestrator:
                 "Final Data API trades fetch failed for {}: {}", store.market_id, exc
             )
 
-    def _store(self) -> MarketStore | None:
-        return self.sessions.current
+    def _discovery_for_store(self, store: MarketStore) -> Discovery:
+        key = str(store.meta.get("series") or "5m")
+        return self.discoveries.get(key) or self.discoveries["5m"]
 
     def _on_btc_trade(
         self, agg_id: int, ts: int, price: float, qty: float, maker: bool
     ) -> None:
-        store = self._store()
-        if store is None:
-            return
-        store.try_btc_trade(
-            agg_id=agg_id,
-            timestamp=ts,
-            price=price,
-            quantity=qty,
-            buyer_is_maker=maker,
-        )
-        if store.should_flush():
-            store.flush()
+        for store in self._active_stores():
+            store.try_btc_trade(
+                agg_id=agg_id,
+                timestamp=ts,
+                price=price,
+                quantity=qty,
+                buyer_is_maker=maker,
+            )
+            if store.should_flush():
+                store.flush()
 
     def _on_rtds_trade(self, row: dict[str, Any]) -> None:
-        store = self._store()
+        mid = str(row.get("market_id") or "")
+        store = self._store_by_market.get(mid) if mid else None
+        if store is None and len(self._store_by_market) == 1:
+            store = next(iter(self._store_by_market.values()))
         if store is None:
             return
         store.upsert_pm_trade(row)
@@ -180,8 +228,9 @@ class Orchestrator:
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.twap.ensure_started()
         logger.info(
-            "fetch_live starting data_dir={} trades_mode={}",
+            "fetch_live starting data_dir={} series={} trades_mode={}",
             settings.data_dir.resolve(),
+            [s.key for s in ALL_SERIES],
             get_trades_mode(),
         )
 
@@ -204,7 +253,9 @@ class Orchestrator:
     async def _discovery_loop(self) -> None:
         while self._running:
             try:
-                await self.sessions.tick()
+                for sess in self.sessions.values():
+                    await sess.tick()
+                self._rebuild_routing()
             except Exception as exc:
                 logger.exception("discovery tick failed: {}", exc)
             await asyncio.sleep(settings.discovery_interval_s)
@@ -218,15 +269,12 @@ class Orchestrator:
             await asyncio.sleep(settings.snapshot_interval_s)
 
     async def _emit_snapshots(self) -> None:
-        store = self._store()
-        if store is None:
+        stores = self._active_stores()
+        if not stores:
             return
         now_ms = int(time.time() * 1000)
         ts = now_ms - (now_ms % 1000)
-        if not store.in_window(ts):
-            return
 
-        # Drop stale RTDS quotes (feed can stall and otherwise freeze the chart).
         stale_ms = 15_000
         cl = self.twap.latest_chainlink()
         tw = self.twap.latest_twap()
@@ -240,15 +288,7 @@ class Orchestrator:
             if tw is not None and ts - int(tw[1]) <= stale_ms
             else None
         )
-        if cl_px is not None or tw_px is not None:
-            store.append_chainlink_price(
-                {
-                    "timestamp": ts,
-                    "Chainlink_BTC": cl_px,
-                    "twap": tw_px,
-                }
-            )
-
+        binance_row: dict[str, Any] | None = None
         if self.binance.book.ready:
             mid = self.binance.book.mid_price()
             bands = build_binance_band_fields(
@@ -256,37 +296,50 @@ class Orchestrator:
                 self.binance.book.asks,
                 float(mid) if mid is not None else 0.0,
             )
-            store.append_binance_price_orderbook(
-                {
-                    "timestamp": ts,
-                    "Binance_BTC": float(mid) if mid is not None else None,
-                    **bands,
-                }
-            )
+            binance_row = {
+                "timestamp": ts,
+                "Binance_BTC": float(mid) if mid is not None else None,
+                **bands,
+            }
 
-        up_tok = self.sessions.token_up
-        down_tok = self.sessions.token_down
-        up = self.clob_ws.get_book_levels(up_tok)
-        down = self.clob_ws.get_book_levels(down_tok)
-        row = build_orderbook_row(
-            timestamp_ms=ts,
-            up_bids=up["bids"],
-            up_asks=up["asks"],
-            down_bids=down["bids"],
-            down_asks=down["asks"],
-            up_price=self.clob_ws.last_up_price,
-            down_price=self.clob_ws.last_down_price,
-        )
-        store.append_orderbook(row)
+        for key, sess in self.sessions.items():
+            store = sess.current
+            if store is None or not store.in_window(ts):
+                continue
+            if cl_px is not None or tw_px is not None:
+                store.append_chainlink_price(
+                    {
+                        "timestamp": ts,
+                        "Chainlink_BTC": cl_px,
+                        "twap": tw_px,
+                    }
+                )
+            if binance_row is not None:
+                store.append_binance_price_orderbook(dict(binance_row))
+
+            up_tok = sess.token_up
+            down_tok = sess.token_down
+            up = self.clob_ws.get_book_levels(up_tok)
+            down = self.clob_ws.get_book_levels(down_tok)
+            row = build_orderbook_row(
+                timestamp_ms=ts,
+                up_bids=up["bids"],
+                up_asks=up["asks"],
+                down_bids=down["bids"],
+                down_asks=down["asks"],
+                up_price=self.clob_ws.last_price(up_tok),
+                down_price=self.clob_ws.last_price(down_tok),
+            )
+            store.append_orderbook(row)
 
     async def _flush_loop(self) -> None:
         while self._running:
             await asyncio.sleep(settings.flush_interval_s)
-            store = self._store()
-            if store is not None:
+            active = set(self._active_stores())
+            for store in active:
                 store.flush()
             for pending in list(self.resolver._pending.values()):
-                if pending is not store:
+                if pending not in active:
                     pending.flush()
 
     async def _resolve_loop(self) -> None:
@@ -329,15 +382,20 @@ class Orchestrator:
                 store.update_meta(active=False)
             store.flush(force=True)
 
-        if self.sessions.current is not None:
-            await _shutdown_store(self.sessions.current)
+        seen: set[str] = set()
+        for sess in self.sessions.values():
+            if sess.current is not None and sess.current.market_id not in seen:
+                seen.add(sess.current.market_id)
+                await _shutdown_store(sess.current)
         for store in list(self.resolver._pending.values()):
-            if store is self.sessions.current:
+            if store.market_id in seen:
                 continue
+            seen.add(store.market_id)
             await _shutdown_store(store)
         await self.binance.close()
         await self.clob_rest.close()
         await self.data_trades.close()
-        await self.discovery.close()
+        for disc in self.discoveries.values():
+            await disc.close()
         await self.twap.close()
         logger.info("fetch_live shutdown complete")
