@@ -1,4 +1,4 @@
-"""Thin public-API clients for live BTC Up/Down 5m / 15m markets."""
+"""Thin public-API clients for live Up/Down markets (BTC 5m/15m, BNB 15m)."""
 
 from __future__ import annotations
 
@@ -63,19 +63,20 @@ class LiveClients:
         await self._data.aclose()
         await self._binance.aclose()
 
-    async def get_btc_price(self) -> float:
+    async def get_btc_price(self, symbol: str = "BTCUSDT") -> float:
         """Best bid/ask mid (bookTicker), falling back to last trade price.
 
         bookTicker updates with the top of book; ticker/price can look sticky
         during quiet tapes and under REST pressure from bulk repair jobs.
         """
+        sym = str(symbol or "BTCUSDT").strip().upper() or "BTCUSDT"
         last_exc: Exception | None = None
         for base in (BINANCE_URL, *BINANCE_FALLBACKS):
             root = base.rstrip("/")
             try:
                 resp = await self._binance.get(
                     f"{root}/api/v3/ticker/bookTicker",
-                    params={"symbol": "BTCUSDT"},
+                    params={"symbol": sym},
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -88,18 +89,21 @@ class LiveClients:
             try:
                 resp = await self._binance.get(
                     f"{root}/api/v3/ticker/price",
-                    params={"symbol": "BTCUSDT"},
+                    params={"symbol": sym},
                 )
                 resp.raise_for_status()
                 return float(resp.json()["price"])
             except Exception as exc:
                 last_exc = exc
-        raise RuntimeError(f"Binance BTC price failed: {last_exc}")
+        raise RuntimeError(f"Binance {sym} price failed: {last_exc}")
 
-    async def get_btc_depth(self, *, limit: int = 1000) -> dict[str, Any]:
-        """BTCUSDT depth bucketed into USD-distance bands (binance_price_orderbook schema)."""
+    async def get_btc_depth(
+        self, *, limit: int = 1000, symbol: str = "BTCUSDT"
+    ) -> dict[str, Any]:
+        """Spot depth bucketed into USD-distance bands (binance_price_orderbook schema)."""
         from app.live.binance_bands import banded_book_from_levels
 
+        sym = str(symbol or "BTCUSDT").strip().upper() or "BTCUSDT"
         # Binance depth limit whitelist.
         allowed = (5, 10, 20, 50, 100, 500, 1000)
         lim = int(limit)
@@ -110,7 +114,7 @@ class LiveClients:
             try:
                 resp = await self._binance.get(
                     f"{root}/api/v3/depth",
-                    params={"symbol": "BTCUSDT", "limit": lim},
+                    params={"symbol": sym, "limit": lim},
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -151,7 +155,7 @@ class LiveClients:
                 )
             except Exception as exc:
                 last_exc = exc
-        raise RuntimeError(f"Binance BTC depth failed: {last_exc}")
+        raise RuntimeError(f"Binance {sym} depth failed: {last_exc}")
 
     async def get_event_by_slug(self, slug: str) -> dict[str, Any] | None:
         try:
@@ -207,7 +211,7 @@ class LiveClients:
     async def discover_active_updown(
         self, series: MarketSeries | str | None = None
     ) -> dict[str, Any] | None:
-        """Resolve current (or nearest) open btc-updown-{5m|15m} market."""
+        """Resolve current (or nearest) open up/down market for the series."""
         s = series if isinstance(series, MarketSeries) else get_series(series)
         start = window_start_unix(duration_s=s.duration_s)
         for offset in (0, -s.duration_s, s.duration_s, -2 * s.duration_s):
@@ -245,14 +249,17 @@ class LiveClients:
         except Exception:
             return []
 
-    async def get_btc_open_at(self, start_ms: int) -> float | None:
+    async def get_btc_open_at(
+        self, start_ms: int, *, symbol: str = "BTCUSDT"
+    ) -> float | None:
         """Best-effort open proxy: first Binance agg trade at/after window start."""
+        sym = str(symbol or "BTCUSDT").strip().upper() or "BTCUSDT"
         for base in (BINANCE_URL, *BINANCE_FALLBACKS):
             try:
                 resp = await self._binance.get(
                     f"{base.rstrip('/')}/api/v3/aggTrades",
                     params={
-                        "symbol": "BTCUSDT",
+                        "symbol": sym,
                         "startTime": int(start_ms),
                         "endTime": int(start_ms) + 15_000,
                         "limit": 1,
@@ -267,9 +274,15 @@ class LiveClients:
         return None
 
     async def _agg_trades_range(
-        self, base: str, start_ms: int, end_ms: int
+        self,
+        base: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        symbol: str = "BTCUSDT",
     ) -> list[dict[str, Any]]:
         """Fetch aggTrades covering [start_ms, end_ms], paginating if needed."""
+        sym = str(symbol or "BTCUSDT").strip().upper() or "BTCUSDT"
         out: list[dict[str, Any]] = []
         cursor = int(start_ms)
         end = int(end_ms)
@@ -277,7 +290,7 @@ class LiveClients:
             resp = await self._binance.get(
                 f"{base.rstrip('/')}/api/v3/aggTrades",
                 params={
-                    "symbol": "BTCUSDT",
+                    "symbol": sym,
                     "startTime": cursor,
                     "endTime": end,
                     "limit": 1000,
@@ -296,19 +309,22 @@ class LiveClients:
                 break
         return out
 
-    async def compute_twap_30s_ending_at(self, end_ms: int) -> float | None:
+    async def compute_twap_30s_ending_at(
+        self, end_ms: int, *, symbol: str = "BTCUSDT"
+    ) -> float | None:
         """
-        Fallback only: time-weighted average of Binance BTCUSDT aggTrades
+        Fallback only: time-weighted average of Binance aggTrades
         over [end-30s, end] when RTDS missed the Chainlink 30s TWAP sample.
 
         Primary host: https://data-api.binance.vision/api/v3/aggTrades
         """
+        sym = str(symbol or "BTCUSDT").strip().upper() or "BTCUSDT"
         end = int(end_ms)
         start = end - 30_000
         last_exc: Exception | None = None
         for base in (BINANCE_URL, *BINANCE_FALLBACKS):
             try:
-                rows = await self._agg_trades_range(base, start, end)
+                rows = await self._agg_trades_range(base, start, end, symbol=sym)
                 if not rows:
                     continue
                 # Build (t_ms, price) series; TWAP = ∫ price dt / 30s

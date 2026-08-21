@@ -1,4 +1,4 @@
-"""Polymarket RTDS: Chainlink spot + 30s/60s TWAP for BTC/USD."""
+"""Polymarket RTDS: Chainlink spot + 30s/60s TWAP (per-asset feeds)."""
 
 from __future__ import annotations
 
@@ -11,26 +11,32 @@ from typing import Any
 import websockets
 
 RTDS_URL = "wss://ws-live-data.polymarket.com"
-SUBSCRIBE = {
-    "action": "subscribe",
-    "subscriptions": [
-        {
-            "topic": "crypto_prices_twap_thirty",
-            "type": "update",
-            "filters": '{"symbol":"btc/usd"}',
-        },
-        {
-            "topic": "crypto_prices_twap_sixty",
-            "type": "update",
-            "filters": '{"symbol":"btc/usd"}',
-        },
-        {
-            "topic": "crypto_prices_chainlink",
-            "type": "*",
-            "filters": '{"symbol":"btc/usd"}',
-        },
-    ],
-}
+
+
+def _subscribe_payload(rtds_symbol: str) -> dict[str, Any]:
+    sym = str(rtds_symbol or "btc/usd").strip().lower() or "btc/usd"
+    filt = json.dumps({"symbol": sym}, separators=(",", ":"))
+    return {
+        "action": "subscribe",
+        "subscriptions": [
+            {
+                "topic": "crypto_prices_twap_thirty",
+                "type": "update",
+                "filters": filt,
+            },
+            {
+                "topic": "crypto_prices_twap_sixty",
+                "type": "update",
+                "filters": filt,
+            },
+            {
+                "topic": "crypto_prices_chainlink",
+                "type": "*",
+                "filters": filt,
+            },
+        ],
+    }
+
 
 # Accept TWAP samples within this window of a boundary (open/close).
 _BOUNDARY_GRACE_MS = 5_000
@@ -40,7 +46,12 @@ _DEFAULT_LOOKBACK_S = 60
 class TwapFeed:
     """Background RTDS subscriber for TWAP (30s + 60s) + Chainlink spot buffer."""
 
-    def __init__(self) -> None:
+    def __init__(self, rtds_symbol: str = "btc/usd") -> None:
+        self.rtds_symbol = str(rtds_symbol or "btc/usd").strip().lower() or "btc/usd"
+        self._allowed_symbols = {
+            self.rtds_symbol,
+            self.rtds_symbol.replace("/", ""),
+        }
         self._lookback_s = _DEFAULT_LOOKBACK_S
         self._twap_30: float | None = None
         self._twap_30_ts: int | None = None
@@ -280,7 +291,7 @@ class TwapFeed:
                     max_size=2**20,
                     proxy=proxy,
                 ) as ws:
-                    await ws.send(json.dumps(SUBSCRIBE))
+                    await ws.send(json.dumps(_subscribe_payload(self.rtds_symbol)))
                     self._error = None
                     ping_at = time.monotonic()
                     while self._running:
@@ -323,7 +334,7 @@ class TwapFeed:
         if not isinstance(payload, dict):
             return
         symbol = str(payload.get("symbol") or "").lower()
-        if symbol and symbol not in {"btc/usd", "btcusdt"}:
+        if symbol and symbol not in self._allowed_symbols:
             return
 
         value = payload.get("value")
@@ -393,11 +404,14 @@ class TwapFeed:
             self._error = None
 
 
-_TWAP: TwapFeed | None = None
+_TWAP_BY_SYMBOL: dict[str, TwapFeed] = {}
 
 
-def get_twap_feed() -> TwapFeed:
-    global _TWAP
-    if _TWAP is None:
-        _TWAP = TwapFeed()
-    return _TWAP
+def get_twap_feed(rtds_symbol: str | None = None) -> TwapFeed:
+    """Return a shared TwapFeed for the RTDS symbol (default btc/usd)."""
+    key = str(rtds_symbol or "btc/usd").strip().lower() or "btc/usd"
+    feed = _TWAP_BY_SYMBOL.get(key)
+    if feed is None:
+        feed = TwapFeed(key)
+        _TWAP_BY_SYMBOL[key] = feed
+    return feed

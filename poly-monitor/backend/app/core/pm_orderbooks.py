@@ -728,6 +728,7 @@ def list_missing_pm_orderbooks(*, date_et: str | None = None) -> dict[str, Any]:
             {
                 "market_id": mid,
                 "slug": None,
+                "series": None,
                 "start_time": int(r.get("start_time") or 0),
                 "end_time": int(r.get("end_time") or 0),
                 "date_et": r.get("date_et"),
@@ -746,13 +747,25 @@ def list_missing_pm_orderbooks(*, date_et: str | None = None) -> dict[str, Any]:
         try:
             meta = _read_meta(d)
             item["slug"] = meta.get("slug")
+            series = meta.get("series")
+            if series not in ("5m", "15m"):
+                from app.core.series import series_from_slug
+
+                hit = series_from_slug(str(meta.get("slug") or ""))
+                series = hit.key if hit else None
+            item["series"] = series
         except Exception:
             pass
 
+    from app.core.pmdata_client import pmdata_blocked_until_ms, pmdata_enabled
+
+    blocked_until = pmdata_blocked_until_ms("books") if pmdata_enabled("books") else None
     return {
         "date": date,
         "n_total": present + len(missing),
         "n_present": present,
         "n_missing": len(missing),
         "missing": missing,
+        "pmdata_enabled": pmdata_enabled("books"),
+        "pmdata_blocked_until_ms": blocked_until,
     }

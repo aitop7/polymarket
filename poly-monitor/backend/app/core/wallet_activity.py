@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Iterator
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -27,10 +29,51 @@ def _http_client(*, timeout_s: float = 90.0) -> httpx.AsyncClient:
         follow_redirects=True,
     )
 
+from app.core.series import get_series, series_from_slug
+
 _ET = ZoneInfo("America/New_York")
 _ADDR_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
+_UPDOWN_SLUG_RE = re.compile(r"^(btc|bnb)-updown-(5m|15m)-(\d+)$", re.I)
+# Backward-compatible aliases used by older call sites / tests.
+_BTC_UPDOWN_SLUG_RE = re.compile(r"^btc-updown-(5m|15m)-(\d+)$", re.I)
 _BTC_UPDOWN_5M_SLUG_RE = re.compile(r"^btc-updown-5m-\d+$", re.I)
-_BTC_UPDOWN_5M_TITLE_RE = re.compile(r"^bitcoin\s+up\s+or\s+down\b", re.I)
+_BTC_UPDOWN_TITLE_RE = re.compile(r"^bitcoin\s+up\s+or\s+down\b", re.I)
+_BNB_UPDOWN_TITLE_RE = re.compile(r"^bnb\s+up\s+or\s+down\b", re.I)
+_BTC_UPDOWN_5M_TITLE_RE = _BTC_UPDOWN_TITLE_RE
+
+_active_series: ContextVar[str] = ContextVar("wallet_market_series", default="5m")
+_VALID_SERIES = frozenset({"5m", "15m", "bnb-15m"})
+
+
+def normalize_series(series: str | None) -> str:
+    key = (series or "5m").strip().lower()
+    return key if key in _VALID_SERIES else "5m"
+
+
+def series_scope(series: str | None = None) -> str:
+    return get_series(
+        normalize_series(series if series is not None else _active_series.get())
+    ).scope
+
+
+@contextmanager
+def use_btc_series(series: str | None) -> Iterator[str]:
+    key = normalize_series(series)
+    token = _active_series.set(key)
+    try:
+        yield key
+    finally:
+        _active_series.reset(token)
+
+
+def slug_series(slug: str | None) -> str | None:
+    hit = series_from_slug(str(slug or "").strip())
+    return hit.key if hit else None
+
+
+def slug_duration_s(slug: str | None) -> int | None:
+    hit = series_from_slug(str(slug or "").strip())
+    return hit.duration_s if hit else None
 
 _PNL_INTERVALS = {
     # Matches Polymarket profile chart (3ur9websez40a.js):
@@ -109,14 +152,31 @@ def normalize_wallet(address: str) -> str:
     return raw.lower()
 
 
-def is_btc_updown_5m(*, slug: str | None = None, title: str | None = None) -> bool:
-    """True for BTC Up/Down 5m markets only (excludes ETH and other series)."""
+def is_btc_updown_market(
+    *,
+    slug: str | None = None,
+    title: str | None = None,
+    series: str | None = None,
+) -> bool:
+    """True for Up/Down markets in the active/requested series (BTC 5m/15m, BNB 15m)."""
+    want = normalize_series(series if series is not None else _active_series.get())
     s = str(slug or "").strip()
     if s:
-        return bool(_BTC_UPDOWN_5M_SLUG_RE.match(s))
+        return slug_series(s) == want
     t = str(title or "").strip()
-    # Title fallback when slug/eventSlug is missing.
-    return bool(t and _BTC_UPDOWN_5M_TITLE_RE.match(t))
+    # Title-only rows lack a series marker; keep legacy title matching.
+    if want == "5m":
+        return bool(t and _BTC_UPDOWN_TITLE_RE.match(t))
+    if want == "15m":
+        return bool(t and _BTC_UPDOWN_TITLE_RE.match(t))
+    if want == "bnb-15m":
+        return bool(t and _BNB_UPDOWN_TITLE_RE.match(t))
+    return False
+
+
+def is_btc_updown_5m(*, slug: str | None = None, title: str | None = None) -> bool:
+    """True for BTC Up/Down markets matching the active series context (default 5m)."""
+    return is_btc_updown_market(slug=slug, title=title)
 
 
 def _headers() -> dict[str, str]:
@@ -455,19 +515,22 @@ def _attach_day_rebates(
 
 
 def _slug_activity_bounds(slug: str) -> tuple[int, int] | None:
-    """Activity window for a BTC 5m market slug (trades + late redeems)."""
-    s = (slug or "").strip()
-    if not _BTC_UPDOWN_5M_SLUG_RE.match(s):
+    """Activity window for an up/down market slug (trades + late redeems)."""
+    hit = series_from_slug((slug or "").strip())
+    if hit is None:
+        return None
+    m = _UPDOWN_SLUG_RE.match((slug or "").strip())
+    if not m:
         return None
     try:
-        start_sec = int(s.rsplit("-", 1)[-1])
+        start_sec = int(m.group(3))
     except ValueError:
         return None
     if start_sec <= 0:
         return None
     start_ms = start_sec * 1000
-    # 2m before open → 30m after open covers fills + post-window redeems.
-    return start_ms - 120_000, start_ms + 30 * 60_000
+    # 2m before open → 30m after window end covers fills + post-window redeems.
+    return start_ms - 120_000, start_ms + hit.duration_s * 1000 + 30 * 60_000
 
 
 def _display_name(row: dict[str, Any], wallet: str) -> str:
@@ -683,119 +746,136 @@ async def _iter_activity_pages(
         offset += len(offs) * page
 
 
-async def fetch_wallet_summary(address: str) -> dict[str, Any]:
-    """Profile + BTC Up/Down 5m position/PnL headline stats for the user card."""
+async def fetch_wallet_summary(
+    address: str, *, series: str | None = "5m"
+) -> dict[str, Any]:
+    """Profile + BTC Up/Down position/PnL headline stats for the user card."""
     wallet = normalize_wallet(address)
-    async with _http_client(timeout_s=90.0) as client:
-        trades_task = _get_json(
-            client,
-            f"{DATA_API_URL}/trades",
-            params={"user": wallet, "limit": 1, "takerOnly": "false"},
-        )
+    with use_btc_series(series) as series_key:
+        async with _http_client(timeout_s=90.0) as client:
+            trades_task = _get_json(
+                client,
+                f"{DATA_API_URL}/trades",
+                params={"user": wallet, "limit": 1, "takerOnly": "false"},
+            )
 
-        async def _lb() -> Any:
-            try:
-                return await _get_json(
-                    client,
-                    f"{LB_API_URL}/profit",
-                    params={"address": wallet, "window": "all", "limit": 1},
-                )
-            except Exception:
-                return []
-
-        trades, lb = await asyncio.gather(trades_task, _lb())
-
-        # Scan closed BTC positions for all-time PnL + biggest win (not all-market LB).
-        total_pnl = 0.0
-        biggest_win: dict[str, Any] | None = None
-        closed_n = 0
-        closed_keys: set[str] = set()
-        max_btc = 8_000
-        pages_seen = 0
-        async for batch in _iter_closed_position_pages(client, wallet):
-            pages_seen += 1
-            for raw in batch:
-                item = _norm_closed_position(raw)
-                if item is None:
-                    continue
-                closed_n += 1
+            async def _lb() -> Any:
                 try:
-                    pnl = float(item.get("realized_pnl") or 0.0)
-                except (TypeError, ValueError):
-                    pnl = 0.0
-                total_pnl += pnl
-                closed_keys.update(_market_lookup_keys(item))
-                if biggest_win is None or pnl > float(biggest_win["realized_pnl"]):
-                    biggest_win = {
-                        "realized_pnl": pnl,
-                        "title": item.get("title"),
-                        "slug": item.get("slug"),
-                        "outcome": item.get("outcome"),
-                    }
+                    return await _get_json(
+                        client,
+                        f"{LB_API_URL}/profit",
+                        params={"address": wallet, "window": "all", "limit": 1},
+                    )
+                except Exception:
+                    return []
+
+            trades, lb = await asyncio.gather(trades_task, _lb())
+
+            # Scan closed BTC positions for all-time PnL + biggest win (not all-market LB).
+            total_pnl = 0.0
+            biggest_win: dict[str, Any] | None = None
+            closed_n = 0
+            closed_keys: set[str] = set()
+            max_btc = 8_000
+            pages_seen = 0
+            async for batch in _iter_closed_position_pages(client, wallet):
+                pages_seen += 1
+                for raw in batch:
+                    item = _norm_closed_position(raw)
+                    if item is None:
+                        continue
+                    closed_n += 1
+                    try:
+                        pnl = float(item.get("realized_pnl") or 0.0)
+                    except (TypeError, ValueError):
+                        pnl = 0.0
+                    total_pnl += pnl
+                    closed_keys.update(_market_lookup_keys(item))
+                    if biggest_win is None or pnl > float(biggest_win["realized_pnl"]):
+                        biggest_win = {
+                            "realized_pnl": pnl,
+                            "title": item.get("title"),
+                            "slug": item.get("slug"),
+                            "outcome": item.get("outcome"),
+                        }
+                    if closed_n >= max_btc:
+                        break
                 if closed_n >= max_btc:
                     break
-            if closed_n >= max_btc:
-                break
-            if _btc_empty_should_stop(pages_seen=pages_seen, btc_found=closed_n):
-                break
+                if _btc_empty_should_stop(pages_seen=pages_seen, btc_found=closed_n):
+                    break
 
-        extras, rebate_rows = await asyncio.gather(
-            _btc_unrealized_extras(
-                client, wallet, closed_keys, activity_lookback_ms=45 * 86_400_000
-            ),
-            _paginate_rebate_activity(client, wallet),
-        )
+            extras, rebate_rows = await asyncio.gather(
+                _btc_unrealized_extras(
+                    client, wallet, closed_keys, activity_lookback_ms=45 * 86_400_000
+                ),
+                _paginate_rebate_activity(client, wallet),
+            )
 
-    profile_src: dict[str, Any] = {}
-    if isinstance(trades, list) and trades:
-        profile_src = trades[0]
-    elif isinstance(lb, list) and lb:
-        profile_src = lb[0]
+        profile_src: dict[str, Any] = {}
+        if isinstance(trades, list) and trades:
+            profile_src = trades[0]
+        elif isinstance(lb, list) and lb:
+            profile_src = lb[0]
 
-    closed_pnl = _round_pnl_to_cents(total_pnl) if closed_n else 0.0
-    activity_pnl = float(extras.get("activity_pnl") or 0.0)
-    open_pnl = float(extras.get("open_pnl") or 0.0)
-    # Same formula as PnL-by-day / PnL-by-market: closed + tape + leftover open marks.
-    combined = _round_pnl_to_cents(closed_pnl + activity_pnl + open_pnl)
-    rebates = _rebate_rollups(rebate_rows)
+        closed_pnl = _round_pnl_to_cents(total_pnl) if closed_n else 0.0
+        activity_pnl = float(extras.get("activity_pnl") or 0.0)
+        open_pnl = float(extras.get("open_pnl") or 0.0)
+        # Same formula as PnL-by-day / PnL-by-market: closed + tape + leftover open marks.
+        combined = _round_pnl_to_cents(closed_pnl + activity_pnl + open_pnl)
+        rebates = _rebate_rollups(rebate_rows)
 
-    return {
-        "wallet": wallet,
-        "name": _display_name(profile_src, wallet),
-        "pseudonym": str(profile_src.get("pseudonym") or "") or None,
-        "profile_image": str(
-            profile_src.get("profileImageOptimized")
-            or profile_src.get("profileImage")
-            or ""
-        )
-        or None,
-        "scope": "btc_updown_5m",
-        "includes_open": True,
-        "markets_aligned": True,
-        "positions_value": float(extras.get("positions_value") or 0.0),
-        "biggest_win": biggest_win,
-        "total_pnl": combined,
-        "closed_pnl": closed_pnl,
-        "open_pnl": open_pnl,
-        "activity_pnl": activity_pnl,
-        "total_rebates": rebates["total_rebates"],
-        "maker_rebates": rebates["maker_rebates"],
-        "taker_rebates": rebates["taker_rebates"],
-        "rebate_events": rebates["rebate_events"],
-        "open_positions": int(extras.get("n_open") or 0),
-        "closed_sample": closed_n,
-        "polygonscan_url": f"https://polygonscan.com/address/{wallet}",
-        "orbscan_url": f"https://orbscan.com/profile/{wallet}",
-        "polymarket_url": f"https://polymarket.com/profile/{wallet}",
-    }
+        return {
+            "wallet": wallet,
+            "name": _display_name(profile_src, wallet),
+            "pseudonym": str(profile_src.get("pseudonym") or "") or None,
+            "profile_image": str(
+                profile_src.get("profileImageOptimized")
+                or profile_src.get("profileImage")
+                or ""
+            )
+            or None,
+            "scope": series_scope(series_key),
+            "series": series_key,
+            "includes_open": True,
+            "markets_aligned": True,
+            "positions_value": float(extras.get("positions_value") or 0.0),
+            "biggest_win": biggest_win,
+            "total_pnl": combined,
+            "closed_pnl": closed_pnl,
+            "open_pnl": open_pnl,
+            "activity_pnl": activity_pnl,
+            "total_rebates": rebates["total_rebates"],
+            "maker_rebates": rebates["maker_rebates"],
+            "taker_rebates": rebates["taker_rebates"],
+            "rebate_events": rebates["rebate_events"],
+            "open_positions": int(extras.get("n_open") or 0),
+            "closed_sample": closed_n,
+            "polygonscan_url": f"https://polygonscan.com/address/{wallet}",
+            "orbscan_url": f"https://orbscan.com/profile/{wallet}",
+            "polymarket_url": f"https://polymarket.com/profile/{wallet}",
+        }
 
 
-async def fetch_wallet_pnl(address: str, interval: str = "1d") -> dict[str, Any]:
-    """BTC Up/Down 5m realized-PnL series + headline for the selected interval.
+async def fetch_wallet_pnl(
+    address: str, interval: str = "1d", *, series: str | None = "5m"
+) -> dict[str, Any]:
+    """BTC Up/Down realized-PnL series + headline for the selected interval.
 
     Built from closed-position settles (not the all-market user-pnl API).
     """
     wallet = normalize_wallet(address)
+    series_key = normalize_series(series)
+    token = _active_series.set(series_key)
+    try:
+        return await _fetch_wallet_pnl_impl(wallet, interval, series_key=series_key)
+    finally:
+        _active_series.reset(token)
+
+
+async def _fetch_wallet_pnl_impl(
+    wallet: str, interval: str, *, series_key: str
+) -> dict[str, Any]:
     key = (interval or "1d").strip().lower()
     if key not in _PNL_INTERVALS:
         raise ValueError(f"Invalid interval (use {', '.join(_PNL_INTERVALS)})")
@@ -883,7 +963,8 @@ async def fetch_wallet_pnl(address: str, interval: str = "1d") -> dict[str, Any]
 
     # Collapse to interval fidelity for chart readability.
     if key == "1d":
-        bucket_ms = 5 * 60_000  # 5m aligns with market windows
+        # Align buckets with the selected market series window.
+        bucket_ms = (15 if series_key == "15m" else 5) * 60_000
     elif key == "1w":
         bucket_ms = 60 * 60_000
     elif key == "1m":
@@ -938,7 +1019,8 @@ async def fetch_wallet_pnl(address: str, interval: str = "1d") -> dict[str, Any]
         "wallet": wallet,
         "interval": key,
         "fidelity": fidelity,
-        "scope": "btc_updown_5m",
+        "scope": series_scope(series_key),
+        "series_key": series_key,
         "includes_open": True,
         "markets_aligned": True,
         "start_pnl": start_pnl,
@@ -1389,9 +1471,32 @@ async def fetch_wallet_daily_pnl(
     days: int = 90,
     scan_limit: int = 3000,
     before: str | None = None,
+    series: str | None = "5m",
 ) -> dict[str, Any]:
-    """BTC Up/Down 5m PnL by day (same formula as PnL-by-market totals)."""
+    """BTC Up/Down PnL by day (same formula as PnL-by-market totals)."""
     wallet = normalize_wallet(address)
+    series_key = normalize_series(series)
+    token = _active_series.set(series_key)
+    try:
+        return await _fetch_wallet_daily_pnl_impl(
+            wallet,
+            days=days,
+            scan_limit=scan_limit,
+            before=before,
+            series_key=series_key,
+        )
+    finally:
+        _active_series.reset(token)
+
+
+async def _fetch_wallet_daily_pnl_impl(
+    wallet: str,
+    *,
+    days: int,
+    scan_limit: int,
+    before: str | None,
+    series_key: str,
+) -> dict[str, Any]:
     days = max(1, min(int(days), 730))
     scan_limit = max(50, min(int(scan_limit), 50_000))
     if before:
@@ -1438,6 +1543,8 @@ async def fetch_wallet_daily_pnl(
         "includes_open": True,
         "by_market_day": True,
         "markets_aligned": True,
+        "scope": series_scope(series_key),
+        "series": series_key,
         "n_open": 0,
         "total_rebates": rebates["total_rebates"],
         "maker_rebates": rebates["maker_rebates"],
@@ -1633,16 +1740,17 @@ def _slug_window_start_ms(slug: str | None) -> int | None:
 
 
 def _is_live_btc_market(slug: str | None, *, now_ms: int | None = None) -> bool:
-    """True while the 5m window is still open (exclude from day/market lists)."""
+    """True while the market window is still open (exclude from day/market lists)."""
     start = _slug_window_start_ms(slug)
     if start is None:
         return False
+    dur_s = slug_duration_s(slug) or 300
     now = int(
         now_ms
         if now_ms is not None
         else datetime.now(timezone.utc).timestamp() * 1000
     )
-    return now < start + 5 * 60_000
+    return now < start + dur_s * 1000
 
 
 def _activity_tape_pnl(rows: list[dict[str, Any]]) -> float | None:
@@ -1754,8 +1862,35 @@ async def fetch_wallet_markets(
     include_open: bool = True,
     activity_limit: int | None = None,
     activity_payload: dict[str, Any] | None = None,
+    series: str | None = "5m",
 ) -> dict[str, Any]:
     """Per-market PnL from closed positions, merged with same-day activity markets."""
+    series_key = normalize_series(series)
+    token = _active_series.set(series_key)
+    try:
+        return await _fetch_wallet_markets_impl(
+            address,
+            date=date,
+            limit=limit,
+            include_open=include_open,
+            activity_limit=activity_limit,
+            activity_payload=activity_payload,
+            series_key=series_key,
+        )
+    finally:
+        _active_series.reset(token)
+
+
+async def _fetch_wallet_markets_impl(
+    address: str,
+    *,
+    date: str | None,
+    limit: int,
+    include_open: bool,
+    activity_limit: int | None,
+    activity_payload: dict[str, Any] | None,
+    series_key: str,
+) -> dict[str, Any]:
     wallet = normalize_wallet(address)
     limit = max(1, min(int(limit), 500))
     act_limit = max(limit, min(int(activity_limit or max(limit * 4, 500)), 1000))
@@ -1769,9 +1904,15 @@ async def fetch_wallet_markets(
             if not date:
                 return []
             if isinstance(activity_payload, dict) and activity_payload.get("markets") is not None:
-                return list(activity_payload.get("markets") or [])
+                cached_series = activity_payload.get("series")
+                if cached_series is None and activity_payload.get("scope") == "btc_updown_15m":
+                    cached_series = "15m"
+                elif cached_series is None and activity_payload.get("scope") == "btc_updown_5m":
+                    cached_series = "5m"
+                if cached_series in (None, series_key):
+                    return list(activity_payload.get("markets") or [])
             act = await fetch_wallet_activity(
-                address, date=date, limit=act_limit, _client=client
+                address, date=date, limit=act_limit, series=series_key, _client=client
             )
             return list(act.get("markets") or [])
 
@@ -1987,6 +2128,8 @@ async def fetch_wallet_markets(
         "total_pnl": _round_pnl_to_cents(combined) if clipped else 0.0,
         "closed_pnl": _round_pnl_to_cents(closed_pnl) if clipped else 0.0,
         "activity_pnl": _round_pnl_to_cents(activity_pnl) if clipped else 0.0,
+        "scope": series_scope(series_key),
+        "series": series_key,
         "markets": clipped,
     }
 
@@ -1998,14 +2141,46 @@ async def fetch_wallet_activity(
     slug: str | None = None,
     limit: int = 200,
     offset: int = 0,
+    series: str | None = "5m",
+    _client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    series_key = normalize_series(series)
+    if slug:
+        hit = slug_series(slug)
+        if hit:
+            series_key = hit
+    token = _active_series.set(series_key)
+    try:
+        out = await _fetch_wallet_activity_body(
+            address,
+            date=date,
+            slug=slug,
+            limit=limit,
+            offset=offset,
+            series_key=series_key,
+            _client=_client,
+        )
+        return out
+    finally:
+        _active_series.reset(token)
+
+
+async def _fetch_wallet_activity_body(
+    address: str,
+    *,
+    date: str | None = None,
+    slug: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    series_key: str = "5m",
     _client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     wallet = normalize_wallet(address)
     limit = max(1, min(int(limit), 1000))
     offset = max(0, min(int(offset), 20_000))
     want_slug = (slug or "").strip() or None
-    if want_slug and not is_btc_updown_5m(slug=want_slug):
-        raise ValueError("slug must be a btc-updown-5m market")
+    if want_slug and slug_series(want_slug) is None:
+        raise ValueError("slug must be a btc-updown-5m/15m or bnb-updown-15m market")
 
     params: dict[str, Any] = {"user": wallet, "limit": min(500, limit)}
     start_ms = end_ms = None
@@ -2014,7 +2189,7 @@ async def fetch_wallet_activity(
     if want_slug:
         bounds = _slug_activity_bounds(want_slug)
         if bounds is None:
-            raise ValueError("invalid btc-updown-5m slug")
+            raise ValueError("invalid up/down market slug")
         start_ms, end_ms = bounds
         params["start"] = start_ms // 1000
         params["end"] = end_ms // 1000
@@ -2122,6 +2297,8 @@ async def fetch_wallet_activity(
             "api_offset": page_offset,
             "has_more": has_more,
             "name": name,
+            "scope": series_scope(series_key),
+            "series": series_key,
             "activity": clipped,
             "markets": markets,
         }

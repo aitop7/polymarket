@@ -11,7 +11,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.pricing import quotes_from_up_buy
-from app.core.series import SERIES_5M, MarketSeries, get_series
+from app.core.series import ALL_SERIES, MarketSeries, get_series
 from app.live.clients import LiveClients, parse_token_ids, window_start_unix
 from app.live import ptb_store
 from app.live.fetch_live_series import (
@@ -116,8 +116,8 @@ class LiveMarketService:
     def __init__(self, series: MarketSeries | str | None = None) -> None:
         self.series = series if isinstance(series, MarketSeries) else get_series(series)
         self.clients = LiveClients()
-        self.twap = get_twap_feed()
-        # Per-series activity feed so 5m and 15m do not fight over filters.
+        self.twap = get_twap_feed(self.series.rtds_symbol)
+        # Per-series activity feed so series do not fight over filters.
         self.activity = ActivityFeed()
         self._market: dict[str, Any] | None = None
         self._market_id: str | None = None
@@ -405,7 +405,9 @@ class LiveMarketService:
         # Last resort only — Binance ≠ Polymarket Chainlink (and can be slow).
         if not allow_computed:
             return None
-        computed = await self.clients.compute_twap_30s_ending_at(start_ms)
+        computed = await self.clients.compute_twap_30s_ending_at(
+            start_ms, symbol=self.series.binance_symbol
+        )
         if computed is not None:
             source = (
                 "open_twap_60s_computed"
@@ -826,7 +828,7 @@ class LiveMarketService:
 
         async def _btc() -> float | None:
             try:
-                px = await self.clients.get_btc_price()
+                px = await self.clients.get_btc_price(self.series.binance_symbol)
                 self._last_btc_price = float(px)
                 return self._last_btc_price
             except Exception:
@@ -844,7 +846,9 @@ class LiveMarketService:
 
         async def _binance_book() -> dict[str, Any] | None:
             try:
-                depth = await self.clients.get_btc_depth(limit=1000)
+                depth = await self.clients.get_btc_depth(
+                    limit=1000, symbol=self.series.binance_symbol
+                )
                 self._last_binance_book = depth
                 return depth
             except Exception:
@@ -866,7 +870,7 @@ class LiveMarketService:
             return self._with_twap(
                 {
                     "type": "error",
-                    "message": "BTC price unavailable",
+                    "message": f"{self.series.asset} price unavailable",
                     "timestamp": now_ms,
                     "binance_book": binance_book,
                 }
@@ -1139,6 +1143,8 @@ class LiveMarketService:
             "type": "market",
             "live": True,
             "series": self.series.key,
+            "asset": self.series.asset,
+            "binance_symbol": self.series.binance_symbol,
             "market_id": self._market_id,
             "condition_id": self._condition_id,
             "slug": str(market.get("slug") or ""),
@@ -1167,5 +1173,5 @@ def get_live_service(series: str | MarketSeries | None = None) -> LiveMarketServ
 
 
 def warm_all_live_services() -> list[LiveMarketService]:
-    """Ensure 5m and 15m live services exist (called from app lifespan)."""
-    return [get_live_service(s.key) for s in (SERIES_5M, get_series("15m"))]
+    """Ensure live services for all series exist (called from app lifespan)."""
+    return [get_live_service(s.key) for s in ALL_SERIES]

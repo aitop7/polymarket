@@ -32,6 +32,14 @@ import PriceChart, {
   type TimeDomain,
   type TraderMark,
 } from '../components/PriceChart'
+import {
+  SERIES_WINDOW_MS,
+  UPDOWN_SLUG_RE,
+  type MarketSeriesKey,
+  loadMarketSeries,
+  saveMarketSeries,
+  seriesTitle,
+} from '../series'
 
 const INTERVALS: { id: WalletPnlInterval; label: string; subtitle: string }[] = [
   { id: '1d', label: '1D', subtitle: 'Past Day' },
@@ -58,23 +66,34 @@ const TOTAL_PNL_COLORS = {
 } as const
 
 const ADDR_RE = /^0x[a-fA-F0-9]{40}$/
-const BTC_SLUG_RE = /^btc-updown-5m-(\d+)$/i
 const DEFAULT_BTC_SERIES: BtcSeriesVisibility = { twap: true, chainlink: true, binance: true }
 
 function slugToWindowStartMs(slug?: string | null): number | null {
   if (!slug) return null
-  const m = BTC_SLUG_RE.exec(slug.trim())
+  const m = UPDOWN_SLUG_RE.exec(slug.trim())
   if (!m) return null
-  const n = Number(m[1])
+  const n = Number(m[3])
   if (!Number.isFinite(n) || n <= 0) return null
   return n > 1e12 ? n : n * 1000
 }
 
-/** Official BTC 5m market window from slug (ET wall-clock range). */
+/** Official market window from slug (ET wall-clock range). */
 function slugMarketWindow(slug?: string | null): { startMs: number; endMs: number } | null {
+  if (!slug) return null
+  const m = UPDOWN_SLUG_RE.exec(slug.trim())
+  if (!m) return null
   const startMs = slugToWindowStartMs(slug)
   if (startMs == null) return null
-  return { startMs, endMs: startMs + 5 * 60_000 }
+  const asset = m[1].toLowerCase()
+  const tf = m[2].toLowerCase()
+  const key: MarketSeriesKey =
+    asset === 'bnb' && tf === '15m'
+      ? 'bnb-15m'
+      : tf === '15m'
+        ? '15m'
+        : '5m'
+  const dur = SERIES_WINDOW_MS[key]
+  return { startMs, endMs: startMs + dur }
 }
 
 function isAfterMarketWindow(
@@ -334,15 +353,20 @@ function shortMarketLabel(title?: string | null, slug?: string | null): string {
     if (window) {
       return `${window[1].replace(/\s+/g, '')}–${window[2].replace(/\s+/g, '')}`
     }
-    const stripped = t.replace(/^Bitcoin\s+Up\s+or\s+Down\s*[-–—:]?\s*/i, '').trim()
+    const stripped = t
+      .replace(/^Bitcoin\s+Up\s+or\s+Down\s*[-–—:]?\s*/i, '')
+      .replace(/^BNB\s+Up\s+or\s+Down\s*[-–—:]?\s*/i, '')
+      .trim()
     if (stripped) return stripped
   }
   const s = (slug || '').trim()
-  if (/^btc-updown-5m-\d+$/i.test(s)) {
-    const startSec = Number(s.slice('btc-updown-5m-'.length))
+  const m = UPDOWN_SLUG_RE.exec(s)
+  if (m) {
+    const startSec = Number(m[3])
+    const durSec = m[2].toLowerCase() === '15m' ? 900 : 300
     if (Number.isFinite(startSec) && startSec > 0) {
       const start = new Date(startSec * 1000)
-      const end = new Date((startSec + 300) * 1000)
+      const end = new Date((startSec + durSec) * 1000)
       const fmt = (d: Date) =>
         d
           .toLocaleTimeString('en-US', {
@@ -363,6 +387,14 @@ export default function WalletPage() {
   const navigate = useNavigate()
   const [query, setQuery] = useState(walletParam || '')
   const [wallet, setWallet] = useState<string | null>(null)
+  const [marketSeries, setMarketSeriesState] = useState<MarketSeriesKey>(() => loadMarketSeries())
+  const marketSeriesRef = useRef(marketSeries)
+  marketSeriesRef.current = marketSeries
+  const setMarketSeries = (s: MarketSeriesKey) => {
+    if (s === marketSeriesRef.current) return
+    saveMarketSeries(s)
+    setMarketSeriesState(s)
+  }
   const [date, setDate] = useState<string>('')
   const [interval, setInterval] = useState<WalletPnlInterval>('1d')
   const [totalPnlInterval, setTotalPnlInterval] = useState<WalletTotalPnlInterval>('1w')
@@ -515,8 +547,12 @@ export default function WalletPage() {
 
     try {
       const [sum, dailyRes] = await Promise.all([
-        api.walletSummary(normalized, { refresh }),
-        api.walletDaily(normalized, 120, { refresh, scanLimit: 3000 }),
+        api.walletSummary(normalized, { refresh, series: marketSeriesRef.current }),
+        api.walletDaily(normalized, 120, {
+          refresh,
+          scanLimit: 3000,
+          series: marketSeriesRef.current,
+        }),
       ])
       if (gen !== loadGen.current) return
       setSummary(sum)
@@ -644,16 +680,26 @@ export default function WalletPage() {
     setError(null)
     try {
       const [sum, dailyRes, pnlRes, totalPnlRes, act, mkts] = await Promise.all([
-        api.walletSummary(addr, { refresh: true }),
-        api.walletDaily(addr, 120, { refresh: true, scanLimit: scan }),
-        api.walletPnl(addr, interval, { refresh: true }),
+        api.walletSummary(addr, { refresh: true, series: marketSeriesRef.current }),
+        api.walletDaily(addr, 120, {
+          refresh: true,
+          scanLimit: scan,
+          series: marketSeriesRef.current,
+        }),
+        api.walletPnl(addr, interval, { refresh: true, series: marketSeriesRef.current }),
         api.walletTotalPnl(addr, totalPnlInterval),
-        api.walletActivity(addr, { date, limit: actLim, refresh: true }),
+        api.walletActivity(addr, {
+          date,
+          limit: actLim,
+          refresh: true,
+          series: marketSeriesRef.current,
+        }),
         api.walletMarkets(addr, {
           date,
           limit: mktLim,
           activityLimit: actLim,
           refresh: true,
+          series: marketSeriesRef.current,
         }),
       ])
       setSummary(sum)
@@ -697,9 +743,17 @@ export default function WalletPage() {
       const nextScan = Math.min(dailyScanLimit + 3000, 50000)
       // Deeper scan of the full history (rewrites list), then also pull a page before oldest.
       const [deep, older] = await Promise.all([
-        api.walletDaily(wallet, 180, { refresh: true, scanLimit: nextScan }),
+        api.walletDaily(wallet, 180, {
+          refresh: true,
+          scanLimit: nextScan,
+          series: marketSeriesRef.current,
+        }),
         oldest
-          ? api.walletDaily(wallet, 90, { scanLimit: nextScan, before: oldest })
+          ? api.walletDaily(wallet, 90, {
+              scanLimit: nextScan,
+              before: oldest,
+              series: marketSeriesRef.current,
+            })
           : Promise.resolve(null),
       ])
       setDailyScanLimit(nextScan)
@@ -730,6 +784,7 @@ export default function WalletPage() {
         limit: nextLim,
         activityLimit: nextAct,
         refresh: true,
+        series: marketSeriesRef.current,
       })
       setMarketsLimit(nextLim)
       setActivityLimit(nextAct)
@@ -763,6 +818,7 @@ export default function WalletPage() {
         limit: deepLimit,
         offset: 0,
         refresh: true,
+        series: marketSeriesRef.current,
       })
       let markets = page.markets || []
       let nextOffset = page.next_offset ?? page.count ?? 0
@@ -784,6 +840,7 @@ export default function WalletPage() {
           limit: 400,
           offset: nextOffset,
           refresh: true,
+          series: marketSeriesRef.current,
         })
         const incoming = more.markets || []
         const byKey = new Map<string, WalletMarketActivity>()
@@ -826,6 +883,7 @@ export default function WalletPage() {
           slug: selectedMeta.slug,
           limit: 200,
           refresh: true,
+          series: marketSeriesRef.current,
         })
         for (const m of bySlug.markets || []) {
           const existing = findActivityMarket(markets, selectedKey, selectedMeta)
@@ -898,7 +956,7 @@ export default function WalletPage() {
     let cancelled = false
     setPnlLoading(true)
     api
-      .walletPnl(wallet, interval)
+      .walletPnl(wallet, interval, { series: marketSeriesRef.current })
       .then((res) => {
         if (!cancelled) {
           setPnl(res)
@@ -917,7 +975,7 @@ export default function WalletPage() {
     return () => {
       cancelled = true
     }
-  }, [wallet, interval])
+  }, [wallet, interval, marketSeries])
 
   useEffect(() => {
     if (!wallet) {
@@ -967,11 +1025,16 @@ export default function WalletPage() {
     setActivityHasMore(false)
     setActivityNextOffset(0)
     Promise.all([
-      api.walletActivity(wallet, { date: loadDate, limit: activityLimit }),
+      api.walletActivity(wallet, {
+        date: loadDate,
+        limit: activityLimit,
+        series: marketSeriesRef.current,
+      }),
       api.walletMarkets(wallet, {
         date: loadDate,
         limit: marketsLimit,
         activityLimit,
+        series: marketSeriesRef.current,
       }),
     ])
       .then(([act, mkts]) => {
@@ -1007,6 +1070,13 @@ export default function WalletPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- limits bump via Fetch more handlers
   }, [wallet, date])
+
+  // Switching 5m/15m reloads wallet stats for the active address.
+  useEffect(() => {
+    if (!wallet) return
+    void loadWalletData(wallet, { refresh: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- series toggle only
+  }, [marketSeries])
 
   // Daily API includes open marks; market panel may still refine via activity
   // tape (buy-only markets with no open row). Keep selected day in sync.
@@ -1066,13 +1136,18 @@ export default function WalletPage() {
   useEffect(() => {
     if (!wallet || !expandedMarket || activityLoading || activityMoreLoading) return
     const slug = selectedMarketMeta?.slug
-    if (!slug || !BTC_SLUG_RE.test(slug)) return
+    if (!slug || !UPDOWN_SLUG_RE.test(slug)) return
     if (slugEnrichDoneRef.current.has(slug)) return
     slugEnrichDoneRef.current.add(slug)
     let cancelled = false
     setMarketFillLoading(true)
     api
-      .walletActivity(wallet, { slug, limit: 200, refresh: true })
+      .walletActivity(wallet, {
+        slug,
+        limit: 200,
+        refresh: true,
+        series: marketSeriesRef.current,
+      })
       .then((res) => {
         if (cancelled) return
         const incoming = res.markets || []
@@ -1262,8 +1337,20 @@ export default function WalletPage() {
         let marketId: string | null = null
         if (expectStart != null) {
           try {
-            const hit = await api.marketAt('twap', { t: expectStart + 15_000 })
-            // Reject nearest-miss / wrong-day hits: must be this slug's 5m window.
+            const slugHit = UPDOWN_SLUG_RE.exec(slug)
+            let slugSeries: MarketSeriesKey = marketSeriesRef.current
+            if (slugHit) {
+              const asset = slugHit[1].toLowerCase()
+              const tf = slugHit[2].toLowerCase()
+              if (asset === 'bnb' && tf === '15m') slugSeries = 'bnb-15m'
+              else if (tf === '15m') slugSeries = '15m'
+              else slugSeries = '5m'
+            }
+            const hit = await api.marketAt('twap', {
+              t: expectStart + 15_000,
+              series: slugSeries,
+            })
+            // Reject nearest-miss / wrong-day hits: must be this slug's window.
             const hitStart = Number(hit.start_time)
             const hitEnd = Number(hit.end_time)
             const inWindow =
@@ -1506,6 +1593,29 @@ export default function WalletPage() {
             )}
           </label>
           <div className="wallet-search-actions">
+            <div className="mode-segment" role="group" aria-label="Market series">
+              <button
+                type="button"
+                className={`mode-segment-btn${marketSeries === '5m' ? ' active' : ''}`}
+                onClick={() => setMarketSeries('5m')}
+              >
+                BTC 5m
+              </button>
+              <button
+                type="button"
+                className={`mode-segment-btn${marketSeries === '15m' ? ' active' : ''}`}
+                onClick={() => setMarketSeries('15m')}
+              >
+                BTC 15m
+              </button>
+              <button
+                type="button"
+                className={`mode-segment-btn${marketSeries === 'bnb-15m' ? ' active' : ''}`}
+                onClick={() => setMarketSeries('bnb-15m')}
+              >
+                BNB 15m
+              </button>
+            </div>
             <button
               type="button"
               className="wallet-search-btn primary"
@@ -1535,7 +1645,7 @@ export default function WalletPage() {
 
         {!wallet && !error && (
           <p className="muted" style={{ marginTop: '0.25rem' }}>
-            Search a wallet to load BTC Up/Down 5m PnL and activity. Results are saved locally for quick reopen.
+            Search a wallet to load {seriesTitle(marketSeries)} PnL and activity. Results are saved locally for quick reopen.
           </p>
         )}
 
@@ -1623,7 +1733,7 @@ export default function WalletPage() {
                 </div>
               </div>
               <div className="wallet-profile-scope muted">
-                BTC Up/Down 5m · incl. unredeemed · rebates are account-wide
+                {seriesTitle(marketSeries)} · incl. unredeemed · rebates are account-wide
               </div>
               <div className="wallet-comment">
                 <label className="wallet-comment-label" htmlFor="wallet-trader-comment">
@@ -1681,7 +1791,7 @@ export default function WalletPage() {
                 {pnlLoading && !pnl ? '…' : fmtSignedUsd(pnlValue)}
               </div>
               <div className="wallet-pnl-sub">
-                {intervalMeta.subtitle} · BTC Up/Down 5m
+                {intervalMeta.subtitle} · {seriesTitle(marketSeries)}
               </div>
               <div className="wallet-pnl-chart">
                 {chartData.length > 1 ? (

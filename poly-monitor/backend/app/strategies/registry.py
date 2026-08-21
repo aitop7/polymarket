@@ -76,6 +76,42 @@ def list_strategies() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "dual_limit_exit",
+            "description": (
+                "Rest BUY UP@A + DOWN@B; on one-sided fill rest SELL at A'/B'; "
+                "if both buys fill, hold both to settlement"
+            ),
+            "params": {
+                "buy_up": 0.45,
+                "buy_down": 0.45,
+                "sell_up": 0.55,
+                "sell_down": 0.55,
+                "shares": 10.0,
+                "taker_fee_rate": 0.07,
+                "fee_model": "polymarket",
+                "once_per_market": True,
+                "min_elapsed_seconds": _DEFAULT_MIN_ELAPSED_SECONDS,
+                "min_remaining_seconds": _DEFAULT_MIN_REMAINING_SECONDS,
+            },
+        },
+        {
+            "name": "equal_pair_ab",
+            "description": (
+                "Equal UP+DOWN shares: first leg ask≤B, second leg so sum≤A; "
+                "hold completed pairs to settlement (outcome-neutral)"
+            ),
+            "params": {
+                "pair_max": 0.95,
+                "first_max": 0.45,
+                "shares": 10.0,
+                "taker_fee_rate": 0.07,
+                "fee_model": "polymarket",
+                "once_per_market": True,
+                "min_elapsed_seconds": _DEFAULT_MIN_ELAPSED_SECONDS,
+                "min_remaining_seconds": _DEFAULT_MIN_REMAINING_SECONDS,
+            },
+        },
+        {
             "name": "none",
             "description": "No automated strategy (manual / monitor only)",
             "params": {},
@@ -193,5 +229,41 @@ def create_strategy(name: str, params: dict[str, Any] | None = None) -> Any:
             fee_rate=float(params.get("fee_rate", params.get("taker_fee_rate", 0.07))),
             fee_model=str(params.get("fee_model", "polymarket")),
             allow_missing_model=bool(params.get("allow_missing_model", True)),
+        )
+    if name == "dual_limit_exit":
+        from strategies.dual_limit_exit import DualLimitExitStrategy
+
+        return DualLimitExitStrategy(
+            buy_up=float(params.get("buy_up", params.get("A", 0.45))),
+            buy_down=float(params.get("buy_down", params.get("B", 0.45))),
+            sell_up=float(params.get("sell_up", params.get("A_prime", params.get("A'", 0.55)))),
+            sell_down=float(params.get("sell_down", params.get("B_prime", params.get("B'", 0.55)))),
+            shares=float(params.get("shares", 10.0)),
+            taker_fee_rate=float(params.get("taker_fee_rate", 0.07)),
+            fee_model=str(params.get("fee_model", "polymarket")),
+            once_per_market=bool(params.get("once_per_market", True)),
+            min_elapsed_seconds=float(
+                params.get("min_elapsed_seconds", _DEFAULT_MIN_ELAPSED_SECONDS)
+            ),
+            min_remaining_seconds=float(
+                params.get("min_remaining_seconds", _DEFAULT_MIN_REMAINING_SECONDS)
+            ),
+        )
+    if name == "equal_pair_ab":
+        from strategies.equal_pair_ab import EqualPairAbStrategy
+
+        return EqualPairAbStrategy(
+            pair_max=float(params.get("pair_max", params.get("A", 0.95))),
+            first_max=float(params.get("first_max", params.get("B", 0.45))),
+            shares=float(params.get("shares", 10.0)),
+            taker_fee_rate=float(params.get("taker_fee_rate", 0.07)),
+            fee_model=str(params.get("fee_model", "polymarket")),
+            once_per_market=bool(params.get("once_per_market", True)),
+            min_elapsed_seconds=float(
+                params.get("min_elapsed_seconds", _DEFAULT_MIN_ELAPSED_SECONDS)
+            ),
+            min_remaining_seconds=float(
+                params.get("min_remaining_seconds", _DEFAULT_MIN_REMAINING_SECONDS)
+            ),
         )
     raise ValueError(f"Unknown strategy: {name}")

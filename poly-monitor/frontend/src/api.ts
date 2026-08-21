@@ -81,7 +81,10 @@ export type BacktestStats = {
 export type BacktestResult = {
   strategy: string
   split: string
+  series?: string
   date?: string | null
+  date_from?: string | null
+  date_to?: string | null
   n_markets: number
   total_pnl: number
   avg_pnl: number
@@ -206,7 +209,7 @@ export const api = {
     }),
   markets: (
     split: string,
-    opts?: { limit?: number; date?: string; rebuild_index?: boolean; series?: '5m' | '15m' },
+    opts?: { limit?: number; date?: string; rebuild_index?: boolean; series?: '5m' | '15m' | 'bnb-15m' },
   ) => {
     const q = new URLSearchParams({ split })
     if (opts?.limit != null) q.set('limit', String(opts.limit))
@@ -217,7 +220,7 @@ export const api = {
       `/api/markets?${q}`,
     )
   },
-  marketDates: (split: string, opts?: { rebuild_index?: boolean; series?: '5m' | '15m' }) => {
+  marketDates: (split: string, opts?: { rebuild_index?: boolean; series?: '5m' | '15m' | 'bnb-15m' }) => {
     const q = new URLSearchParams({ split })
     if (opts?.rebuild_index) q.set('rebuild_index', 'true')
     if (opts?.series) q.set('series', opts.series)
@@ -230,7 +233,7 @@ export const api = {
       max: string | null
     }>(`/api/markets/dates?${q}`)
   },
-  daySlots: (date: string, opts?: { split?: string; series?: '5m' | '15m' }) => {
+  daySlots: (date: string, opts?: { split?: string; series?: '5m' | '15m' | 'bnb-15m' }) => {
     const q = new URLSearchParams({ date, split: opts?.split || 'twap' })
     if (opts?.series) q.set('series', opts.series)
     return json<{
@@ -272,7 +275,7 @@ export const api = {
     }>(`/api/markets/day-slots/fix?date=${encodeURIComponent(date)}`, { method: 'POST' }),
   marketAt: (
     split: string,
-    opts: { date?: string; time?: string; t?: number; series?: '5m' | '15m' },
+    opts: { date?: string; time?: string; t?: number; series?: '5m' | '15m' | 'bnb-15m' },
   ) => {
     const q = new URLSearchParams({ split })
     if (opts.date) q.set('date', opts.date)
@@ -351,9 +354,12 @@ export const api = {
       n_total: number
       n_present: number
       n_missing: number
+      pmdata_enabled?: boolean
+      pmdata_blocked_until_ms?: number | null
       missing: Array<{
         market_id: string
         slug?: string | null
+        series?: string | null
         start_time: number
         end_time: number
         date_et?: string | null
@@ -384,9 +390,12 @@ export const api = {
       n_total: number
       n_present: number
       n_missing: number
+      pmdata_enabled?: boolean
+      pmdata_blocked_until_ms?: number | null
       missing: Array<{
         market_id: string
         slug?: string | null
+        series?: string | null
         start_time: number
         end_time: number
         date_et?: string | null
@@ -573,7 +582,7 @@ export const api = {
   liveSeries: (
     marketId?: string | null,
     lookbackMs = 300_000,
-    opts?: { series?: '5m' | '15m' },
+    opts?: { series?: '5m' | '15m' | 'bnb-15m' },
   ) => {
     const q = new URLSearchParams()
     if (marketId) q.set('market_id', marketId)
@@ -582,7 +591,7 @@ export const api = {
     const qs = q.toString()
     return json<LiveSeriesResponse>(`/api/live/series${qs ? `?${qs}` : ''}`)
   },
-  liveHolders: (limit = 20, opts?: { series?: '5m' | '15m' }) => {
+  liveHolders: (limit = 20, opts?: { series?: '5m' | '15m' | 'bnb-15m' }) => {
     const q = new URLSearchParams({
       limit: String(Math.max(1, Math.min(20, limit))),
       _ts: String(Date.now()),
@@ -628,17 +637,23 @@ export const api = {
       { cache: 'no-store' },
     )
   },
-  walletSummary: (address: string, opts?: { refresh?: boolean }) => {
+  walletSummary: (address: string, opts?: { refresh?: boolean; series?: '5m' | '15m' | 'bnb-15m' }) => {
     const q = new URLSearchParams({ _ts: String(Date.now()) })
     if (opts?.refresh) q.set('refresh', 'true')
+    if (opts?.series) q.set('series', opts.series)
     return json<WalletSummary & { cached?: boolean }>(
       `/api/wallets/${encodeURIComponent(address)}?${q}`,
       { cache: 'no-store' },
     )
   },
-  walletPnl: (address: string, interval: WalletPnlInterval = '1d', opts?: { refresh?: boolean }) => {
+  walletPnl: (
+    address: string,
+    interval: WalletPnlInterval = '1d',
+    opts?: { refresh?: boolean; series?: '5m' | '15m' | 'bnb-15m' },
+  ) => {
     const q = new URLSearchParams({ interval, _ts: String(Date.now()) })
     if (opts?.refresh) q.set('refresh', 'true')
+    if (opts?.series) q.set('series', opts.series)
     return json<WalletPnlResponse & { cached?: boolean }>(
       `/api/wallets/${encodeURIComponent(address)}/pnl?${q}`,
       { cache: 'no-store' },
@@ -654,12 +669,13 @@ export const api = {
   walletDaily: (
     address: string,
     days = 90,
-    opts?: { refresh?: boolean; scanLimit?: number; before?: string },
+    opts?: { refresh?: boolean; scanLimit?: number; before?: string; series?: '5m' | '15m' | 'bnb-15m' },
   ) => {
     const q = new URLSearchParams({ days: String(days), _ts: String(Date.now()) })
     if (opts?.refresh) q.set('refresh', 'true')
     if (opts?.scanLimit != null) q.set('scan_limit', String(opts.scanLimit))
     if (opts?.before) q.set('before', opts.before)
+    if (opts?.series) q.set('series', opts.series)
     return json<WalletDailyResponse & { cached?: boolean; has_more?: boolean; scan_limit?: number }>(
       `/api/wallets/${encodeURIComponent(address)}/daily?${q}`,
       { cache: 'no-store' },
@@ -667,7 +683,14 @@ export const api = {
   },
   walletActivity: (
     address: string,
-    opts?: { date?: string; slug?: string; limit?: number; offset?: number; refresh?: boolean },
+    opts?: {
+      date?: string
+      slug?: string
+      limit?: number
+      offset?: number
+      refresh?: boolean
+      series?: '5m' | '15m' | 'bnb-15m'
+    },
   ) => {
     const q = new URLSearchParams({ _ts: String(Date.now()) })
     if (opts?.date) q.set('date', opts.date)
@@ -675,6 +698,7 @@ export const api = {
     if (opts?.limit != null) q.set('limit', String(opts.limit))
     if (opts?.offset != null) q.set('offset', String(opts.offset))
     if (opts?.refresh) q.set('refresh', 'true')
+    if (opts?.series) q.set('series', opts.series)
     return json<WalletActivityResponse & { cached?: boolean; has_more?: boolean; next_offset?: number }>(
       `/api/wallets/${encodeURIComponent(address)}/activity?${q}`,
       { cache: 'no-store' },
@@ -682,13 +706,20 @@ export const api = {
   },
   walletMarkets: (
     address: string,
-    opts?: { date?: string; limit?: number; activityLimit?: number; refresh?: boolean },
+    opts?: {
+      date?: string
+      limit?: number
+      activityLimit?: number
+      refresh?: boolean
+      series?: '5m' | '15m' | 'bnb-15m'
+    },
   ) => {
     const q = new URLSearchParams({ _ts: String(Date.now()) })
     if (opts?.date) q.set('date', opts.date)
     if (opts?.limit != null) q.set('limit', String(opts.limit))
     if (opts?.activityLimit != null) q.set('activity_limit', String(opts.activityLimit))
     if (opts?.refresh) q.set('refresh', 'true')
+    if (opts?.series) q.set('series', opts.series)
     return json<
       WalletMarketsResponse & { cached?: boolean; has_more?: boolean; total_count?: number }
     >(`/api/wallets/${encodeURIComponent(address)}/markets?${q}`, { cache: 'no-store' })

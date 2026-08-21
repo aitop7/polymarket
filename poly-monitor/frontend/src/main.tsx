@@ -16,7 +16,11 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <Routes>
         <Route element={<App />}>
-          <Route index element={<MarketPage mode="monitor" />} />
+          {/* One MarketPage instance for `/` and `/:marketId` so Live↔History does not remount. */}
+          <Route element={<MarketPage mode="monitor" />}>
+            <Route index element={null} />
+            <Route path=":marketId" element={null} />
+          </Route>
           <Route path="paper" element={<PaperPage />} />
           <Route path="backtest" element={<BacktestPage />} />
           <Route path="wallet" element={<WalletPage />} />
@@ -24,8 +28,6 @@ createRoot(document.getElementById('root')!).render(
           <Route path="pmdata" element={<PmDataPage />} />
           <Route path="strategy" element={<StrategyPage />} />
           <Route path="prediction" element={<PredictionPage />} />
-          {/* History deep-link: /:marketId (numeric). Keep after named routes. */}
-          <Route path=":marketId" element={<MarketPage mode="monitor" />} />
         </Route>
       </Routes>
     </BrowserRouter>

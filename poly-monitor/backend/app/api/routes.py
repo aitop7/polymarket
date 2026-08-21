@@ -47,8 +47,11 @@ class BacktestRequest(BaseModel):
     strategy: str = "lgbm_edge"
     split: str = "validation"
     market_ids: list[str] | None = None
-    limit: int = Field(default=20, ge=1, le=500)
+    limit: int | None = Field(default=None, ge=1, le=5000)
     date: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
+    series: str = Field(default="5m", pattern="^(5m|15m|bnb-15m)$")
     params: dict[str, Any] = Field(default_factory=dict)
     starting_cash: float = 1000.0
 
@@ -247,7 +250,7 @@ def post_momentum_pair_train(
 def get_market_dates(
     split: str = Query("validation", pattern="^(train|validation|test|twap)$"),
     rebuild_index: bool = Query(False),
-    series: str = Query("5m", pattern="^(5m|15m)$"),
+    series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$"),
 ) -> dict[str, Any]:
     if rebuild_index:
         build_market_index(split, force=True)
@@ -268,7 +271,7 @@ def get_market_at(
     date: str | None = Query(None, description="YYYY-MM-DD in ET"),
     time: str | None = Query(None, description="HH:MM in ET"),
     t: int | None = Query(None, description="unix ms"),
-    series: str = Query("5m", pattern="^(5m|15m)$"),
+    series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$"),
 ) -> dict[str, Any]:
     from app.core.series import filter_rows_by_series
 
@@ -277,7 +280,7 @@ def get_market_at(
         if m and not filter_rows_by_series([m], series):
             m = None
     elif t is not None:
-        m = find_market_at(split, int(t))
+        m = find_market_at(split, int(t), series=series)
         if m and not filter_rows_by_series([m], series):
             m = None
     elif date:
@@ -296,7 +299,7 @@ def get_markets(
     limit: int = Query(50, ge=1, le=5000),
     date: str | None = Query(None, description="Filter by ET date YYYY-MM-DD"),
     rebuild_index: bool = Query(False),
-    series: str = Query("5m", pattern="^(5m|15m)$"),
+    series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$"),
 ) -> dict[str, Any]:
     from app.core.series import filter_rows_by_series
 
@@ -327,7 +330,7 @@ def get_markets(
 def get_day_slots(
     date: str = Query(..., description="ET date YYYY-MM-DD"),
     split: str = Query("twap", pattern="^(train|validation|test|twap)$"),
-    series: str = Query("5m", pattern="^(5m|15m)$"),
+    series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$"),
 ) -> dict[str, Any]:
     """Expected vs present slots for one history day (TWAP local catalog)."""
     if split != TWAP_SPLIT:
@@ -736,12 +739,14 @@ def put_saved_wallet_comment(address: str, body: WalletCommentBody) -> dict[str,
 async def get_wallet_summary(
     address: str,
     refresh: bool = Query(False, description="Force live fetch and overwrite cache"),
+    series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$"),
 ) -> dict[str, Any]:
     """Wallet profile summary (positions value, biggest win, explorer links)."""
     from app.core.wallet_activity import (
         fetch_wallet_rebates,
         fetch_wallet_summary,
         normalize_wallet,
+        series_scope,
     )
     from app.core import wallet_store
 
@@ -749,12 +754,13 @@ async def get_wallet_summary(
         addr = normalize_wallet(address)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    want_scope = series_scope(series)
     if not refresh:
         cached = wallet_store.get_summary(addr)
-        # Ignore closed-only / pre-aligned cache.
+        # Ignore closed-only / pre-aligned / wrong-series cache.
         if (
             cached is not None
-            and cached.get("scope") == "btc_updown_5m"
+            and cached.get("scope") == want_scope
             and cached.get("includes_open") is True
             and cached.get("markets_aligned") is True
         ):
@@ -774,7 +780,7 @@ async def get_wallet_summary(
             wallet_store.touch_viewed(addr)
             return cached
     try:
-        data = await fetch_wallet_summary(addr)
+        data = await fetch_wallet_summary(addr, series=series)
     except Exception as exc:
         raise HTTPException(502, f"Wallet lookup failed: {exc}") from exc
     wallet_store.save_summary(addr, data)
@@ -787,33 +793,36 @@ async def get_wallet_pnl(
     address: str,
     interval: str = Query("1d", pattern="^(1d|1w|1m|1y|ytd|all|max)$"),
     refresh: bool = Query(False),
+    series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$"),
 ) -> dict[str, Any]:
-    """BTC Up/Down 5m realized PnL timeseries for 1D / 1W / 1M / 1Y / YTD / ALL."""
-    from app.core.wallet_activity import fetch_wallet_pnl, normalize_wallet
+    """BTC Up/Down realized PnL timeseries for 1D / 1W / 1M / 1Y / YTD / ALL."""
+    from app.core.wallet_activity import fetch_wallet_pnl, normalize_wallet, series_scope
     from app.core import wallet_store
 
     try:
         addr = normalize_wallet(address)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    cache_key = f"{series}:{interval}"
+    want_scope = series_scope(series)
     if not refresh:
-        cached = wallet_store.get_pnl(addr, interval)
-        # Ignore closed-only / pre-aligned cache.
+        cached = wallet_store.get_pnl(addr, cache_key)
+        # Ignore closed-only / pre-aligned / wrong-series cache.
         if (
             cached is not None
-            and cached.get("scope") == "btc_updown_5m"
+            and cached.get("scope") == want_scope
             and cached.get("includes_open") is True
             and cached.get("markets_aligned") is True
         ):
             wallet_store.touch_viewed(addr)
             return cached
     try:
-        data = await fetch_wallet_pnl(addr, interval=interval)
+        data = await fetch_wallet_pnl(addr, interval=interval, series=series)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Wallet PnL failed: {exc}") from exc
-    wallet_store.save_pnl(addr, interval, data)
+    wallet_store.save_pnl(addr, cache_key, data)
     return {**data, "cached": False}
 
 
@@ -844,9 +853,10 @@ async def get_wallet_daily_pnl(
     scan_limit: int = Query(3000, ge=50, le=50000),
     before: str | None = Query(None, description="Return settle days strictly before YYYY-MM-DD"),
     refresh: bool = Query(False),
+    series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$"),
 ) -> dict[str, Any]:
-    """Per-day BTC Up/Down 5m realized PnL (newest first)."""
-    from app.core.wallet_activity import fetch_wallet_daily_pnl, normalize_wallet
+    """Per-day BTC Up/Down realized PnL (newest first)."""
+    from app.core.wallet_activity import fetch_wallet_daily_pnl, normalize_wallet, series_scope
     from app.core import wallet_store
 
     try:
@@ -859,16 +869,18 @@ async def get_wallet_daily_pnl(
         except ValueError as exc:
             raise HTTPException(400, "before must be YYYY-MM-DD") from exc
 
+    want_scope = series_scope(series)
     # Only the primary (no-before) snapshot is served/saved from cache.
     if not refresh and not before:
         cached = wallet_store.get_daily(addr)
-        # Ignore stale snapshots that aren't markets-aligned day totals.
+        # Ignore stale snapshots that aren't markets-aligned day totals / wrong series.
         if (
             cached is not None
             and cached.get("scan_limit") is not None
             and cached.get("includes_open")
             and cached.get("by_market_day")
             and cached.get("markets_aligned")
+            and cached.get("scope") == want_scope
         ):
             daily_rows = list(cached.get("daily") or [])
             needs_rebates = cached.get("total_rebates") is None or any(
@@ -897,7 +909,7 @@ async def get_wallet_daily_pnl(
             return cached
     try:
         data = await fetch_wallet_daily_pnl(
-            addr, days=days, scan_limit=scan_limit, before=before
+            addr, days=days, scan_limit=scan_limit, before=before, series=series
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -910,11 +922,11 @@ async def get_wallet_daily_pnl(
     from app.core.wallet_activity import fetch_wallet_summary
 
     summary = wallet_store.get_summary(addr)
-    if summary is None:
+    if summary is None or summary.get("scope") != want_scope:
         try:
-            summary = await fetch_wallet_summary(addr)
+            summary = await fetch_wallet_summary(addr, series=series)
         except Exception:
-            summary = {"wallet": addr, "name": addr}
+            summary = {"wallet": addr, "name": addr, "scope": want_scope, "series": series}
         wallet_store.save_summary(addr, summary, daily=data)
     else:
         wallet_store.save_daily(addr, data)
@@ -925,13 +937,14 @@ async def get_wallet_daily_pnl(
 async def get_wallet_activity(
     address: str,
     date: str | None = Query(None, description="ET calendar day YYYY-MM-DD"),
-    slug: str | None = Query(None, description="BTC 5m market slug (fills for that window)"),
+    slug: str | None = Query(None, description="BTC 5m/15m market slug (fills for that window)"),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0, le=20000),
     refresh: bool = Query(False),
+    series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$"),
 ) -> dict[str, Any]:
     """Wallet activity tape (optional date or market-slug filter)."""
-    from app.core.wallet_activity import fetch_wallet_activity, normalize_wallet
+    from app.core.wallet_activity import fetch_wallet_activity, normalize_wallet, series_scope
     from app.core import wallet_store
 
     if date:
@@ -943,22 +956,24 @@ async def get_wallet_activity(
         addr = normalize_wallet(address)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    day_key = f"{series}:{date}" if date else None
+    want_scope = series_scope(series)
     # Day cache only for unscoped day pages (not slug lookups).
-    if date and not slug and not refresh and offset == 0:
-        cached = wallet_store.get_day_activity(addr, date)
-        if cached is not None:
+    if date and not slug and not refresh and offset == 0 and day_key:
+        cached = wallet_store.get_day_activity(addr, day_key)
+        if cached is not None and cached.get("scope") in (None, want_scope):
             wallet_store.touch_viewed(addr)
             return cached
     try:
         data = await fetch_wallet_activity(
-            addr, date=date, slug=slug, limit=limit, offset=offset
+            addr, date=date, slug=slug, limit=limit, offset=offset, series=series
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Wallet activity failed: {exc}") from exc
-    if date and not slug and offset == 0:
-        wallet_store.save_day(addr, date, activity=data)
+    if date and not slug and offset == 0 and day_key:
+        wallet_store.save_day(addr, day_key, activity=data)
     return {**data, "cached": False}
 
 
@@ -969,9 +984,10 @@ async def get_wallet_markets(
     limit: int = Query(100, ge=1, le=500),
     activity_limit: int = Query(500, ge=50, le=1000),
     refresh: bool = Query(False),
+    series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$"),
 ) -> dict[str, Any]:
     """Per-market PnL (closed positions for date, merged with same-day activity)."""
-    from app.core.wallet_activity import fetch_wallet_markets, normalize_wallet
+    from app.core.wallet_activity import fetch_wallet_markets, normalize_wallet, series_scope
     from app.core import wallet_store
 
     if date:
@@ -983,11 +999,13 @@ async def get_wallet_markets(
         addr = normalize_wallet(address)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    if date and not refresh:
-        cached = wallet_store.get_day_markets(addr, date)
+    day_key = f"{series}:{date}" if date else None
+    want_scope = series_scope(series)
+    if date and not refresh and day_key:
+        cached = wallet_store.get_day_markets(addr, day_key)
         # Drop pre-tape-fallback cache (no pnl_source) so activity-only markets
         # get sell+redeem−buy PnL instead of "—".
-        if cached is not None:
+        if cached is not None and cached.get("scope") in (None, want_scope):
             cached_markets = cached.get("markets") or []
             if cached_markets and all(
                 m.get("pnl_source") in {"closed", "activity", "none"} and "unredeemed" in m
@@ -999,21 +1017,22 @@ async def get_wallet_markets(
         # Reuse same-day activity cache when present so markets rebuild doesn't
         # re-hit Polymarket activity (the slow path that made cached switches lag).
         activity_cached = None
-        if date and not refresh:
-            activity_cached = wallet_store.get_day_activity(addr, date)
+        if date and not refresh and day_key:
+            activity_cached = wallet_store.get_day_activity(addr, day_key)
         data = await fetch_wallet_markets(
             addr,
             date=date,
             limit=limit,
             activity_limit=activity_limit,
             activity_payload=activity_cached,
+            series=series,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Wallet markets failed: {exc}") from exc
-    if date:
-        wallet_store.save_day(addr, date, markets=data)
+    if date and day_key:
+        wallet_store.save_day(addr, day_key, markets=data)
     return {**data, "cached": False}
 
 
@@ -1057,6 +1076,9 @@ def post_backtest(body: BacktestRequest) -> dict[str, Any]:
             market_ids=body.market_ids,
             limit=body.limit,
             date=body.date,
+            date_from=body.date_from,
+            date_to=body.date_to,
+            series=body.series,
             strategy_params=body.params,
             starting_cash=body.starting_cash,
         )
@@ -1150,7 +1172,7 @@ def paper_status(session_id: str) -> dict[str, Any]:
 
 @router.get("/live/state")
 async def live_state(
-    series: str = Query("5m", pattern="^(5m|15m)$"),
+    series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$"),
 ) -> dict[str, Any]:
     """One-shot live market snapshot (BTC + Up/Down + CLOB ladder)."""
     from app.live import get_live_service
@@ -1220,7 +1242,7 @@ async def start_direction_model_job(body: DirectionModelJobRequest) -> dict[str,
 async def live_price_distribution(
     t: float = Query(..., gt=0, le=60, description="Horizon seconds ahead"),
     family: str = Query(default="beta", pattern="^(beta|level)$"),
-    market_series: str = Query("5m", pattern="^(5m|15m)$", alias="series"),
+    market_series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$", alias="series"),
 ) -> dict[str, Any]:
     """Predictive PDF of Up price t seconds later for the active market tip.
 
@@ -1285,7 +1307,7 @@ async def live_price_distribution(
 
 @router.get("/live/direction-prediction")
 async def live_direction_prediction(
-    market_series: str = Query("5m", pattern="^(5m|15m)$", alias="series"),
+    market_series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$", alias="series"),
 ) -> dict[str, Any]:
     """Latest 3s/5s Up-vs-Down direction probabilities for the active market.
 
@@ -1378,7 +1400,7 @@ async def live_direction_prediction(
 async def live_series(
     market_id: str | None = None,
     lookback_ms: int = 300_000,
-    market_series: str = Query("5m", pattern="^(5m|15m)$", alias="series"),
+    market_series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$", alias="series"),
 ) -> dict[str, Any]:
     """Historical chart points for the active (or requested) live market window."""
     from app.live import get_live_service
@@ -1398,7 +1420,7 @@ async def live_series(
 @router.get("/live/holders")
 async def live_holders(
     limit: int = 20,
-    market_series: str = Query("5m", pattern="^(5m|15m)$", alias="series"),
+    market_series: str = Query("5m", pattern="^(5m|15m|bnb-15m)$", alias="series"),
 ) -> dict[str, Any]:
     """Top Up/Down holders for the active live market."""
     from app.live import get_live_service
@@ -1412,7 +1434,7 @@ async def ws_live(websocket: WebSocket) -> None:
 
     Client may send on connect (or later):
       `{interval_s: 0.5}` — tick cadence
-      `{series: "5m"|"15m"}` — market duration series (default 5m)
+      `{series: "5m"|"15m"|"bnb-15m"}` — market series (default 5m)
       `{want_direction: true}` — also stream `direction_prediction` messages (~0.5s)
     """
     from app.live import get_live_service
@@ -1433,7 +1455,7 @@ async def ws_live(websocket: WebSocket) -> None:
 
     def _parse_series(raw: Any) -> str:
         text = str(raw or "").strip().lower()
-        return text if text in {"5m", "15m"} else "5m"
+        return text if text in {"5m", "15m", "bnb-15m"} else "5m"
 
     try:
         # First client message sets poll interval / series (default 0.5s / 5m).

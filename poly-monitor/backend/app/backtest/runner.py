@@ -8,38 +8,68 @@ from app.core.data import TWAP_SPLIT, list_markets
 from app.core.market_index import (
     build_market_index,
     filter_history_markets,
-    list_markets_for_date,
 )
+from app.core.series import filter_rows_by_series, get_series
 from app.engine.portfolio import Portfolio
 from app.engine.replay import run_market_backtest
 from app.strategies.registry import create_strategy
+
+# Safety cap when resolving by date range (5m ≈ 288/day).
+_MAX_RANGE_MARKETS = 5_000
+
+
+def _normalize_date_range(
+    date: str | None,
+    date_from: str | None,
+    date_to: str | None,
+) -> tuple[str | None, str | None]:
+    """Resolve inclusive ET date bounds. Legacy `date` means from=to=date."""
+    d0 = (date_from or date or "").strip() or None
+    d1 = (date_to or date_from or date or "").strip() or None
+    if d0 and d1 and d0 > d1:
+        d0, d1 = d1, d0
+    return d0, d1
 
 
 def _resolve_market_ids(
     *,
     split: str,
     market_ids: list[str] | None,
-    limit: int,
-    date: str | None,
+    limit: int | None,
+    date: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    series: str = "5m",
 ) -> list[str]:
+    series_key = get_series(series).key
     if market_ids:
         return [str(m) for m in market_ids]
 
-    if date:
-        rows = list_markets_for_date(split, date)
+    d0, d1 = _normalize_date_range(date, date_from, date_to)
+
+    if d0 or d1:
+        rows = filter_history_markets(split, build_market_index(split))
+        rows = filter_rows_by_series(rows, series_key)
+        if d0:
+            rows = [r for r in rows if str(r.get("date_et") or "") >= d0]
+        if d1:
+            rows = [r for r in rows if str(r.get("date_et") or "") <= d1]
         rows.sort(key=lambda r: int(r.get("start_time") or 0))
-        if limit:
-            rows = rows[: max(0, int(limit))]
+        if len(rows) > _MAX_RANGE_MARKETS:
+            rows = rows[:_MAX_RANGE_MARKETS]
         return [str(m["market_id"]) for m in rows]
 
+    # No date range: fall back to limited recent / split scan.
+    lim = max(1, int(limit or 20))
     if split == TWAP_SPLIT:
         rows = filter_history_markets(split, build_market_index(split))
+        rows = filter_rows_by_series(rows, series_key)
         rows.sort(key=lambda r: int(r.get("start_time") or 0))
-        if limit:
-            rows = rows[-max(0, int(limit)) :]
+        rows = rows[-lim:]
         return [str(m["market_id"]) for m in rows]
 
-    markets = list_markets(split, limit=limit)
+    markets = list_markets(split, limit=lim)
+    markets = filter_rows_by_series(markets, series_key)
     return [m["market_id"] for m in markets]
 
 
@@ -48,17 +78,25 @@ def run_backtest(
     strategy: str = "lgbm_edge",
     split: str = "validation",
     market_ids: list[str] | None = None,
-    limit: int = 20,
+    limit: int | None = 20,
     date: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    series: str = "5m",
     strategy_params: dict[str, Any] | None = None,
     starting_cash: float = 1000.0,
     shared_bankroll: bool = True,
 ) -> dict[str, Any]:
+    series_key = get_series(series).key
+    d0, d1 = _normalize_date_range(date, date_from, date_to)
     ids = _resolve_market_ids(
         split=split,
         market_ids=market_ids,
         limit=limit,
         date=date,
+        date_from=date_from,
+        date_to=date_to,
+        series=series_key,
     )
 
     portfolio = Portfolio(cash=starting_cash) if shared_bankroll else None
@@ -146,7 +184,10 @@ def run_backtest(
     return {
         "strategy": strategy,
         "split": split,
-        "date": date,
+        "series": series_key,
+        "date": date if date and not date_from and not date_to else None,
+        "date_from": d0,
+        "date_to": d1,
         "shared_bankroll": shared_bankroll,
         "n_markets": len(results),
         "total_pnl": total_pnl,

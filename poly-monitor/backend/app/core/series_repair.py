@@ -11,6 +11,8 @@ from typing import Any
 import httpx
 import pandas as pd
 
+from app.core.series import get_series, series_from_slug, series_key_from_meta
+
 logger = logging.getLogger(__name__)
 
 BINANCE_HOSTS = (
@@ -118,9 +120,23 @@ async def _binance_json(
     raise last_exc or RuntimeError("Binance REST failed")
 
 
+def _binance_symbol_from_meta(meta: dict[str, Any] | None) -> str:
+    if not meta:
+        return "BTCUSDT"
+    hit = series_from_slug(str(meta.get("slug") or ""))
+    if hit is None:
+        hit = get_series(series_key_from_meta(meta))
+    return hit.binance_symbol
+
+
 async def _agg_trades(
-    http: httpx.AsyncClient, *, start_ms: int, end_ms: int
+    http: httpx.AsyncClient,
+    *,
+    start_ms: int,
+    end_ms: int,
+    symbol: str = "BTCUSDT",
 ) -> list[dict[str, Any]]:
+    sym = str(symbol or "BTCUSDT").strip().upper() or "BTCUSDT"
     out: list[dict[str, Any]] = []
     cursor = int(start_ms)
     for _ in range(200):
@@ -128,7 +144,7 @@ async def _agg_trades(
             http,
             "/api/v3/aggTrades",
             {
-                "symbol": "BTCUSDT",
+                "symbol": sym,
                 "startTime": cursor,
                 "endTime": int(end_ms),
                 "limit": 1000,
@@ -161,8 +177,13 @@ async def _agg_trades(
 
 
 async def _klines_1s(
-    http: httpx.AsyncClient, *, start_ms: int, end_ms: int
+    http: httpx.AsyncClient,
+    *,
+    start_ms: int,
+    end_ms: int,
+    symbol: str = "BTCUSDT",
 ) -> dict[int, float]:
+    sym = str(symbol or "BTCUSDT").strip().upper() or "BTCUSDT"
     out: dict[int, float] = {}
     cursor = int(start_ms)
     for _ in range(20):
@@ -170,7 +191,7 @@ async def _klines_1s(
             http,
             "/api/v3/klines",
             {
-                "symbol": "BTCUSDT",
+                "symbol": sym,
                 "interval": "1s",
                 "startTime": cursor,
                 "endTime": int(end_ms) - 1,
@@ -313,6 +334,7 @@ async def repair_binance_for_market_dir(
     if start <= 0 or end <= start:
         return {}
 
+    symbol = _binance_symbol_from_meta(meta)
     http = await _binance_http()
     gate = await _binance_gate()
     klines: dict[int, float] = {}
@@ -322,9 +344,9 @@ async def repair_binance_for_market_dir(
     async with gate:
         jobs = []
         if do_price:
-            jobs.append(_klines_1s(http, start_ms=start, end_ms=end))
+            jobs.append(_klines_1s(http, start_ms=start, end_ms=end, symbol=symbol))
         if do_trades:
-            jobs.append(_agg_trades(http, start_ms=start, end_ms=end))
+            jobs.append(_agg_trades(http, start_ms=start, end_ms=end, symbol=symbol))
         if len(jobs) == 1:
             result = await jobs[0]
             if do_price:
@@ -405,12 +427,17 @@ async def repair_series_for_market_dir(market_dir: Path) -> dict[str, int]:
         return {}
 
     filled: dict[str, int] = {}
+    symbol = _binance_symbol_from_meta(meta)
     http = await _binance_http()
     gate = await _binance_gate()
     async with gate:
-        klines = await _klines_1s(http, start_ms=start_ms, end_ms=end_ms)
+        klines = await _klines_1s(
+            http, start_ms=start_ms, end_ms=end_ms, symbol=symbol
+        )
         try:
-            incoming = await _agg_trades(http, start_ms=start_ms, end_ms=end_ms)
+            incoming = await _agg_trades(
+                http, start_ms=start_ms, end_ms=end_ms, symbol=symbol
+            )
             path = market_dir / "binance_trades.parquet"
             old = _read_df(path)
             new = pd.DataFrame(incoming)

@@ -54,6 +54,20 @@ def _tick_from_row(row: pd.Series, *, market_id: str, idx: int, portfolio: Portf
         remaining = (end - ts) / 1000.0
 
     q = quotes_from_row(row)
+    up_ask = f("up_ask_price")
+    down_ask = f("down_ask_price")
+    up_bid = f("up_bid_price")
+    down_bid = f("down_bid_price")
+    # TWAP rows sometimes omit book cols; fall back to last/mid + 1¢ sell model.
+    if up_ask is None:
+        up_ask = q.get("up_price")
+    if down_ask is None:
+        down_ask = q.get("down_price")
+    if up_bid is None:
+        up_bid = q.get("up_sell")
+    if down_bid is None:
+        down_bid = q.get("down_sell")
+
     return TickContext(
         market_id=str(market_id),
         timestamp=int(row["timestamp"]),
@@ -67,12 +81,12 @@ def _tick_from_row(row: pd.Series, *, market_id: str, idx: int, portfolio: Portf
         features=_row_features(row),
         portfolio=portfolio.snapshot(),
         row_index=idx,
-        up_ask_price=f("up_ask_price"),
-        down_ask_price=f("down_ask_price"),
+        up_ask_price=up_ask,
+        down_ask_price=down_ask,
         up_ask_shares=f("up_ask_shares"),
         down_ask_shares=f("down_ask_shares"),
-        up_bid_price=f("up_bid_price"),
-        down_bid_price=f("down_bid_price"),
+        up_bid_price=up_bid,
+        down_bid_price=down_bid,
         up_bid_shares=f("up_bid_shares"),
         down_bid_shares=f("down_bid_shares"),
         up_ask_near_depth=_near_ask_depth(row, "up"),

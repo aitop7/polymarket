@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { api, type DataHealth, type MarketSummary } from '../api'
 import { healthThresholdHeadline } from '../dataHealth'
+import type { MarketSeriesKey } from '../series'
+import { seriesLabel } from '../series'
 
 function outcomeTone(m: MarketSummary): 'up' | 'down' | 'pending' {
   if (m.winner === 1) return 'up'
@@ -132,8 +134,8 @@ function IconStop() {
 
 type Props = {
   mode: 'monitor' | 'paper'
-  marketSeries: '5m' | '15m'
-  onMarketSeries: (s: '5m' | '15m') => void
+  marketSeries: MarketSeriesKey
+  onMarketSeries: (s: MarketSeriesKey) => void
   liveActive: boolean
   onToggleLive: () => void
   liveLabel?: string
@@ -386,20 +388,30 @@ export default function ControlSidebar(props: Props) {
           </span>
         </div>
 
-        <div className="mode-segment" role="group" aria-label="Market duration">
+        <div className="mode-segment" role="group" aria-label="Market series">
           <button
             type="button"
             className={`mode-segment-btn${marketSeries === '5m' ? ' active' : ''}`}
             onClick={() => onMarketSeries('5m')}
+            title="BTC Up or Down 5m"
           >
-            5m
+            BTC 5m
           </button>
           <button
             type="button"
             className={`mode-segment-btn${marketSeries === '15m' ? ' active' : ''}`}
             onClick={() => onMarketSeries('15m')}
+            title="BTC Up or Down 15m"
           >
-            15m
+            BTC 15m
+          </button>
+          <button
+            type="button"
+            className={`mode-segment-btn${marketSeries === 'bnb-15m' ? ' active' : ''}`}
+            onClick={() => onMarketSeries('bnb-15m')}
+            title="BNB Up or Down 15m"
+          >
+            BNB 15m
           </button>
         </div>
 
@@ -482,7 +494,7 @@ export default function ControlSidebar(props: Props) {
                   }`}
                   title={
                     daySlots && daySlots.n_missing > 0
-                      ? `${daySlots.n_missing} missing of ${daySlots.expected} expected ${marketSeries} slots`
+                      ? `${daySlots.n_missing} missing of ${daySlots.expected} expected ${seriesLabel(marketSeries)} slots`
                       : undefined
                   }
                 >

@@ -142,6 +142,66 @@ STRATEGY_DOCS: dict[str, dict[str, Any]] = {
         },
         "outputs": [],
     },
+    "dual_limit_exit": {
+        "title": "Dual limit + one-sided exit",
+        "idea": (
+            "Rest BUY UP@A and DOWN@B. If only one leg fills, cancel the other buy and rest "
+            "SELL that side at A' or B'. If both buys fill, cancel any exit sell and hold both "
+            "to settlement. Resting fills when ask≤limit (buy) or bid≥limit (sell)."
+        ),
+        "when_to_use": "Fixed-price entry/exit backtests without a full CLOB simulator.",
+        "data_required": [
+            {
+                "name": "Top of book",
+                "path": "TickContext up/down ask_price and bid_price",
+                "why": "Crosses resting limits.",
+            },
+        ],
+        "trainable": False,
+        "train_defaults": {},
+        "runtime_params": {
+            "buy_up": 0.45,
+            "buy_down": 0.45,
+            "sell_up": 0.55,
+            "sell_down": 0.55,
+            "shares": 10.0,
+            "taker_fee_rate": 0.07,
+            "fee_model": "polymarket",
+            "once_per_market": True,
+            "min_elapsed_seconds": _DEFAULT_MIN_ELAPSED_SECONDS,
+            "min_remaining_seconds": _DEFAULT_MIN_REMAINING_SECONDS,
+        },
+        "outputs": [],
+    },
+    "equal_pair_ab": {
+        "title": "Equal pair (A sum / B first)",
+        "idea": (
+            "Buy equal UP and DOWN shares. First leg only when ask ≤ B; then complete the "
+            "other leg when ask ≤ A − first_price (pair cost ≤ A). Completed pairs hold to "
+            "settlement — equal inventory is outcome-neutral (payout ≈ $1/share pair)."
+        ),
+        "when_to_use": "Market-neutral pair accumulation with a cheap first print.",
+        "data_required": [
+            {
+                "name": "Top asks",
+                "path": "TickContext.up_ask_price, down_ask_price",
+                "why": "Cross first (≤B) and second (≤A−first) limits.",
+            },
+        ],
+        "trainable": False,
+        "train_defaults": {},
+        "runtime_params": {
+            "pair_max": 0.95,
+            "first_max": 0.45,
+            "shares": 10.0,
+            "taker_fee_rate": 0.07,
+            "fee_model": "polymarket",
+            "once_per_market": True,
+            "min_elapsed_seconds": _DEFAULT_MIN_ELAPSED_SECONDS,
+            "min_remaining_seconds": _DEFAULT_MIN_REMAINING_SECONDS,
+        },
+        "outputs": [],
+    },
     "momentum_pair": {
         "title": "Momentum pair",
         "idea": (

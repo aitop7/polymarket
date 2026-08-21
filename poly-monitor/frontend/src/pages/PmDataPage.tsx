@@ -4,6 +4,7 @@ import { api } from '../api'
 type PmMissingRow = {
   market_id: string
   slug?: string | null
+  series?: string | null
   date_et?: string | null
   time_et?: string | null
   start_time: number
@@ -15,9 +16,21 @@ type PmMissingRow = {
 type QueueKind = 'books' | 'chainlink'
 
 const CONCURRENCY: Record<QueueKind, number> = {
-  // PMData bans keys for bursty downloads — keep this low.
-  books: 32,
+  // Must stay ≤ PMData download semaphore (2). Higher concurrency triggers bans.
+  books: 2,
   chainlink: 1,
+}
+
+function formatBlockedUntil(ms?: number | null): string | null {
+  if (ms == null || !Number.isFinite(ms) || ms <= Date.now()) return null
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(new Date(ms))
+  } catch {
+    return null
+  }
 }
 
 function isPmDataBlockedError(message: string): boolean {
@@ -99,6 +112,7 @@ function PmQueuePanel({
 }) {
   const [missing, setMissing] = useState<PmMissingRow[]>([])
   const [stats, setStats] = useState({ total: 0, present: 0, missing: 0 })
+  const [blockedUntilMs, setBlockedUntilMs] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
   const [activeIds, setActiveIds] = useState<Set<string>>(() => new Set())
@@ -111,6 +125,7 @@ function PmQueuePanel({
 
   const coveragePct = stats.total > 0 ? Math.round((stats.present / stats.total) * 100) : 0
   const groups = useMemo(() => groupByDate(missing), [missing])
+  const blockedLabel = formatBlockedUntil(blockedUntilMs)
   const pillClass =
     loading ? '' : stats.missing === 0 && stats.total > 0 ? ' ok' : stats.missing > 0 ? ' pending' : ''
 
@@ -125,6 +140,23 @@ function PmQueuePanel({
         present: res.n_present || 0,
         missing: res.n_missing || 0,
       })
+      setBlockedUntilMs(
+        typeof res.pmdata_blocked_until_ms === 'number' ? res.pmdata_blocked_until_ms : null,
+      )
+      if (res.pmdata_enabled === false) {
+        setMessageTone('err')
+        setMessage(`PMData ${title} API key is not configured`)
+      } else if (
+        typeof res.pmdata_blocked_until_ms === 'number' &&
+        res.pmdata_blocked_until_ms > Date.now()
+      ) {
+        const until = formatBlockedUntil(res.pmdata_blocked_until_ms)
+        setMessageTone('err')
+        setMessage(
+          `PMData ${title} key blocked until ${until}. ` +
+            `Successful Generate needs a cached download or wait until then — failed rows stay queued.`,
+        )
+      }
     } catch (err) {
       setMessageTone('err')
       setMessage(err instanceof Error ? err.message : `Failed to load ${title}`)
@@ -244,8 +276,13 @@ function PmQueuePanel({
             <button
               type="button"
               className="pmq-btn primary"
-              disabled={loading || missing.length === 0}
+              disabled={loading || missing.length === 0 || Boolean(blockedLabel)}
               onClick={() => void runAll()}
+              title={
+                blockedLabel
+                  ? `PMData blocked until ${blockedLabel}`
+                  : `Generate missing ${title} (concurrency ${concurrency})`
+              }
             >
               {actionLabel}
             </button>
@@ -890,6 +927,7 @@ export default function PmDataPage() {
           <p>
             Fill <code>pm_orderbooks</code> / <code>pm_chainlink_price</code>, then restamp health.
             Trades / Binance Price / Binance Trades fix locally (no VPS). Oldest first · live excluded.
+            Books Generate is capped at 2 concurrent downloads — higher rates get the PMData key banned.
           </p>
           {rescoreMsg ? <p className={`pmdata-bar-msg ${rescoreTone}`}>{rescoreMsg}</p> : null}
         </div>

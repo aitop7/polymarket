@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Outlet, useNavigate, useParams } from 'react-router-dom'
 import {
   api,
   formatUsd,
@@ -28,27 +28,14 @@ import PriceChart, {
 } from '../components/PriceChart'
 import TradeSidebar from '../components/TradeSidebar'
 import VolumeChart from '../components/VolumeChart'
-
-const SERIES_WINDOW_MS = { '5m': 300_000, '15m': 900_000 } as const
-type MarketSeriesKey = keyof typeof SERIES_WINDOW_MS
-
-function loadMarketSeries(): MarketSeriesKey {
-  try {
-    const v = sessionStorage.getItem('poly_monitor_series')
-    if (v === '5m' || v === '15m') return v
-  } catch {
-    /* ignore */
-  }
-  return '5m'
-}
-
-function saveMarketSeries(s: MarketSeriesKey) {
-  try {
-    sessionStorage.setItem('poly_monitor_series', s)
-  } catch {
-    /* ignore */
-  }
-}
+import {
+  SERIES_WINDOW_MS,
+  type MarketSeriesKey,
+  loadMarketSeries,
+  saveMarketSeries,
+  seriesBinanceSymbol,
+  seriesTitle,
+} from '../series'
 
 function volumeFields(p: {
   bn_buy?: number | null
@@ -441,6 +428,8 @@ export default function MarketPage({ mode }: Props) {
   const liveWsRef = useRef<WebSocket | null>(null)
   const liveActiveRef = useRef(liveActive)
   const liveMarketIdRef = useRef('')
+  /** True while Live was requested until URL matches liveMarketId (avoids tearing down on stale history URL). */
+  const liveIntentRef = useRef(false)
   const liveReconnectTimer = useRef<number | null>(null)
   const liveVolumeRefreshTimer = useRef<number | null>(null)
   const holdersTouchedRef = useRef<Map<string, number>>(new Map())
@@ -475,6 +464,30 @@ export default function MarketPage({ mode }: Props) {
   }
 
   const selectHistoryMarket = (id: string) => {
+    if (liveActiveRef.current || liveIntentRef.current) {
+      clearLiveReconnectTimer()
+      clearLiveVolumeRefresh()
+      liveIntentRef.current = false
+      liveActiveRef.current = false
+      const ws = liveWsRef.current
+      liveWsRef.current = null
+      if (ws) {
+        ws.onerror = null
+        ws.onclose = null
+        ws.onmessage = null
+        ws.close()
+      }
+      setLiveActive(false)
+      setLiveMarketId('')
+      liveMarketIdRef.current = ''
+      setLiveWindow(null)
+      setBinanceBook(null)
+      setHolders(null)
+      setLiveActivityTrades([])
+      setTraders(null)
+      setSelectedWallet(null)
+      setTraderDetail(null)
+    }
     preferMarketIdRef.current = id
     setMarketId(id)
   }
@@ -681,46 +694,62 @@ export default function MarketPage({ mode }: Props) {
     }).catch((e) => setError(String(e)))
   }
 
-  // Keep address bar in sync with history selection: /:marketId
+  // Keep address bar in sync: live → /:liveMarketId, history → /:marketId
   useEffect(() => {
     if (liveActive) {
-      if (routeMarketIdRaw) navigate('/', { replace: true })
+      if (liveMarketId) {
+        if (liveMarketId !== routeMarketId) {
+          navigate(`/${liveMarketId}`, { replace: true })
+        }
+      } else if (routeMarketIdRaw) {
+        // Drop history id while connecting so the bar does not stay on the old market.
+        navigate('/', { replace: true })
+      }
       return
     }
     if (!marketId) return
     if (marketId !== routeMarketId) {
       navigate(`/${marketId}`, { replace: true })
     }
-  }, [liveActive, marketId, routeMarketId, routeMarketIdRaw, navigate])
+  }, [liveActive, liveMarketId, marketId, routeMarketId, routeMarketIdRaw, navigate])
 
   // Browser back/forward or typed URL while already on the monitor page.
   useEffect(() => {
     if (!routeMarketId) return
+
+    // Live URL sync / still connecting: do not treat as history navigation.
+    if (liveActiveRef.current || liveIntentRef.current) {
+      if (!liveMarketIdRef.current || routeMarketId === liveMarketIdRef.current) {
+        return
+      }
+      // URL points at a different market while live → open that history market.
+      clearLiveReconnectTimer()
+      clearLiveVolumeRefresh()
+      liveIntentRef.current = false
+      liveActiveRef.current = false
+      const ws = liveWsRef.current
+      liveWsRef.current = null
+      if (ws) {
+        ws.onerror = null
+        ws.onclose = null
+        ws.onmessage = null
+        ws.close()
+      }
+      setLiveActive(false)
+      setLiveMarketId('')
+      liveMarketIdRef.current = ''
+      setLiveWindow(null)
+      setBinanceBook(null)
+      setHolders(null)
+      setLiveActivityTrades([])
+      setTraders(null)
+      setSelectedWallet(null)
+      setTraderDetail(null)
+      setError(null)
+    }
+
     preferMarketIdRef.current = routeMarketId
     if (marketId !== routeMarketId) setMarketId(routeMarketId)
-    if (!liveActive) return
-    clearLiveReconnectTimer()
-    clearLiveVolumeRefresh()
-    liveActiveRef.current = false
-    const ws = liveWsRef.current
-    liveWsRef.current = null
-    if (ws) {
-      ws.onerror = null
-      ws.onclose = null
-      ws.onmessage = null
-      ws.close()
-    }
-    setLiveActive(false)
-    setLiveMarketId('')
-    liveMarketIdRef.current = ''
-    setLiveWindow(null)
-    setBinanceBook(null)
-    setHolders(null)
-    setLiveActivityTrades([])
-    setTraders(null)
-    setSelectedWallet(null)
-    setTraderDetail(null)
-    setError(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeMarketId])
 
@@ -1054,6 +1083,7 @@ export default function MarketPage({ mode }: Props) {
     }
     setLiveActive(true)
     liveActiveRef.current = true
+    liveIntentRef.current = true
     if (!soft) {
       setSeriesLive([])
       setTick(null)
@@ -1376,6 +1406,7 @@ export default function MarketPage({ mode }: Props) {
     if (liveActive) {
       clearLiveReconnectTimer()
       clearLiveVolumeRefresh()
+      liveIntentRef.current = false
       liveActiveRef.current = false
       const ws = liveWsRef.current
       liveWsRef.current = null
@@ -1385,6 +1416,7 @@ export default function MarketPage({ mode }: Props) {
         ws.onmessage = null
         ws.close()
       }
+      const lastLiveId = liveMarketId || liveMarketIdRef.current
       setLiveActive(false)
       setLiveMarketId('')
       liveMarketIdRef.current = ''
@@ -1412,15 +1444,13 @@ export default function MarketPage({ mode }: Props) {
         )
         setTick(null)
         api.book(detail.market_id).then((b) => setBook(b as BookPayload)).catch(() => {})
+      } else if (lastLiveId) {
+        preferMarketIdRef.current = lastLiveId
+        setMarketId(lastLiveId)
       }
       return
     }
     preferMarketIdRef.current = null
-    // Leaving `/:id` remounts index route which starts live on mount.
-    if (routeMarketIdRaw) {
-      navigate('/', { replace: true })
-      return
-    }
     startLive()
   }
 
@@ -1798,7 +1828,7 @@ export default function MarketPage({ mode }: Props) {
         {error && <p className="error">{error}</p>}
 
         <BtcPricePanel
-          title={`BTC Up or Down ${marketSeries}`}
+          title={seriesTitle(marketSeries)}
           marketId={displayMarketId}
           windowLabel={windowLabel}
           priceToBeat={beat}
@@ -1821,7 +1851,7 @@ export default function MarketPage({ mode }: Props) {
             data={chartData}
             priceToBeat={beat}
             mode="btc"
-            title="BTC price"
+            title={`${seriesBinanceSymbol(marketSeries).replace('USDT', '')} price`}
             seriesVisible={btcSeriesVisible}
             onSeriesVisibleChange={setBtcSeriesVisible}
             xDomain={sharedXDomain}
@@ -1838,7 +1868,7 @@ export default function MarketPage({ mode }: Props) {
           <VolumeChart
             data={chartData}
             mode="binance"
-            title="Binance BTC volume"
+            title={`Binance ${seriesBinanceSymbol(marketSeries).replace('USDT', '')} volume`}
             xDomain={sharedXDomain}
             onXDomainChange={onChartXDomainChange}
             onXDomainReset={onChartXDomainReset}
@@ -1852,7 +1882,11 @@ export default function MarketPage({ mode }: Props) {
             live={liveActive}
             nowMs={liveActive ? nowMs : undefined}
           />
-          <BinanceOrderBookPanel book={binanceBook} live={liveActive} />
+          <BinanceOrderBookPanel
+            book={binanceBook}
+            live={liveActive}
+            symbol={seriesBinanceSymbol(marketSeries)}
+          />
           <PriceChart
             data={chartData}
             mode="outcomes"
@@ -1982,6 +2016,7 @@ export default function MarketPage({ mode }: Props) {
         activityTrades={displayActivityTrades}
         nowMs={feedNowMs}
       />
+      <Outlet />
     </div>
   )
 }

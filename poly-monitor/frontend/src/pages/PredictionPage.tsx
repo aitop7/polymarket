@@ -11,29 +11,16 @@ import {
 } from '../api'
 import PredictionDistChart from '../components/PredictionDistChart'
 import PriceChart, { type TimeDomain } from '../components/PriceChart'
+import {
+  SERIES_WINDOW_MS,
+  type MarketSeriesKey,
+  loadMarketSeries,
+  saveMarketSeries,
+  seriesLabel,
+} from '../series'
 
-const SERIES_WINDOW_MS = { '5m': 300_000, '15m': 900_000 } as const
-type MarketSeriesKey = keyof typeof SERIES_WINDOW_MS
 const MAX_SERIES_POINTS = 1200
 const WS_RECONNECT_MS = 1_500
-
-function loadMarketSeries(): MarketSeriesKey {
-  try {
-    const v = sessionStorage.getItem('poly_monitor_series')
-    if (v === '5m' || v === '15m') return v
-  } catch {
-    /* ignore */
-  }
-  return '5m'
-}
-
-function saveMarketSeries(s: MarketSeriesKey) {
-  try {
-    sessionStorage.setItem('poly_monitor_series', s)
-  } catch {
-    /* ignore */
-  }
-}
 
 function ageLabel(ageMs: number) {
   if (!Number.isFinite(ageMs) || ageMs < 0) return '—'
@@ -940,26 +927,33 @@ export default function PredictionPage() {
           <div>
             <p className="eyebrow">Prediction desk</p>
             <h1>Up / Down</h1>
-            <div className="mode-segment" role="group" aria-label="Market duration" style={{ marginTop: 10 }}>
+            <div className="mode-segment" role="group" aria-label="Market series" style={{ marginTop: 10 }}>
               <button
                 type="button"
                 className={`mode-segment-btn${marketSeries === '5m' ? ' active' : ''}`}
                 onClick={() => setMarketSeries('5m')}
               >
-                5m
+                BTC 5m
               </button>
               <button
                 type="button"
                 className={`mode-segment-btn${marketSeries === '15m' ? ' active' : ''}`}
                 onClick={() => setMarketSeries('15m')}
               >
-                15m
+                BTC 15m
+              </button>
+              <button
+                type="button"
+                className={`mode-segment-btn${marketSeries === 'bnb-15m' ? ' active' : ''}`}
+                onClick={() => setMarketSeries('bnb-15m')}
+              >
+                BNB 15m
               </button>
             </div>
           </div>
           <div className="prediction-status-strip">
             <span className="prediction-live-dot" aria-hidden />
-            <span>Live WS · {marketSeries}</span>
+            <span>Live WS · {seriesLabel(marketSeries)}</span>
             <span className="prediction-status-sep" />
             <span>Market {result?.market_id ?? '—'}</span>
             <span className="prediction-status-sep" />

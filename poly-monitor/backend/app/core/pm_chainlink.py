@@ -13,6 +13,7 @@ import pandas as pd
 
 from app.core.live_dataset import find_live_market_dir
 from app.core.pmdata_client import download_chainlink_day, pmdata_enabled
+from app.core.series import get_series, series_from_slug, series_key_from_meta
 
 SLOT_MS = 500
 PREMARKET_LEAD_MS = 300_000
@@ -99,16 +100,21 @@ def _load_feed_days(
     *,
     data_type: str,
     force: bool,
+    symbol: str = "BTCUSD",
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for day in dates:
         try:
-            frames.append(download_chainlink_day(day, data_type=data_type, force=force))
+            frames.append(
+                download_chainlink_day(
+                    day, data_type=data_type, force=force, symbol=symbol
+                )
+            )
         except FileNotFoundError:
             continue
     if not frames:
         raise FileNotFoundError(
-            f"PMData chainlink {data_type} missing for dates={dates}"
+            f"PMData chainlink {data_type} missing for dates={dates} symbol={symbol}"
         )
     return pd.concat(frames, ignore_index=True)
 
@@ -175,13 +181,29 @@ def generate_pm_chainlink_for_market(
         raise RuntimeError(f"invalid market window for {mid}: {start_ms}-{end_ms}")
 
     dates = _utc_dates_for_window(start_ms, end_ms, pad_ms=PREMARKET_LEAD_MS)
-    spot_raw = _load_feed_days(dates, data_type="streams", force=force_download)
+    hit = series_from_slug(str(meta.get("slug") or ""))
+    if hit is None:
+        hit = get_series(series_key_from_meta(meta))
+    cl_symbol = hit.chainlink_symbol
+    spot_raw = _load_feed_days(
+        dates, data_type="streams", force=force_download, symbol=cl_symbol
+    )
     # BTC 5m markets settle on 60s TWAP; fall back to 30s for older PMData days.
     try:
-        twap_raw = _load_feed_days(dates, data_type="streams_twap60s", force=force_download)
+        twap_raw = _load_feed_days(
+            dates,
+            data_type="streams_twap60s",
+            force=force_download,
+            symbol=cl_symbol,
+        )
         twap_source = "streams_twap60s"
     except FileNotFoundError:
-        twap_raw = _load_feed_days(dates, data_type="streams_twap30s", force=force_download)
+        twap_raw = _load_feed_days(
+            dates,
+            data_type="streams_twap30s",
+            force=force_download,
+            symbol=cl_symbol,
+        )
         twap_source = "streams_twap30s"
     spot = _prep_price_series(spot_raw)
     twap = _prep_price_series(twap_raw)
@@ -292,6 +314,7 @@ def list_missing_pm_chainlink(*, date_et: str | None = None) -> dict[str, Any]:
             {
                 "market_id": mid,
                 "slug": None,
+                "series": None,
                 "start_time": int(r.get("start_time") or 0),
                 "end_time": int(r.get("end_time") or 0),
                 "date_et": r.get("date_et"),
@@ -309,13 +332,25 @@ def list_missing_pm_chainlink(*, date_et: str | None = None) -> dict[str, Any]:
         try:
             meta = _read_meta(d)
             item["slug"] = meta.get("slug")
+            series = meta.get("series")
+            if series not in ("5m", "15m"):
+                from app.core.series import series_from_slug
+
+                hit = series_from_slug(str(meta.get("slug") or ""))
+                series = hit.key if hit else None
+            item["series"] = series
         except Exception:
             pass
 
+    from app.core.pmdata_client import pmdata_blocked_until_ms, pmdata_enabled
+
+    blocked_until = pmdata_blocked_until_ms("chainlink") if pmdata_enabled("chainlink") else None
     return {
         "date": date,
         "n_total": present + len(missing),
         "n_present": present,
         "n_missing": len(missing),
         "missing": missing,
+        "pmdata_enabled": pmdata_enabled("chainlink"),
+        "pmdata_blocked_until_ms": blocked_until,
     }

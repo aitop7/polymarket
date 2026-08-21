@@ -320,13 +320,17 @@ def list_dates(split: str, *, series: MarketSeries | str | None = None) -> list[
     return sorted({r["date_et"] for r in idx})
 
 
-def find_market_at(split: str, timestamp_ms: int) -> dict[str, Any] | None:
+def find_market_at(
+    split: str, timestamp_ms: int, *, series: str | MarketSeries | None = None
+) -> dict[str, Any] | None:
     """Return the market whose window contains ``timestamp_ms``.
 
     Does **not** fall back to an arbitrary nearest market — that caused the
-    wallet chart to show a different 5m slot than the selected Activity row.
+    wallet chart to show a different slot than the selected Activity row.
     """
     idx = build_market_index(split)
+    if series is not None:
+        idx = filter_rows_by_series(idx, series)
     if not idx:
         return None
     t = int(timestamp_ms)
@@ -338,7 +342,7 @@ def find_market_at(split: str, timestamp_ms: int) -> dict[str, Any] | None:
             continue
         if start <= t < end:
             return r
-    # Tiny skew only (slug open vs parquet start), still same 5m slot.
+    # Tiny skew only (slug open vs parquet start), still same market slot.
     best: dict[str, Any] | None = None
     best_abs: int | None = None
     for r in idx:

@@ -31,6 +31,7 @@ export type BinanceBookPayload = {
 type Props = {
   book: BinanceBookPayload | null
   live?: boolean
+  symbol?: string
 }
 
 type DepthLevel = BinanceBookLevel & { cumQty: number }
@@ -131,7 +132,11 @@ function ExpandIcon({ expanded }: { expanded: boolean }) {
   )
 }
 
-export default function BinanceOrderBookPanel({ book, live = false }: Props) {
+export default function BinanceOrderBookPanel({
+  book,
+  live = false,
+  symbol = 'BTCUSDT',
+}: Props) {
   const [expanded, setExpanded] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
   const midRef = useRef<HTMLDivElement>(null)
@@ -197,7 +202,7 @@ export default function BinanceOrderBookPanel({ book, live = false }: Props) {
       </div>
 
       <div className="ob-cols">
-        <div className="ob-cell ob-tag">BTCUSDT</div>
+        <div className="ob-cell ob-tag">{book?.symbol || symbol}</div>
         <div className="ob-cell">RANGE</div>
         <div className="ob-cell">SIZE</div>
         <div className="ob-cell">TOTAL</div>

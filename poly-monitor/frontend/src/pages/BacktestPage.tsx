@@ -26,6 +26,11 @@ import PriceChart, {
   type TraderMark,
 } from '../components/PriceChart'
 import VolumeChart from '../components/VolumeChart'
+import {
+  type MarketSeriesKey,
+  loadMarketSeries,
+  saveMarketSeries,
+} from '../series'
 
 const DEFAULT_X_SPAN_MS = 180_000
 
@@ -47,13 +52,14 @@ export default function BacktestPage() {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([])
   const [collection, setCollection] = useState<'before_twap' | 'twap'>('twap')
   const [split, setSplit] = useState('validation')
-  const [selectedDate, setSelectedDate] = useState('')
+  const [marketSeries, setMarketSeries] = useState<MarketSeriesKey>(() => loadMarketSeries())
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [dateMin, setDateMin] = useState('')
   const [dateMax, setDateMax] = useState('')
   const effectiveSplit = collection === 'twap' ? 'twap' : split
   const isTwap = collection === 'twap'
   const [strategy, setStrategy] = useState('lgbm_edge')
-  const [limit, setLimit] = useState(20)
   const [startingCash, setStartingCash] = useState(1000)
   const [threshold, setThreshold] = useState(0.05)
   const [minEdge, setMinEdge] = useState(0.005)
@@ -71,9 +77,18 @@ export default function BacktestPage() {
   const [emaPeriod, setEmaPeriod] = useState(8)
   const [maxDoubles, setMaxDoubles] = useState(1)
   const [minFailDrop, setMinFailDrop] = useState(0.02)
+  const [buyUp, setBuyUp] = useState(0.45)
+  const [buyDown, setBuyDown] = useState(0.45)
+  const [sellUp, setSellUp] = useState(0.55)
+  const [sellDown, setSellDown] = useState(0.55)
+  const [shares, setShares] = useState(10)
+  const [pairMax, setPairMax] = useState(0.95)
+  const [firstMax, setFirstMax] = useState(0.45)
   const [showOutcomeEma, setShowOutcomeEma] = useState(true)
   const isSafePair = strategy === 'safe_pair'
   const isMomentumPair = strategy === 'momentum_pair'
+  const isDualLimit = strategy === 'dual_limit_exit'
+  const isEqualPair = strategy === 'equal_pair_ab'
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -90,6 +105,15 @@ export default function BacktestPage() {
   const [sharedXDomain, setSharedXDomain] = useState<TimeDomain | null>(null)
   const [followLiveX, setFollowLiveX] = useState(true)
   const [equityCollapsed, setEquityCollapsed] = useState(false)
+
+  const setSeries = (s: MarketSeriesKey) => {
+    setMarketSeries(s)
+    saveMarketSeries(s)
+    setResult(null)
+    setSelectedId(null)
+    setDetail(null)
+    setError(null)
+  }
 
   useEffect(() => {
     api
@@ -115,23 +139,38 @@ export default function BacktestPage() {
       setMaxDoubles(1)
       setMinFailDrop(0.02)
       setFeeModel('polymarket')
+    } else if (strategy === 'dual_limit_exit') {
+      setMinElapsedSec(5)
+      setMinRemainingSec(10)
+      setOncePerMarket(true)
+      setFeeModel('polymarket')
+      setBuyUp(0.45)
+      setBuyDown(0.45)
+      setSellUp(0.55)
+      setSellDown(0.55)
+      setShares(10)
+    } else if (strategy === 'equal_pair_ab') {
+      setMinElapsedSec(5)
+      setMinRemainingSec(10)
+      setOncePerMarket(true)
+      setFeeModel('polymarket')
+      setPairMax(0.95)
+      setFirstMax(0.45)
+      setShares(10)
     }
   }, [strategy])
 
   useEffect(() => {
     let cancelled = false
     api
-      .marketDates(effectiveSplit)
+      .marketDates(effectiveSplit, { series: marketSeries })
       .then((res) => {
         if (cancelled) return
         setDateMin(res.min || '')
         setDateMax(res.max || '')
-        if (isTwap) {
-          const next = res.max || res.dates[res.dates.length - 1] || ''
-          setSelectedDate((prev) =>
-            prev && res.dates.includes(prev) ? prev : next,
-          )
-        }
+        const next = res.max || res.dates[res.dates.length - 1] || ''
+        setDateFrom((prev) => (prev && res.dates.includes(prev) ? prev : next))
+        setDateTo((prev) => (prev && res.dates.includes(prev) ? prev : next))
       })
       .catch(() => {
         if (!cancelled) {
@@ -142,7 +181,7 @@ export default function BacktestPage() {
     return () => {
       cancelled = true
     }
-  }, [effectiveSplit, isTwap])
+  }, [effectiveSplit, marketSeries])
 
   const run = async () => {
     setLoading(true)
@@ -177,21 +216,51 @@ export default function BacktestPage() {
               min_remaining_seconds: minRemainingSec,
               fee_model: feeModel,
             }
-          : {
-              threshold,
-              size_usd: sizeUsd,
-              once_per_market: oncePerMarket,
-              max_trades_per_market: oncePerMarket ? 1 : maxPairs,
-              cooldown_seconds: cooldownSec,
-              min_elapsed_seconds: minElapsedSec,
-              min_remaining_seconds: minRemainingSec,
-            }
+          : isDualLimit
+            ? {
+                buy_up: buyUp,
+                buy_down: buyDown,
+                sell_up: sellUp,
+                sell_down: sellDown,
+                shares,
+                once_per_market: oncePerMarket,
+                min_elapsed_seconds: minElapsedSec,
+                min_remaining_seconds: minRemainingSec,
+                taker_fee_rate: 0.07,
+                fee_model: feeModel,
+              }
+            : isEqualPair
+              ? {
+                  pair_max: pairMax,
+                  first_max: firstMax,
+                  shares,
+                  once_per_market: oncePerMarket,
+                  min_elapsed_seconds: minElapsedSec,
+                  min_remaining_seconds: minRemainingSec,
+                  taker_fee_rate: 0.07,
+                  fee_model: feeModel,
+                }
+              : {
+                  threshold,
+                  size_usd: sizeUsd,
+                  once_per_market: oncePerMarket,
+                  max_trades_per_market: oncePerMarket ? 1 : maxPairs,
+                  cooldown_seconds: cooldownSec,
+                  min_elapsed_seconds: minElapsedSec,
+                  min_remaining_seconds: minRemainingSec,
+                }
+      const from = dateFrom || dateTo
+      const to = dateTo || dateFrom
+      if (!from || !to) {
+        throw new Error('Select a date range')
+      }
       const res = await api.backtest({
         strategy,
         split: effectiveSplit,
-        limit,
+        series: marketSeries,
         starting_cash: startingCash,
-        ...(isTwap && selectedDate ? { date: selectedDate } : {}),
+        date_from: from <= to ? from : to,
+        date_to: from <= to ? to : from,
         params,
       })
       setResult(res)
@@ -343,24 +412,37 @@ export default function BacktestPage() {
               </button>
             </div>
 
-            {isTwap ? (
-              <>
-                <label className="sidebar-label">Date (ET)</label>
-                <input
-                  type="date"
-                  value={selectedDate}
-                  min={dateMin || undefined}
-                  max={dateMax || undefined}
-                  disabled={loading || !dateMin}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                />
-                {dateMin && dateMax && (
-                  <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.72rem' }}>
-                    {dateMin.slice(5)} → {dateMax.slice(5)}
-                  </p>
-                )}
-              </>
-            ) : (
+            <div className="mode-segment" role="group" aria-label="Market series" style={{ marginTop: 8 }}>
+              <button
+                type="button"
+                className={`mode-segment-btn${marketSeries === '5m' ? ' active' : ''}`}
+                disabled={loading}
+                onClick={() => setSeries('5m')}
+                aria-pressed={marketSeries === '5m'}
+              >
+                BTC 5m
+              </button>
+              <button
+                type="button"
+                className={`mode-segment-btn${marketSeries === '15m' ? ' active' : ''}`}
+                disabled={loading}
+                onClick={() => setSeries('15m')}
+                aria-pressed={marketSeries === '15m'}
+              >
+                BTC 15m
+              </button>
+              <button
+                type="button"
+                className={`mode-segment-btn${marketSeries === 'bnb-15m' ? ' active' : ''}`}
+                disabled={loading}
+                onClick={() => setSeries('bnb-15m')}
+                aria-pressed={marketSeries === 'bnb-15m'}
+              >
+                BNB 15m
+              </button>
+            </div>
+
+            {isTwap ? null : (
               <>
                 <label className="sidebar-label">Split</label>
                 <select value={split} onChange={(e) => setSplit(e.target.value)} disabled={loading}>
@@ -369,6 +451,30 @@ export default function BacktestPage() {
                   <option value="train">train</option>
                 </select>
               </>
+            )}
+
+            <label className="sidebar-label">From (ET)</label>
+            <input
+              type="date"
+              value={dateFrom}
+              min={dateMin || undefined}
+              max={dateTo || dateMax || undefined}
+              disabled={loading || !dateMin}
+              onChange={(e) => setDateFrom(e.target.value)}
+            />
+            <label className="sidebar-label">To (ET)</label>
+            <input
+              type="date"
+              value={dateTo}
+              min={dateFrom || dateMin || undefined}
+              max={dateMax || undefined}
+              disabled={loading || !dateMin}
+              onChange={(e) => setDateTo(e.target.value)}
+            />
+            {dateMin && dateMax && (
+              <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.72rem' }}>
+                Available {dateMin.slice(5)} → {dateMax.slice(5)}
+              </p>
             )}
 
             <label className="sidebar-label">Strategy</label>
@@ -389,16 +495,6 @@ export default function BacktestPage() {
                 </option>
               ))}
             </select>
-
-            <label className="sidebar-label">Markets</label>
-            <input
-              type="number"
-              min={1}
-              max={200}
-              value={limit}
-              disabled={loading}
-              onChange={(e) => setLimit(Math.max(1, Math.min(200, Number(e.target.value) || 1)))}
-            />
 
             <label className="sidebar-label">Starting cash (shared)</label>
             <input
@@ -590,6 +686,135 @@ export default function BacktestPage() {
                   <option value="none">None</option>
                 </select>
               </>
+            ) : isDualLimit ? (
+              <>
+                <p className="muted" style={{ margin: '0 0 0.55rem', fontSize: '0.72rem', lineHeight: 1.35 }}>
+                  Rest BUY UP@A + DOWN@B. One-sided fill → rest SELL at A′/B′. Both fills → hold to settlement.
+                </p>
+                <label className="sidebar-label">Buy UP (A)</label>
+                <input
+                  type="number"
+                  step={0.01}
+                  min={0.01}
+                  max={0.99}
+                  value={buyUp}
+                  disabled={loading}
+                  onChange={(e) => setBuyUp(Math.min(0.99, Math.max(0.01, Number(e.target.value) || 0.45)))}
+                />
+                <label className="sidebar-label">Buy DOWN (B)</label>
+                <input
+                  type="number"
+                  step={0.01}
+                  min={0.01}
+                  max={0.99}
+                  value={buyDown}
+                  disabled={loading}
+                  onChange={(e) => setBuyDown(Math.min(0.99, Math.max(0.01, Number(e.target.value) || 0.45)))}
+                />
+                <label className="sidebar-label">Sell UP (A′)</label>
+                <input
+                  type="number"
+                  step={0.01}
+                  min={0.01}
+                  max={0.99}
+                  value={sellUp}
+                  disabled={loading}
+                  onChange={(e) => setSellUp(Math.min(0.99, Math.max(0.01, Number(e.target.value) || 0.55)))}
+                />
+                <label className="sidebar-label">Sell DOWN (B′)</label>
+                <input
+                  type="number"
+                  step={0.01}
+                  min={0.01}
+                  max={0.99}
+                  value={sellDown}
+                  disabled={loading}
+                  onChange={(e) => setSellDown(Math.min(0.99, Math.max(0.01, Number(e.target.value) || 0.55)))}
+                />
+                <label className="sidebar-label">Shares</label>
+                <input
+                  type="number"
+                  step={1}
+                  min={1}
+                  value={shares}
+                  disabled={loading}
+                  onChange={(e) => setShares(Math.max(1, Number(e.target.value) || 1))}
+                />
+                <label className="sidebar-label">Fee model</label>
+                <select
+                  value={feeModel}
+                  disabled={loading}
+                  onChange={(e) => setFeeModel(e.target.value as 'none' | 'polymarket' | 'flat')}
+                >
+                  <option value="polymarket">Polymarket crypto (0.07)</option>
+                  <option value="flat">Flat % of notional</option>
+                  <option value="none">None</option>
+                </select>
+                <label className="sidebar-check">
+                  <input
+                    type="checkbox"
+                    checked={oncePerMarket}
+                    disabled={loading}
+                    onChange={(e) => setOncePerMarket(e.target.checked)}
+                  />
+                  Once per market
+                </label>
+              </>
+            ) : isEqualPair ? (
+              <>
+                <p className="muted" style={{ margin: '0 0 0.55rem', fontSize: '0.72rem', lineHeight: 1.35 }}>
+                  Equal UP+DOWN shares. First leg ask ≤ B, then other leg so sum ≤ A. Hold completed pairs to
+                  settlement (outcome-neutral).
+                </p>
+                <label className="sidebar-label">Pair max sum (A)</label>
+                <input
+                  type="number"
+                  step={0.01}
+                  min={0.02}
+                  max={1.0}
+                  value={pairMax}
+                  disabled={loading}
+                  onChange={(e) => setPairMax(Math.min(1, Math.max(0.02, Number(e.target.value) || 0.95)))}
+                />
+                <label className="sidebar-label">First leg max (B)</label>
+                <input
+                  type="number"
+                  step={0.01}
+                  min={0.01}
+                  max={0.99}
+                  value={firstMax}
+                  disabled={loading}
+                  onChange={(e) => setFirstMax(Math.min(0.99, Math.max(0.01, Number(e.target.value) || 0.45)))}
+                />
+                <label className="sidebar-label">Shares (each side)</label>
+                <input
+                  type="number"
+                  step={1}
+                  min={1}
+                  value={shares}
+                  disabled={loading}
+                  onChange={(e) => setShares(Math.max(1, Number(e.target.value) || 1))}
+                />
+                <label className="sidebar-label">Fee model</label>
+                <select
+                  value={feeModel}
+                  disabled={loading}
+                  onChange={(e) => setFeeModel(e.target.value as 'none' | 'polymarket' | 'flat')}
+                >
+                  <option value="polymarket">Polymarket crypto (0.07)</option>
+                  <option value="flat">Flat % of notional</option>
+                  <option value="none">None</option>
+                </select>
+                <label className="sidebar-check">
+                  <input
+                    type="checkbox"
+                    checked={oncePerMarket}
+                    disabled={loading}
+                    onChange={(e) => setOncePerMarket(e.target.checked)}
+                  />
+                  Once per market
+                </label>
+              </>
             ) : (
               <>
                 <label className="sidebar-label">Edge threshold</label>
@@ -624,7 +849,7 @@ export default function BacktestPage() {
                 />
               </>
             )}
-            {!isMomentumPair && (
+            {!isMomentumPair && !isDualLimit && !isEqualPair && (
               <>
                 <label className="sidebar-label">Size (USD)</label>
                 <input
@@ -684,7 +909,14 @@ export default function BacktestPage() {
                   {result ? (
                     <span className="btc-market-id">
                       ({result.strategy} · {result.split}
-                      {result.date ? ` · ${result.date}` : ''})
+                      {result.date_from && result.date_to
+                        ? result.date_from === result.date_to
+                          ? ` · ${result.date_from}`
+                          : ` · ${result.date_from}→${result.date_to}`
+                        : result.date
+                          ? ` · ${result.date}`
+                          : ''}
+                      )
                     </span>
                   ) : null}
                 </h1>
